@@ -1,0 +1,6 @@
+{
+  "name": "GustoPOS",
+  "description": "Sistema POS enterprise full-stack per ristoranti e bar. Include gestione ordini in tempo reale (KDS), magazzino con alert scorte, gestione ingredienti, personale e dashboard analitica avanzata. Ottimizzato per dispositivi touch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
