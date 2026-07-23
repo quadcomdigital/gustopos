@@ -3551,6 +3551,14 @@ export class AppRepository {
     });
   }
 
+  async updateBomPreBatched(id: string, isPreBatched: boolean): Promise<void> {
+    const tenantId = getTenantIdOrDefault();
+    await db
+      .update(bomItems)
+      .set({ isPreBatched: isPreBatched ? 1 : 0 })
+      .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, id)));
+  }
+
   async listStaffPublic(): Promise<Staff[]> {
     const tenantId = getTenantIdOrDefault();
     const rows = await db
