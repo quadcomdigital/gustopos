@@ -4478,9 +4478,48 @@ export class AppRepository {
         bomByMenuId.set(requirement.menuItemId, existing);
       }
 
+      // Check stock for pre-batched BOMs before exploding
+      const preBatchedBoms = new Map<string, { quantity: number; name: string }>();
       for (const item of order.items) {
         const requirements = bomByMenuId.get(item.id) ?? [];
         for (const requirement of requirements) {
+          const bom = bomById.get(requirement.bomId);
+          if (bom && bom.isPreBatched === 1) {
+            const totalQty = requirement.quantity * item.quantity;
+            const existing = preBatchedBoms.get(requirement.bomId);
+            if (existing) {
+              existing.quantity += totalQty;
+            } else {
+              preBatchedBoms.set(requirement.bomId, { quantity: totalQty, name: bom.name });
+            }
+          }
+        }
+      }
+
+      // Validate stock for all pre-batched BOMs
+      for (const [bomId, bomReq] of preBatchedBoms) {
+        const bom = bomById.get(bomId);
+        if (!bom) throw new Error(`BOM ${bomId} not found`);
+        const currentStock = toNumeric(bom.stockQuantity);
+        if (currentStock < bomReq.quantity) {
+          throw new Error(`${bomReq.name} non disponibile (stock: ${currentStock})`);
+        }
+      }
+
+      // Deduct stock from pre-batched BOMs
+      for (const [bomId, bomReq] of preBatchedBoms) {
+        await tx
+          .update(bomItems)
+          .set({ stockQuantity: sql`${bomItems.stockQuantity} - ${bomReq.quantity}` })
+          .where(eq(bomItems.id, bomId));
+      }
+
+      for (const item of order.items) {
+        const requirements = bomByMenuId.get(item.id) ?? [];
+        for (const requirement of requirements) {
+          // Skip pre-batched BOMs — stock already checked and deducted above
+          if (preBatchedBoms.has(requirement.bomId)) continue;
+
           const exploded = this.explodeBomRequirements({
             bomId: requirement.bomId,
             multiplier: requirement.quantity * item.quantity,
