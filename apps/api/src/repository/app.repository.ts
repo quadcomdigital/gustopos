@@ -375,6 +375,13 @@ interface PrepareResult {
   }>;
 }
 
+interface BomStockItem {
+  id: string;
+  name: string;
+  stockQuantity: number;
+  unit: string;
+}
+
 function toNumeric(value: string | number): number {
   return typeof value === "number" ? value : Number(value);
 }
@@ -9970,6 +9977,25 @@ export class AppRepository {
       deficit: Number(r.minThreshold) - Number(r.quantity),
       preferredSupplierName: r.supplierName ?? undefined,
       lastUnitCost: r.unitCost != null ? Number(r.unitCost) : undefined,
+    }));
+  }
+
+  async getBomStock(): Promise<BomStockItem[]> {
+    const tenantId = getTenantIdOrDefault();
+    const boms = await db.query.bomItems.findMany({
+      where: and(eq(bomItems.tenantId, tenantId), eq(bomItems.isPreBatched, 1)),
+      columns: {
+        id: true,
+        name: true,
+        stockQuantity: true,
+        unit: true,
+      },
+    });
+    return boms.map(b => ({
+      id: b.id,
+      name: b.name,
+      stockQuantity: toNumeric(b.stockQuantity),
+      unit: b.unit,
     }));
   }
 }
