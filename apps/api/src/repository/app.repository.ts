@@ -1409,6 +1409,12 @@ export class AppRepository {
       throw new Error(`Invalid BoM yield for ${bomId}`);
     }
 
+    if (bom.isPreBatched === 1) {
+      const requirements = new Map<string, number>();
+      requirements.set(bomId, multiplier);
+      return requirements;
+    }
+
     const normalizedMultiplier = multiplier / yieldQty;
     const components = componentsByBomId.get(bomId) ?? [];
     const requirements = new Map<string, number>();
