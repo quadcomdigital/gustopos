@@ -1,0 +1,2401 @@
+import {
+  BadRequestException,
+  Body,
+  ConflictException,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Inject,
+  NotFoundException,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  UnauthorizedException,
+  UseGuards,
+} from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
+import {
+  closeTableRequestSchema,
+  createOrderRequestSchema,
+  ingredientCreateRequestSchema,
+  ingredientUpdateRequestSchema,
+  ingredientAdjustRequestSchema,
+  stockMovementsQuerySchema,
+  categoryCreateRequestSchema,
+  categoryUpdateRequestSchema,
+  categoryModifierPoolCreateRequestSchema,
+  categoryModifierPoolUpdateRequestSchema,
+  customerCreateRequestSchema,
+  customerUpdateRequestSchema,
+  customerAddressCreateRequestSchema,
+  customerAddressUpdateRequestSchema,
+  customersQuerySchema,
+  customerAnalyticsRequestSchema,
+  operationalSummaryQuerySchema,
+  refundPaymentRequestSchema,
+  orderHistoryFiltersSchema,
+  dispatchPrintJobRequestSchema,
+  printJobsQuerySchema,
+  printJobsPollQuerySchema,
+  publicFunnelEventRequestSchema,
+  publicFunnelEventResponseSchema,
+  publicTakeawayCreateRequestSchema,
+  publicTakeawayTrackingResponseSchema,
+  groupOrderCreateSessionRequestSchema,
+  groupOrderCreateSessionResponseSchema,
+  groupOrderJoinSessionRequestSchema,
+  groupOrderJoinSessionResponseSchema,
+  groupOrderPatchCartRequestSchema,
+  groupOrderPatchCartResponseSchema,
+  groupOrderSubmitRequestSchema,
+  groupOrderSubmitResponseSchema,
+  selfOrderCreateRequestSchema,
+  reservationsQuerySchema,
+  reservationCreateRequestSchema,
+  reservationNoShowRequestSchema,
+  reservationUpdateRequestSchema,
+  deliveryOrdersQuerySchema,
+  deliveryUpsertRequestSchema,
+  deliveryStatusUpdateRequestSchema,
+  suppliersQuerySchema,
+  supplierCreateRequestSchema,
+  supplierUpdateRequestSchema,
+  supplierIngredientCreateSchema,
+  supplierIngredientUpdateSchema,
+  purchaseOrdersQuerySchema,
+  purchaseOrderCreateRequestSchema,
+  purchaseOrderStatusUpdateRequestSchema,
+  goodsReceiptCreateRequestSchema,
+  shiftsQuerySchema,
+  shiftCreateRequestSchema,
+  shiftUpdateRequestSchema,
+  clockInRequestSchema,
+  clockOutRequestSchema,
+  timeReportQuerySchema,
+  fiscalCloseRequestSchema,
+  fiscalExportCreateRequestSchema,
+  fiscalExportsQuerySchema,
+  updateUiSettingsRequestSchema,
+  updatePrintingSettingsRequestSchema,
+  menuItemCreateRequestSchema,
+  menuItemReplaceRecipeRequestSchema,
+  menuItemUpdateRequestSchema,
+  socketEvents,
+  splitBillRequestSchema,
+  paySelectedItemsRequestSchema,
+  markShareAsPaidRequestSchema,
+  transferTableRequestSchema,
+  loyaltyRedeemRequestSchema,
+  loyaltyEarnRequestSchema,
+  couponCreateRequestSchema,
+  couponValidateRequestSchema,
+  type CouponCreateRequest,
+  type CouponValidateRequest,
+  type CouponValidateResponse,
+  type PaymentFilters,
+  type VoidOrderRequest,
+  type VoidOrderResponse,
+  type CloseTableRequest,
+  type CreateOrderRequest,
+  type IngredientCreateRequest,
+  type IngredientUpdateRequest,
+  type IngredientAdjustRequest,
+  type Category,
+  type CategoryCreateRequest,
+  type CategoryUpdateRequest,
+  type CategoryModifierPoolCreateRequest,
+  type CategoryModifierPoolUpdateRequest,
+  type Customer,
+  type CustomerCreateRequest,
+  type CustomerUpdateRequest,
+  type CustomerAddressCreateRequest,
+  type CustomerAddressUpdateRequest,
+  type CustomersQuery,
+  type CustomerAnalytics,
+  type CustomerAnalyticsRequest,
+  type OperationalSummaryQuery,
+  type ReservationsSummary,
+  type DeliverySummary,
+  type RefundPaymentRequest,
+  type RefundPaymentResponse,
+  type DispatchPrintJobRequest,
+  type Reservation,
+  type ReservationsQuery,
+  type ReservationNoShowRequest,
+  type ReservationCreateRequest,
+  type ReservationUpdateRequest,
+  type DeliveryOrder,
+  type DeliveryOrdersQuery,
+  type DeliveryUpsertRequest,
+  type DeliveryStatusUpdateRequest,
+  type Supplier,
+  type SuppliersQuery,
+  type SupplierCreateRequest,
+  type SupplierUpdateRequest,
+  type SupplierIngredient,
+  type PurchaseOrder,
+  type PurchaseOrdersQuery,
+  type PurchaseOrderCreateRequest,
+  type PurchaseOrderStatusUpdateRequest,
+  type GoodsReceipt,
+  type GoodsReceiptCreateRequest,
+  type Shift,
+  type ShiftsQuery,
+  type ShiftCreateRequest,
+  type ShiftUpdateRequest,
+  type TimeEntry,
+  type ClockInRequest,
+  type ClockOutRequest,
+  type TimeReportQuery,
+  type TimeReportResponse,
+  type FiscalClosure,
+  type FiscalCloseRequest,
+  type FiscalExport,
+  type FiscalExportCreateRequest,
+  type FiscalExportsQuery,
+  type PrintArea,
+  type PrintJob,
+  type PrintJobsQuery,
+  type PublicFunnelEventRequest,
+  type PublicFunnelEventResponse,
+  type PublicTakeawayCreateRequest,
+  type PublicTakeawayCreateResponse,
+  type PublicTakeawayTrackingResponse,
+  type GroupOrderCreateSessionRequest,
+  type GroupOrderCreateSessionResponse,
+  type GroupOrderJoinSessionRequest,
+  type GroupOrderJoinSessionResponse,
+  type GroupOrderPatchCartRequest,
+  type GroupOrderPatchCartResponse,
+  type GroupOrderSubmitRequest,
+  type GroupOrderSubmitResponse,
+  type SelfOrderCreateRequest,
+  type SelfOrderCreateResponse,
+  type SelfOrderResolveResponse,
+  type SelfOrderSessionRotateResponse,
+  type OrderHistoryFilters,
+  type UiSettings,
+  type UpdateUiSettingsRequest,
+  type UpdatePrintingSettingsRequest,
+  type MenuItemCreateRequest,
+  type MenuItemReplaceRecipeRequest,
+  type MenuItemUpdateRequest,
+  type Order,
+  type SplitBillRequest,
+  type PaySelectedItemsRequest,
+  type MarkShareAsPaidRequest,
+  type TransferTableRequest,
+  type UpdateOrderRequest,
+  type LoyaltyBalance,
+  type LoyaltyTransaction,
+  type LoyaltyEarnRequest,
+  type LoyaltyRedeemRequest,
+} from "@gustopos/shared";
+import { RealtimeGateway } from "./realtime.gateway";
+import { AppRepository } from "./repository/app.repository";
+import { JwtAuthGuard } from "./auth/jwt-auth.guard";
+import { PermissionsGuard } from "./auth/permissions.guard";
+import { RequiresPermissions } from "./auth/permissions.decorator";
+import { RolesGuard } from "./auth/roles.guard";
+import { Roles } from "./auth/roles.decorator";
+import { Public } from "./auth/public.decorator";
+import type { AuthenticatedRequest } from "./auth/auth-request.type";
+import { AuditLogService } from "./audit-log.service";
+import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
+import { RequiresModule } from "./tenant/requires-module.decorator";
+import type { Response } from "express";
+import jwt from "jsonwebtoken";
+import { getJwtSecret } from "./auth/jwt-secret";
+import type { JwtPayload } from "./auth/jwt.types";
+import { TenantService } from "./tenant/tenant.service";
+import type { ModuleKey } from "@gustopos/shared";
+
+@Controller("api")
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, FeatureFlagGuard)
+export class AppController {
+  private readonly jwtSecret = getJwtSecret();
+
+  constructor(
+    @Inject(RealtimeGateway) private readonly realtimeGateway: RealtimeGateway,
+    @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
+    @Inject(TenantService) private readonly tenantService: TenantService,
+  ) {}
+
+  private async resolveConsumerUserId(request: AuthenticatedRequest, tenantId: string): Promise<string | null> {
+    const authHeader = request.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      return null;
+    }
+
+    try {
+      const token = authHeader.slice("Bearer ".length);
+      const payload = jwt.verify(token, this.jwtSecret) as JwtPayload;
+      if (payload.tokenType !== "consumer_access" || !payload.sessionId || !payload.sub || !payload.tenantId) {
+        return null;
+      }
+
+      if (payload.tenantId !== tenantId) {
+        throw new UnauthorizedException("Consumer tenant mismatch");
+      }
+
+      const activeSession = await this.appRepository.findActiveConsumerSessionById(payload.sessionId, payload.sub);
+      if (!activeSession || activeSession.tenantId !== tenantId) {
+        throw new UnauthorizedException("Consumer session expired or revoked");
+      }
+
+      return payload.sub;
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  @Get("data")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("kitchen")
+  getData() {
+    return this.appRepository.getPublicData();
+  }
+
+  @Get("bootstrap")
+  @Roles("admin", "waiter", "chef")
+  getBootstrap(@Query() query: { modules?: string }) {
+    const enabledModules = query.modules ? query.modules.split(',') : [];
+    return this.appRepository.getBootstrapData(enabledModules);
+  }
+
+  @Get("payments")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  listPayments(@Query() query: Record<string, string | undefined>) {
+    const filters: PaymentFilters = {
+      from: query.from,
+      to: query.to,
+      method: query.method as PaymentFilters["method"],
+      kind: query.kind as PaymentFilters["kind"],
+      staffId: query.staffId,
+      limit: query.limit ? Number(query.limit) : undefined,
+    };
+
+    return this.appRepository.listPayments(filters);
+  }
+
+  @Post("payments/:id/refund")
+  @Roles("admin")
+  @RequiresPermissions("payments:refund")
+  @RequiresModule("analytics")
+  async refundPayment(
+    @Param("id") id: string,
+    @Body() payload: RefundPaymentRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<RefundPaymentResponse> {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const parsed = refundPaymentRequestSchema.parse(payload);
+    let result;
+    try {
+      result = await this.appRepository.refundPayment(id, parsed, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Refund failed");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Payment not found");
+    }
+
+    this.auditLogService.log("payment.refund", {
+      actorStaffId,
+      targetId: id,
+      details: {
+        refundPaymentId: result.payment.id,
+        refundedAmount: result.refundedAmount,
+        remainingAmount: result.remainingAmount,
+      },
+    });
+
+    return result;
+  }
+
+  @Get("orders/history")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  listOrderHistory(@Query() query: Record<string, string | undefined>) {
+    const filters = orderHistoryFiltersSchema.parse({
+      from: query.from,
+      to: query.to,
+      status: query.status,
+      orderType: query.orderType,
+      staffId: query.staffId,
+      table: query.table,
+      customerId: query.customerId,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as OrderHistoryFilters;
+
+    return this.appRepository.listOrderHistory(filters);
+  }
+
+  @Get("orders/:id")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  async getOrderById(@Param("id") id: string) {
+    const order = await this.appRepository.getOrderByIdPublic(id);
+    if (!order) {
+      throw new NotFoundException("Order not found");
+    }
+
+    return order;
+  }
+
+  @Get("customers")
+  @Roles("admin", "waiter")
+  @RequiresModule("customers")
+  listCustomers(@Query() query: Record<string, string | undefined>) {
+    const parsed = customersQuerySchema.parse({
+      query: query.query,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as CustomersQuery;
+    return this.appRepository.listCustomers(parsed);
+  }
+
+  @Post("customers")
+  @Roles("admin", "waiter")
+  @RequiresModule("customers")
+  async createOrReuseCustomer(@Body() payload: CustomerCreateRequest): Promise<Customer> {
+    const parsed = customerCreateRequestSchema.parse(payload);
+    const row = await this.appRepository.createOrReuseCustomer(parsed);
+    const mapped = await this.appRepository.getCustomerById(row.id);
+    if (!mapped) {
+      throw new NotFoundException("Customer not found");
+    }
+    return mapped;
+  }
+
+  @Get("customers/analytics-summary")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  getCustomerAnalytics(@Query() query: Record<string, string | undefined>): Promise<CustomerAnalytics> {
+    const parsed = customerAnalyticsRequestSchema.parse({
+      from: query.from,
+      to: query.to,
+    }) as CustomerAnalyticsRequest;
+    return this.appRepository.getCustomerAnalytics(parsed);
+  }
+
+  @Get("analytics/reservations-summary")
+  @Roles("admin")
+  @RequiresModule("reservations")
+  reservationsSummary(@Query() query: Record<string, string | undefined>): Promise<ReservationsSummary> {
+    const parsed = operationalSummaryQuerySchema.parse({
+      from: query.from,
+      to: query.to,
+    }) as OperationalSummaryQuery;
+    return this.appRepository.getReservationsSummary(parsed);
+  }
+
+  @Get("analytics/delivery-summary")
+  @Roles("admin")
+  @RequiresModule("delivery")
+  deliverySummary(@Query() query: Record<string, string | undefined>): Promise<DeliverySummary> {
+    const parsed = operationalSummaryQuerySchema.parse({
+      from: query.from,
+      to: query.to,
+    }) as OperationalSummaryQuery;
+    return this.appRepository.getDeliverySummary(parsed);
+  }
+
+  @Get("reservations")
+  @Roles("admin", "waiter")
+  @RequiresModule("reservations")
+  listReservations(@Query() query: Record<string, string | undefined>): Promise<Reservation[]> {
+    const parsed = reservationsQuerySchema.parse({
+      from: query.from,
+      to: query.to,
+      status: query.status,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as ReservationsQuery;
+    return this.appRepository.listReservations(parsed);
+  }
+
+  @Post("reservations")
+  @Roles("admin", "waiter")
+  @RequiresModule("reservations")
+  createReservation(@Body() payload: ReservationCreateRequest): Promise<Reservation> {
+    const parsed = reservationCreateRequestSchema.parse(payload);
+    return this.appRepository.createReservation(parsed).then((reservation) => {
+      this.auditLogService.log("reservation.created", {
+        targetId: reservation.id,
+        details: { status: reservation.status, reservedFor: reservation.reservedFor, partySize: reservation.partySize },
+      });
+      return reservation;
+    });
+  }
+
+  @Patch("reservations/:id")
+  @Roles("admin", "waiter")
+  @RequiresModule("reservations")
+  async updateReservation(@Param("id") id: string, @Body() payload: ReservationUpdateRequest): Promise<Reservation> {
+    const parsed = reservationUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateReservation(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Reservation not found");
+    }
+    this.auditLogService.log("reservation.updated", {
+      targetId: id,
+      details: { status: updated.status, payload: parsed },
+    });
+    return updated;
+  }
+
+  @Post("reservations/:id/confirm")
+  @Roles("admin", "waiter")
+  @RequiresModule("reservations")
+  async confirmReservation(@Param("id") id: string): Promise<Reservation> {
+    const updated = await this.appRepository.updateReservation(id, { status: "confirmed" });
+    if (!updated) {
+      throw new NotFoundException("Reservation not found");
+    }
+    this.auditLogService.log("reservation.confirmed", {
+      targetId: id,
+      details: { status: updated.status },
+    });
+    return updated;
+  }
+
+  @Post("reservations/:id/cancel")
+  @Roles("admin", "waiter")
+  @RequiresModule("reservations")
+  async cancelReservation(@Param("id") id: string): Promise<Reservation> {
+    const updated = await this.appRepository.updateReservation(id, { status: "cancelled" });
+    if (!updated) {
+      throw new NotFoundException("Reservation not found");
+    }
+    this.auditLogService.log("reservation.cancelled", {
+      targetId: id,
+      details: { status: updated.status },
+    });
+    return updated;
+  }
+
+  @Post("reservations/:id/no-show")
+  @Roles("admin", "waiter")
+  @RequiresModule("reservations")
+  async markReservationNoShow(
+    @Param("id") id: string,
+    @Body() payload: ReservationNoShowRequest,
+  ): Promise<Reservation> {
+    const parsed = reservationNoShowRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateReservation(id, { status: "no_show", noShowReason: parsed.reason });
+    if (!updated) {
+      throw new NotFoundException("Reservation not found");
+    }
+    this.auditLogService.log("reservation.no_show", {
+      targetId: id,
+      details: { status: updated.status, reason: parsed.reason },
+    });
+    return updated;
+  }
+
+  @Get("delivery/orders")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("delivery")
+  listDeliveryOrders(@Query() query: Record<string, string | undefined>): Promise<DeliveryOrder[]> {
+    const parsed = deliveryOrdersQuerySchema.parse({
+      status: query.status,
+      from: query.from,
+      to: query.to,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as DeliveryOrdersQuery;
+    return this.appRepository.listDeliveryOrders(parsed);
+  }
+
+  @Post("delivery/orders/:orderId/upsert")
+  @Roles("admin", "waiter")
+  @RequiresModule("delivery")
+  upsertDeliveryOrder(@Param("orderId") orderId: string, @Body() payload: DeliveryUpsertRequest): Promise<DeliveryOrder> {
+    const parsed = deliveryUpsertRequestSchema.parse(payload);
+    return this.appRepository.upsertDeliveryOrder(orderId, parsed).then((deliveryOrder) => {
+      this.auditLogService.log("delivery.upserted", {
+        targetId: orderId,
+        details: { status: deliveryOrder.status, deliveryFee: deliveryOrder.deliveryFee },
+      });
+      return deliveryOrder;
+    });
+  }
+
+  @Patch("delivery/orders/:orderId/status")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("delivery")
+  async updateDeliveryStatus(
+    @Param("orderId") orderId: string,
+    @Body() payload: DeliveryStatusUpdateRequest,
+  ): Promise<DeliveryOrder> {
+    const parsed = deliveryStatusUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateDeliveryStatus(orderId, parsed);
+    if (!updated) {
+      throw new NotFoundException("Delivery order not found");
+    }
+    this.auditLogService.log("delivery.status.updated", {
+      targetId: orderId,
+      details: { status: updated.status, payload: parsed },
+    });
+    return updated;
+  }
+
+  @Post("delivery/orders/:orderId/dispatch")
+  @Roles("admin", "waiter")
+  @RequiresModule("delivery")
+  async dispatchDeliveryOrder(@Param("orderId") orderId: string): Promise<DeliveryOrder> {
+    const updated = await this.appRepository.updateDeliveryStatus(orderId, { status: "out_for_delivery" });
+    if (!updated) {
+      throw new NotFoundException("Delivery order not found");
+    }
+    this.auditLogService.log("delivery.dispatched", {
+      targetId: orderId,
+      details: { status: updated.status },
+    });
+    return updated;
+  }
+
+  @Get("purchasing/suppliers")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  listSuppliers(@Query() query: Record<string, string | undefined>): Promise<Supplier[]> {
+    const parsed = suppliersQuerySchema.parse({
+      active: query.active === undefined ? undefined : query.active === "true",
+      query: query.query,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as SuppliersQuery;
+    return this.appRepository.listSuppliers(parsed);
+  }
+
+  @Post("purchasing/suppliers")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  createSupplier(@Body() payload: SupplierCreateRequest): Promise<Supplier> {
+    const parsed = supplierCreateRequestSchema.parse(payload);
+    return this.appRepository.createSupplier(parsed);
+  }
+
+  @Patch("purchasing/suppliers/:id")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  async updateSupplier(@Param("id") id: string, @Body() payload: SupplierUpdateRequest): Promise<Supplier> {
+    const parsed = supplierUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateSupplier(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Supplier not found");
+    }
+    return updated;
+  }
+
+  @Get("purchasing/suppliers/:supplierId/ingredients")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  listSupplierIngredients(@Param("supplierId") supplierId: string): Promise<SupplierIngredient[]> {
+    return this.appRepository.listSupplierIngredients(supplierId);
+  }
+
+  @Get("purchasing/ingredients/:ingredientId/suppliers")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  listIngredientSuppliers(@Param("ingredientId") ingredientId: string): Promise<SupplierIngredient[]> {
+    return this.appRepository.listSupplierIngredients(undefined, ingredientId);
+  }
+
+  @Post("purchasing/supplier-ingredients")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  async createSupplierIngredient(@Body() payload: { supplierId: string; ingredientId: string; brandName?: string; unitCost?: number; isPreferred?: boolean }): Promise<void> {
+    await this.appRepository.createSupplierIngredient(payload);
+  }
+
+  @Patch("purchasing/supplier-ingredients/:supplierId/:ingredientId")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  async updateSupplierIngredient(
+    @Param("supplierId") supplierId: string,
+    @Param("ingredientId") ingredientId: string,
+    @Body() payload: { brandName?: string; unitCost?: number; isPreferred?: boolean },
+  ): Promise<void> {
+    await this.appRepository.updateSupplierIngredient(supplierId, ingredientId, payload);
+  }
+
+  @Delete("purchasing/supplier-ingredients/:supplierId/:ingredientId")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  async deleteSupplierIngredient(
+    @Param("supplierId") supplierId: string,
+    @Param("ingredientId") ingredientId: string,
+  ): Promise<void> {
+    await this.appRepository.deleteSupplierIngredient(supplierId, ingredientId);
+  }
+
+  @Get("purchasing/suppliers/:id/po-items")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  getSupplierPoItems(@Param("id") id: string) {
+    return this.appRepository.getSupplierIngredientsForPo(id);
+  }
+
+  @Get("purchasing/orders")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  listPurchaseOrders(@Query() query: Record<string, string | undefined>): Promise<PurchaseOrder[]> {
+    const parsed = purchaseOrdersQuerySchema.parse({
+      supplierId: query.supplierId,
+      status: query.status,
+      from: query.from,
+      to: query.to,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as PurchaseOrdersQuery;
+    return this.appRepository.listPurchaseOrders(parsed);
+  }
+
+  @Post("purchasing/orders")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  createPurchaseOrder(@Body() payload: PurchaseOrderCreateRequest): Promise<PurchaseOrder> {
+    const parsed = purchaseOrderCreateRequestSchema.parse(payload);
+    return this.appRepository.createPurchaseOrder(parsed);
+  }
+
+  @Patch("purchasing/orders/:id/status")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  async updatePurchaseOrderStatus(
+    @Param("id") id: string,
+    @Body() payload: PurchaseOrderStatusUpdateRequest,
+  ): Promise<PurchaseOrder> {
+    const parsed = purchaseOrderStatusUpdateRequestSchema.parse(payload);
+    let updated: PurchaseOrder | null = null;
+    try {
+      updated = await this.appRepository.updatePurchaseOrderStatus(id, parsed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid purchase order transition";
+      throw new BadRequestException(message);
+    }
+    if (!updated) {
+      throw new NotFoundException("Purchase order not found");
+    }
+    return updated;
+  }
+
+  @Post("purchasing/orders/:id/receipts")
+  @Roles("admin")
+  @RequiresModule("purchasing_suppliers")
+  async createGoodsReceipt(
+    @Param("id") id: string,
+    @Body() payload: GoodsReceiptCreateRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<GoodsReceipt> {
+    const parsed = goodsReceiptCreateRequestSchema.parse(payload);
+    const actorStaffId = request.user?.sub;
+    try {
+      return await this.appRepository.createGoodsReceipt(id, parsed, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid goods receipt");
+    }
+  }
+
+  @Get("shifts")
+  @Roles("admin")
+  @RequiresModule("staff_shifts_timeclock")
+  listShifts(@Query() query: Record<string, string | undefined>): Promise<Shift[]> {
+    const parsed = shiftsQuerySchema.parse({
+      staffId: query.staffId,
+      from: query.from,
+      to: query.to,
+      status: query.status,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as ShiftsQuery;
+    return this.appRepository.listShifts(parsed);
+  }
+
+  @Post("shifts")
+  @Roles("admin")
+  @RequiresModule("staff_shifts_timeclock")
+  createShift(@Body() payload: ShiftCreateRequest): Promise<Shift> {
+    const parsed = shiftCreateRequestSchema.parse(payload);
+    return this.appRepository.createShift(parsed);
+  }
+
+  @Patch("shifts/:id")
+  @Roles("admin")
+  @RequiresModule("staff_shifts_timeclock")
+  async updateShift(@Param("id") id: string, @Body() payload: ShiftUpdateRequest): Promise<Shift> {
+    const parsed = shiftUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateShift(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Shift not found");
+    }
+    return updated;
+  }
+
+  @Post("timeclock/in")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("staff_shifts_timeclock")
+  async clockIn(@Body() payload: ClockInRequest, @Req() request: AuthenticatedRequest): Promise<TimeEntry> {
+    const parsed = clockInRequestSchema.parse(payload);
+    const actorStaffId = request.user?.sub;
+    const role = request.user?.role;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const resolved = role === "admin" ? parsed : { ...parsed, staffId: actorStaffId };
+    try {
+      return await this.appRepository.clockIn(resolved);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Clock-in failed";
+      if (message.includes("already exists")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
+  }
+
+  @Post("timeclock/out")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("staff_shifts_timeclock")
+  async clockOut(@Body() payload: ClockOutRequest, @Req() request: AuthenticatedRequest): Promise<TimeEntry> {
+    const parsed = clockOutRequestSchema.parse(payload);
+    const actorStaffId = request.user?.sub;
+    const role = request.user?.role;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const resolved = role === "admin" ? parsed : { ...parsed, staffId: actorStaffId };
+    try {
+      return await this.appRepository.clockOut(resolved);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Clock-out failed";
+      if (message.includes("No open time entry")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
+  }
+
+  @Get("timeclock/report")
+  @Roles("admin")
+  @RequiresModule("staff_shifts_timeclock")
+  timeReport(@Query() query: Record<string, string | undefined>): Promise<TimeReportResponse> {
+    const parsed = timeReportQuerySchema.parse({
+      from: query.from,
+      to: query.to,
+      staffId: query.staffId,
+    }) as TimeReportQuery;
+    return this.appRepository.timeReport(parsed);
+  }
+
+  @Post("fiscal/close-day")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:close")
+  @RequiresModule("fiscal_exports")
+  async closeFiscalDay(@Body() payload: FiscalCloseRequest, @Req() request: AuthenticatedRequest): Promise<FiscalClosure> {
+    const parsed = fiscalCloseRequestSchema.parse(payload);
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+    try {
+      return await this.appRepository.closeFiscalDay(parsed, actorStaffId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Fiscal close failed";
+      if (message.includes("already closed")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
+  }
+
+  @Post("fiscal/exports")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  async createFiscalExport(@Body() payload: FiscalExportCreateRequest, @Req() request: AuthenticatedRequest): Promise<FiscalExport> {
+    const parsed = fiscalExportCreateRequestSchema.parse(payload);
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+    return this.appRepository.createFiscalExport(parsed, actorStaffId);
+  }
+
+  @Get("fiscal/exports")
+  @Roles("admin")
+  @RequiresModule("fiscal_exports")
+  listFiscalExports(@Query() query: Record<string, string | undefined>): Promise<FiscalExport[]> {
+    const parsed = fiscalExportsQuerySchema.parse({
+      from: query.from,
+      to: query.to,
+      status: query.status,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as FiscalExportsQuery;
+    return this.appRepository.listFiscalExports(parsed);
+  }
+
+  @Get("fiscal/exports/:id/download")
+  @Roles("admin")
+  @RequiresModule("fiscal_exports")
+  async downloadFiscalExport(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest,
+    @Res() response: Response,
+  ): Promise<void> {
+    const entry = await this.appRepository.getFiscalExportById(id);
+    if (!entry) {
+      throw new NotFoundException("Fiscal export not found");
+    }
+
+    const dayStart = new Date(`${entry.businessDate}T00:00:00.000Z`);
+    const dayEnd = new Date(`${entry.businessDate}T23:59:59.999Z`);
+    const payments = await this.appRepository.listPayments({ from: dayStart.toISOString(), to: dayEnd.toISOString(), limit: 500 });
+
+    const sales = payments.filter((payment) => payment.kind === "sale");
+    const refunds = payments.filter((payment) => payment.kind === "refund");
+    const gross = sales.reduce((sum, payment) => sum + payment.total, 0);
+    const refundsTotal = refunds.reduce((sum, payment) => sum + payment.total, 0);
+    const net = gross - refundsTotal;
+    const cash = sales.filter((payment) => payment.method === "cash").reduce((sum, payment) => sum + payment.total, 0);
+    const card = sales.filter((payment) => payment.method === "card").reduce((sum, payment) => sum + payment.total, 0);
+
+    const tenantId = request.user?.tenantId ?? "tenant_legacy";
+    const csv = [
+      "date;tenant_id;orders_count;gross;refunds;net;cash;card",
+      `${entry.businessDate};${tenantId};${sales.length};${gross.toFixed(2)};${refundsTotal.toFixed(2)};${net.toFixed(2)};${cash.toFixed(2)};${card.toFixed(2)}`,
+    ].join("\n");
+
+    response.setHeader("Content-Type", "text/csv; charset=utf-8");
+    response.setHeader("Content-Disposition", `attachment; filename="fiscal_${entry.businessDate}.csv"`);
+    response.send(csv);
+  }
+
+  @Get("customers/:id")
+  @Roles("admin")
+  @RequiresModule("customers")
+  async getCustomer(@Param("id") id: string): Promise<Customer> {
+    const customer = await this.appRepository.getCustomerById(id);
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+    return customer;
+  }
+
+  @Patch("customers/:id")
+  @Roles("admin", "waiter")
+  @RequiresModule("customers")
+  async updateCustomer(@Param("id") id: string, @Body() payload: CustomerUpdateRequest): Promise<Customer> {
+    const parsed = customerUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateCustomerById(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Customer not found");
+    }
+    return updated;
+  }
+
+  @Delete("customers/:id")
+  @Roles("admin")
+  @RequiresModule("customers")
+  async deleteCustomer(@Param("id") id: string) {
+    const ok = await this.appRepository.deleteCustomerById(id);
+    if (!ok) {
+      throw new NotFoundException("Customer not found");
+    }
+    return { success: true };
+  }
+
+  @Get("customers/:id/addresses")
+  @Roles("admin", "waiter")
+  @RequiresModule("customers")
+  async listCustomerAddresses(@Param("id") id: string) {
+    const customer = await this.appRepository.getCustomerById(id);
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+    return this.appRepository.listCustomerAddresses(id);
+  }
+
+  @Post("customers/:id/addresses")
+  @Roles("admin", "waiter")
+  @RequiresModule("customers")
+  async createCustomerAddress(@Param("id") id: string, @Body() payload: CustomerAddressCreateRequest) {
+    const customer = await this.appRepository.getCustomerById(id);
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+    return this.appRepository.createCustomerAddress(id, payload);
+  }
+
+  @Patch("customers/:id/addresses/:addressId")
+  @Roles("admin", "waiter")
+  @RequiresModule("customers")
+  async updateCustomerAddress(@Param("id") id: string, @Param("addressId") addressId: string, @Body() payload: CustomerAddressUpdateRequest) {
+    const updated = await this.appRepository.updateCustomerAddress(addressId, payload);
+    if (!updated) {
+      throw new NotFoundException("Address not found");
+    }
+    return updated;
+  }
+
+  @Delete("customers/:id/addresses/:addressId")
+  @Roles("admin")
+  @RequiresModule("customers")
+  async deleteCustomerAddress(@Param("id") id: string, @Param("addressId") addressId: string) {
+    const ok = await this.appRepository.deleteCustomerAddress(addressId);
+    if (!ok) {
+      throw new NotFoundException("Address not found");
+    }
+    return { success: true };
+  }
+
+  @Get("categories")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  listCategories(@Query("scope") scope?: Category["scope"]) {
+    return this.appRepository.listCategories(scope);
+  }
+
+  @Get("simple-catalog/categories")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  listSimpleCatalogCategories() {
+    return this.appRepository.listCategories("menu");
+  }
+
+  @Get("print-jobs")
+  @Roles("admin", "chef")
+  @RequiresModule("printing")
+  listPrintJobs(@Query() query: Record<string, string | undefined>): Promise<PrintJob[]> {
+    const parsed = printJobsQuerySchema.parse({
+      status: query.status,
+      area: query.area,
+      limit: query.limit ? Number(query.limit) : undefined,
+    }) as PrintJobsQuery;
+    return this.appRepository.listPrintJobs(parsed);
+  }
+
+  @Post("print-jobs/:id/dispatch")
+  @Roles("admin", "chef")
+  @RequiresPermissions("printing:dispatch")
+  @RequiresModule("printing")
+  async dispatchPrintJob(
+    @Param("id") id: string,
+    @Body() payload: DispatchPrintJobRequest = {},
+  ): Promise<PrintJob> {
+    const parsed = dispatchPrintJobRequestSchema.parse(payload ?? {});
+    const job = await this.appRepository.getPrintJobById(id);
+    if (!job) {
+      throw new NotFoundException("Print job not found");
+    }
+
+    const endpoint = parsed.endpoint ?? process.env.PRINT_BRIDGE_URL;
+    if (!endpoint) {
+      throw new BadRequestException("Missing print bridge endpoint");
+    }
+
+    // SSRF protection: only allow whitelisted endpoints
+    const allowedEndpoints = new Set(
+      [
+        process.env.PRINT_BRIDGE_URL,
+        "http://127.0.0.1:11905/print",
+        "http://localhost:11905/print",
+      ].filter(Boolean),
+    );
+
+    if (!allowedEndpoints.has(endpoint)) {
+      throw new BadRequestException("Print endpoint not in allowlist");
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: job.id,
+          orderId: job.orderId,
+          area: job.area,
+          protocol: job.protocol,
+          payload: job.payload,
+        }),
+      });
+
+      if (!response.ok) {
+        const raw = await response.text();
+        console.error(`[print-bridge] Bridge error ${response.status}: ${raw}`);
+        await this.appRepository.failPrintJob(id, `Bridge error ${response.status}`);
+        throw new BadRequestException(`Print bridge rejected job: ${response.status}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown print bridge error";
+      await this.appRepository.failPrintJob(id, message);
+      throw new BadRequestException(message);
+    }
+
+    const result = await this.appRepository.dispatchPrintJob(id);
+    if (!result) {
+      throw new NotFoundException("Print job not found");
+    }
+    return result;
+  }
+
+  @Get("print-jobs/poll")
+  @Throttle({ default: { limit: 30, ttl: 60 } })
+  @RequiresModule("printing")
+  async pollPrintJobs(@Query() query: Record<string, string | undefined>): Promise<PrintJob[]> {
+    const areasParam = query.areas;
+    if (!areasParam) {
+      throw new BadRequestException("Missing 'areas' query parameter");
+    }
+    const areas = areasParam
+      .split(",")
+      .map((a) => a.trim())
+      .filter((a) => ["kitchen", "bar", "cashier"].includes(a)) as PrintArea[];
+    if (areas.length === 0) {
+      throw new BadRequestException("No valid areas provided");
+    }
+    return this.appRepository.pollPrintJobs(areas);
+  }
+
+  @Post("print-jobs/:id/fail")
+  @Roles("admin", "chef")
+  @RequiresModule("printing")
+  async failPrintJob(
+    @Param("id") id: string,
+    @Body() payload: { error?: string },
+  ): Promise<PrintJob> {
+    const result = await this.appRepository.failPrintJob(id, payload.error ?? "Print failed");
+    if (!result) {
+      throw new NotFoundException("Print job not found");
+    }
+    return result;
+  }
+
+  @Post("print-jobs/:id/confirm")
+  @Roles("admin", "chef")
+  @RequiresModule("printing")
+  async confirmPrintJob(@Param("id") id: string): Promise<PrintJob> {
+    const result = await this.appRepository.confirmPrintJob(id);
+    if (!result) {
+      throw new NotFoundException("Print job not found or already completed");
+    }
+    return result;
+  }
+
+  @Post("print-jobs/:id/complete")
+  @Public()
+  @RequiresModule("printing")
+  async completePrintJob(@Param("id") id: string): Promise<PrintJob> {
+    const result = await this.appRepository.completePrintJob(id);
+    if (!result) {
+      throw new NotFoundException("Print job not found or already completed");
+    }
+    return result;
+  }
+
+  @Post("print-jobs/:id/retry")
+  @Roles("admin", "chef")
+  @RequiresModule("printing")
+  async retryPrintJob(@Param("id") id: string): Promise<PrintJob> {
+    const result = await this.appRepository.retryPrintJob(id);
+    if (!result) {
+      throw new NotFoundException("Print job not found or cannot be retried");
+    }
+    return result;
+  }
+
+  @Post("categories")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  createCategory(@Body() payload: CategoryCreateRequest) {
+    const parsed = categoryCreateRequestSchema.parse(payload);
+    return this.appRepository.createCategory(parsed);
+  }
+
+  @Post("simple-catalog/categories")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  createSimpleCatalogCategory(@Body() payload: CategoryCreateRequest) {
+    const parsed = categoryCreateRequestSchema.parse({ ...payload, scope: "menu" });
+    return this.appRepository.createCategory(parsed);
+  }
+
+  @Patch("categories/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async updateCategory(@Param("id") id: string, @Body() payload: CategoryUpdateRequest) {
+    const parsed = categoryUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateCategory(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Category not found");
+    }
+    return updated;
+  }
+
+  @Patch("simple-catalog/categories/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  async updateSimpleCatalogCategory(@Param("id") id: string, @Body() payload: CategoryUpdateRequest) {
+    const existing = await this.appRepository.getCategoryById(id);
+    if (!existing || existing.scope !== "menu") {
+      throw new NotFoundException("Category not found");
+    }
+
+    const parsed = categoryUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateCategory(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Category not found");
+    }
+    return updated;
+  }
+
+  @Delete("categories/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async deleteCategory(@Param("id") id: string) {
+    try {
+      const ok = await this.appRepository.deleteCategory(id);
+      if (!ok) {
+        throw new NotFoundException("Category not found");
+      }
+      return { success: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Cannot delete category");
+    }
+  }
+
+  @Get("category-modifier-pools")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  listCategoryModifierPools(@Query("categoryId") categoryId?: string) {
+    return this.appRepository.listCategoryModifierPools(categoryId);
+  }
+
+  @Post("category-modifier-pools")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  createCategoryModifierPool(@Body() payload: CategoryModifierPoolCreateRequest) {
+    const parsed = categoryModifierPoolCreateRequestSchema.parse(payload);
+    return this.appRepository.createCategoryModifierPool(parsed);
+  }
+
+  @Patch("category-modifier-pools/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async updateCategoryModifierPool(@Param("id") id: string, @Body() payload: CategoryModifierPoolUpdateRequest) {
+    const parsed = categoryModifierPoolUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateCategoryModifierPool(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Category modifier pool not found");
+    }
+    return updated;
+  }
+
+  @Delete("category-modifier-pools/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async deleteCategoryModifierPool(@Param("id") id: string) {
+    const ok = await this.appRepository.deleteCategoryModifierPool(id);
+    if (!ok) {
+      throw new NotFoundException("Category modifier pool not found");
+    }
+    return { success: true };
+  }
+
+  @Get("inventory")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  listInventory() {
+    return this.appRepository.listInventoryItems();
+  }
+
+  @Get("inventory/reorder-suggestions")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  getReorderSuggestions() {
+    return this.appRepository.getReorderSuggestions();
+  }
+
+  @Get("inventory/:id/audit")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  listInventoryAudit(
+    @Param("id") id: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+  ) {
+    return this.appRepository.listInventoryAudit(
+      id,
+      limit ? Number(limit) : 50,
+      offset ? Number(offset) : 0,
+    );
+  }
+
+  @Get("settings")
+  @Roles("admin")
+  getUiSettings(): Promise<UiSettings> {
+    return this.appRepository.getUiSettings();
+  }
+
+  @Patch("settings")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  async updateUiSettings(@Body() payload: UpdateUiSettingsRequest): Promise<UiSettings> {
+    try {
+      const parsed = updateUiSettingsRequestSchema.parse(payload);
+      const updated = await this.appRepository.updateUiSettings(parsed);
+      await this.realtimeGateway.emit(socketEvents.settingsUpdate, updated);
+      return updated;
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid settings payload");
+    }
+  }
+
+  @Patch("settings/printing")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async updatePrintingSettings(@Body() payload: UpdatePrintingSettingsRequest): Promise<UiSettings> {
+    try {
+      const parsed = updatePrintingSettingsRequestSchema.parse(payload);
+      const updated = await this.appRepository.updatePrintingSettings(parsed);
+      await this.realtimeGateway.emit(socketEvents.settingsUpdate, updated);
+      return updated;
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid printing settings payload");
+    }
+  }
+
+  // ─── QZ Tray Configuration ─────────────────────────────────────────────
+
+  @Get("printing/qz-config")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async getQzTrayConfig(@Req() request: AuthenticatedRequest) {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+    const config = await this.tenantService.getTenantModuleConfig(tenantId, "printing" as ModuleKey);
+    return {
+      qzTray: config?.config?.qzTray ?? {
+        hosts: ["localhost"],
+        securePorts: [8181],
+        insecurePorts: [8182],
+        useSecure: false,
+      },
+    };
+  }
+
+  @Patch("printing/qz-config")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async updateQzTrayConfig(
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: { qzTray: { hosts?: string[]; securePorts?: number[]; insecurePorts?: number[]; useSecure?: boolean } },
+  ) {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+
+    const existing = await this.tenantService.getTenantModuleConfig(tenantId, "printing" as ModuleKey);
+    const baseConfig = existing?.config as Record<string, unknown> ?? {};
+    const existingQz = (baseConfig.qzTray || {}) as Record<string, unknown>;
+
+    const updated = await this.tenantService.upsertTenantModuleConfig(tenantId, {
+      moduleKey: "printing" as ModuleKey,
+      config: {
+        ...baseConfig,
+        qzTray: {
+          hosts: payload.qzTray.hosts ?? (existingQz.hosts as string[] | undefined) ?? ["localhost", "localhost.qz.io"],
+          securePorts: payload.qzTray.securePorts ?? (existingQz.securePorts as number[] | undefined) ?? [8181, 8282, 8383, 8484],
+          insecurePorts: payload.qzTray.insecurePorts ?? (existingQz.insecurePorts as number[] | undefined) ?? [8182, 8283, 8384, 8385],
+          useSecure: payload.qzTray.useSecure ?? (existingQz.useSecure as boolean | undefined) ?? true,
+        },
+      },
+    });
+
+    return { qzTray: updated.config.qzTray };
+  }
+
+  @Post("inventory")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async createInventoryItem(@Body() payload: IngredientCreateRequest) {
+    const parsed = ingredientCreateRequestSchema.parse(payload);
+    const created = await this.appRepository.createInventoryItem(parsed);
+    const inventory = await this.appRepository.listInventoryItems();
+    await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
+    return created;
+  }
+
+  @Patch("inventory/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async updateInventoryItem(@Param("id") id: string, @Body() payload: IngredientUpdateRequest) {
+    const parsed = ingredientUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateInventoryItem(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Ingredient not found");
+    }
+    const inventory = await this.appRepository.listInventoryItems();
+    await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
+    return updated;
+  }
+
+  @Delete("inventory/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async deleteInventoryItem(@Param("id") id: string) {
+    try {
+      const ok = await this.appRepository.deleteInventoryItem(id);
+      if (!ok) {
+        throw new NotFoundException("Ingredient not found");
+      }
+      const inventory = await this.appRepository.listInventoryItems();
+      await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
+      return { success: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Cannot delete ingredient");
+    }
+  }
+
+  @Post("inventory/:id/adjust")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async adjustInventoryItem(
+    @Param("id") id: string,
+    @Body() payload: IngredientAdjustRequest,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const parsed = ingredientAdjustRequestSchema.parse(payload);
+    try {
+      const updated = await this.appRepository.adjustInventoryItem(
+        id,
+        parsed.quantity,
+        parsed.notes,
+        request.user?.sub,
+      );
+      const inventory = await this.appRepository.listInventoryItems();
+      await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
+      return updated;
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Adjustment failed");
+    }
+  }
+
+  @Get("stock-movements")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async listStockMovements(
+    @Query("ingredientId") ingredientId?: string,
+    @Query("orderId") orderId?: string,
+    @Query("movementType") movementType?: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+  ) {
+    const parsed = stockMovementsQuerySchema.parse({
+      ingredientId: ingredientId || undefined,
+      orderId: orderId || undefined,
+      movementType: movementType || undefined,
+      limit: limit ? Number(limit) : 50,
+      offset: offset ? Number(offset) : 0,
+    });
+    return this.appRepository.listStockMovements(parsed);
+  }
+
+  @Get("menu")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  listMenuAdmin() {
+    return this.appRepository.listMenuItemsAdmin();
+  }
+
+  @Get("simple-catalog/items")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  listSimpleCatalogItems() {
+    return this.appRepository.listSimpleCatalogItems();
+  }
+
+  @Post("simple-catalog/items")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  createSimpleCatalogItem(@Body() payload: MenuItemCreateRequest) {
+    const parsed = menuItemCreateRequestSchema
+      .omit({ recipe: true })
+      .extend({ recipe: menuItemCreateRequestSchema.shape.recipe.optional() })
+      .parse(payload);
+    return this.appRepository.createSimpleCatalogItem(parsed).catch((error) => {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid simple catalog payload");
+    });
+  }
+
+  @Patch("simple-catalog/items/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  async updateSimpleCatalogItem(@Param("id") id: string, @Body() payload: MenuItemUpdateRequest) {
+    const parsed = menuItemUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateSimpleCatalogItem(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Simple catalog item not found");
+    }
+    return updated;
+  }
+
+  @Post("simple-catalog/items/:id/enable")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  async enableSimpleCatalogItem(@Param("id") id: string) {
+    const ok = await this.appRepository.setMenuItemActiveState(id, true);
+    if (!ok) {
+      throw new NotFoundException("Simple catalog item not found");
+    }
+    return { success: true };
+  }
+
+  @Post("simple-catalog/items/:id/disable")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  async disableSimpleCatalogItem(@Param("id") id: string) {
+    const ok = await this.appRepository.setMenuItemActiveState(id, false);
+    if (!ok) {
+      throw new NotFoundException("Simple catalog item not found");
+    }
+    return { success: true };
+  }
+
+  @Post("menu")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  createMenuItem(@Body() payload: MenuItemCreateRequest) {
+    const parsed = menuItemCreateRequestSchema.parse(payload);
+    return this.appRepository.createMenuItem(parsed).catch((error) => {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu payload");
+    });
+  }
+
+  @Patch("menu/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async updateMenuItem(@Param("id") id: string, @Body() payload: MenuItemUpdateRequest) {
+    const parsed = menuItemUpdateRequestSchema.parse(payload);
+    const updated = await this.appRepository.updateMenuItem(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Menu item not found");
+    }
+
+    return updated;
+  }
+
+  @Patch("menu/:id/container")
+  @Roles("admin")
+  @RequiresModule("inventory")
+  async updateMenuItemContainer(
+    @Param("id") id: string,
+    @Body() body: { defaultContainerId: string | null },
+  ) {
+    const updated = await this.appRepository.updateMenuItem(id, { defaultContainerId: body.defaultContainerId });
+    if (!updated) {
+      throw new NotFoundException("Menu item not found");
+    }
+    return updated;
+  }
+
+  @Post("menu/:id/recipe")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async replaceMenuRecipe(@Param("id") id: string, @Body() payload: MenuItemReplaceRecipeRequest) {
+    const parsed = menuItemReplaceRecipeRequestSchema.parse(payload);
+    let updated;
+    try {
+      updated = await this.appRepository.replaceMenuItemRecipe(id, parsed);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu recipe payload");
+    }
+    if (!updated) {
+      throw new NotFoundException("Menu item not found");
+    }
+
+    return updated;
+  }
+
+  @Post("menu/:id/recipe/add")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async addMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }) {
+    let updated;
+    try {
+      updated = await this.appRepository.addMenuItemRecipeComponent(id, payload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid recipe component");
+    }
+    if (!updated) {
+      throw new NotFoundException("Menu item not found");
+    }
+
+    return updated;
+  }
+
+  @Post("menu/:id/recipe/remove")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async removeMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom'; componentId: string }) {
+    let updated;
+    try {
+      updated = await this.appRepository.removeMenuItemRecipeComponent(id, payload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid recipe component");
+    }
+    if (!updated) {
+      throw new NotFoundException("Menu item not found");
+    }
+
+    return updated;
+  }
+
+  @Post("menu/:id/enable")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async enableMenuItem(@Param("id") id: string) {
+    const ok = await this.appRepository.setMenuItemActiveState(id, true);
+    if (!ok) {
+      throw new NotFoundException("Menu item not found");
+    }
+
+    return { success: true };
+  }
+
+  @Post("menu/:id/disable")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async disableMenuItem(@Param("id") id: string) {
+    const ok = await this.appRepository.setMenuItemActiveState(id, false);
+    if (!ok) {
+      throw new NotFoundException("Menu item not found");
+    }
+
+    return { success: true };
+  }
+
+  @Delete("menu/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async deleteMenuItem(@Param("id") id: string) {
+    const ok = await this.appRepository.deleteMenuItem(id);
+    if (!ok) {
+      throw new NotFoundException("Menu item not found");
+    }
+    return { success: true };
+  }
+
+  @Post("orders")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async createOrder(@Body() payload: CreateOrderRequest) {
+    const parsed = createOrderRequestSchema.parse(payload);
+    let created;
+    try {
+      created = await this.appRepository.createOrder(parsed);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Order creation failed");
+    }
+    await this.realtimeGateway.emit(socketEvents.orderNew, created.order);
+    await this.realtimeGateway.emit(socketEvents.inventoryUpdate, created.inventory);
+    return created.order;
+  }
+
+  @Patch("orders/:id")
+  @Roles("admin", "chef")
+  @RequiresPermissions("orders:update")
+  @RequiresModule("kitchen")
+  async updateOrder(@Param("id") id: string, @Body() payload: UpdateOrderRequest): Promise<Order> {
+    let updatedOrder;
+    try {
+      updatedOrder = await this.appRepository.updateOrder(id, payload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Order update failed");
+    }
+    if (!updatedOrder) {
+      throw new NotFoundException("Order not found");
+    }
+
+    await this.realtimeGateway.emit(socketEvents.orderUpdate, updatedOrder);
+    return updatedOrder;
+  }
+
+  @Post("orders/:id/void")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("orders:void")
+  @RequiresModule("kitchen")
+  async voidOrder(
+    @Param("id") id: string,
+    @Body() payload: VoidOrderRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<VoidOrderResponse> {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    let result;
+    try {
+      result = await this.appRepository.voidOrder(id, payload, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Order void failed");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Order not found");
+    }
+
+    await this.realtimeGateway.emit(socketEvents.orderUpdate, result.order);
+    const publicData = await this.appRepository.getPublicData();
+    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    const inventory = await this.appRepository.listInventoryItems();
+    await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
+    this.auditLogService.log("order.void", {
+      actorStaffId,
+      targetId: id,
+      details: { reason: payload.reason },
+    });
+
+    return result;
+  }
+
+  @Post("tables/:id/pay")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async closeTable(
+    @Param("id") id: string,
+    @Body() payload: CloseTableRequest,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const closePayload = closeTableRequestSchema.parse({
+      method: payload?.method ?? "cash",
+      paidAmount: payload?.paidAmount,
+      discountAmount: payload?.discountAmount,
+      surchargeAmount: payload?.surchargeAmount,
+      gatewayReference: payload?.gatewayReference,
+      paymentStatus: payload?.paymentStatus,
+      notes: payload?.notes,
+    });
+
+    let result;
+    try {
+      result = await this.appRepository.closeTable(id, closePayload, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Close table failed");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+
+    const publicData = await this.appRepository.getPublicData();
+    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    this.auditLogService.log("table.close", {
+      actorStaffId,
+      targetId: id,
+      details: {
+        paymentId: result.payment.id,
+        total: result.payment.total,
+        method: result.payment.method,
+      },
+    });
+    return result;
+  }
+
+  @Post("tables/:id/split-bill")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async splitBill(@Param("id") id: string, @Body() payload: SplitBillRequest, @Req() request: AuthenticatedRequest) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const splitPayload = splitBillRequestSchema.parse(payload);
+    let result;
+    try {
+      result = await this.appRepository.splitBill(id, splitPayload, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid split bill request");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+
+    if (result.persisted) {
+      const publicData = await this.appRepository.getPublicData();
+      await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+      this.auditLogService.log("table.split.persisted", {
+        actorStaffId,
+        targetId: id,
+        details: {
+          people: result.people,
+          total: result.total,
+          payments: result.payments?.length ?? 0,
+        },
+      });
+    }
+
+    return result;
+  }
+
+  @Post("tables/:id/split-pay/:shareIndex")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async markShareAsPaid(
+    @Param("id") id: string,
+    @Param("shareIndex") shareIndex: string,
+    @Body() payload: MarkShareAsPaidRequest,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const shareIndexNum = parseInt(shareIndex, 10);
+    if (isNaN(shareIndexNum) || shareIndexNum < 0) {
+      throw new BadRequestException("Invalid share index");
+    }
+
+    let result;
+    try {
+      result = await this.appRepository.markShareAsPaid(id, shareIndexNum, payload, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid mark share as paid request");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+
+    const publicData = await this.appRepository.getPublicData();
+    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    this.auditLogService.log("table.split.share_paid", {
+      actorStaffId,
+      targetId: id,
+      details: {
+        shareIndex: shareIndexNum,
+        paymentId: result.payment.id,
+        allSharesPaid: result.allSharesPaid,
+      },
+    });
+
+    return result;
+  }
+
+  @Get("tables/:id/payment-status")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async getTablePaymentStatus(@Param("id") id: string) {
+    const result = await this.appRepository.getTablePaymentStatus(id);
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+    return result;
+  }
+
+  @Post("tables/:id/pay-items")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async paySelectedItems(@Param("id") id: string, @Body() payload: PaySelectedItemsRequest, @Req() request: AuthenticatedRequest) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const payPayload = paySelectedItemsRequestSchema.parse(payload);
+    let result;
+    try {
+      result = await this.appRepository.paySelectedItems(id, payPayload, actorStaffId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid pay items request");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+
+    const publicData = await this.appRepository.getPublicData();
+    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    this.auditLogService.log("table.pay_items", {
+      actorStaffId,
+      targetId: id,
+      details: {
+        paymentId: result.payment.id,
+        total: result.payment.total,
+        itemsCount: result.paidItems.length,
+      },
+    });
+
+    return result;
+  }
+
+  @Post("tables/:id/transfer")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async transferTable(@Param("id") id: string, @Body() payload: TransferTableRequest) {
+    const transferPayload = transferTableRequestSchema.parse(payload);
+
+    let result;
+    try {
+      result = await this.appRepository.transferTable(id, transferPayload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Transfer failed");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Source or target table not found");
+    }
+
+    const publicData = await this.appRepository.getPublicData();
+    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    this.auditLogService.log("table.transfer", {
+      targetId: id,
+      details: {
+        targetTableId: result.targetTableId,
+        movedOrders: result.movedOrders,
+      },
+    });
+    return result;
+  }
+
+  @Get("health")
+  @Public()
+  health() {
+    return { status: "ok" };
+  }
+
+  @Post("self-order/tables/:id/qr/rotate")
+  @Roles("admin")
+  @RequiresModule("self_order_qr")
+  async rotateSelfOrderQr(@Param("id") id: string): Promise<SelfOrderSessionRotateResponse> {
+    try {
+      const rotated = await this.appRepository.rotateSelfOrderSessionForTable(id);
+      if (!rotated) {
+        throw new NotFoundException("Table not found");
+      }
+      return rotated;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Self order disabled for tenant");
+      }
+      throw error;
+    }
+  }
+
+  // ─── Loyalty Points ─────────────────────────────────────────────────────
+
+  @Get("loyalty/:customerId")
+  @Roles("admin", "waiter")
+  @RequiresModule("loyalty_points")
+  async getLoyaltyBalance(@Param("customerId") customerId: string): Promise<LoyaltyBalance> {
+    return this.appRepository.getLoyaltyBalance(customerId);
+  }
+
+  @Post("loyalty/earn")
+  @Roles("admin")
+  @RequiresModule("loyalty_points")
+  async earnLoyaltyPoints(@Body() payload: LoyaltyEarnRequest): Promise<LoyaltyTransaction> {
+    const parsed = loyaltyEarnRequestSchema.parse(payload);
+    return this.appRepository.earnLoyaltyPoints(parsed.customerId, parsed.points, parsed.orderId, parsed.notes);
+  }
+
+  @Post("loyalty/redeem")
+  @Roles("admin", "waiter")
+  @RequiresModule("loyalty_points")
+  async redeemLoyaltyPoints(@Body() payload: LoyaltyRedeemRequest): Promise<LoyaltyTransaction> {
+    const parsed = loyaltyRedeemRequestSchema.parse(payload);
+    return this.appRepository.redeemLoyaltyPoints(parsed.customerId, parsed.points, parsed.orderId);
+  }
+
+  @Get("loyalty/:customerId/transactions")
+  @Roles("admin", "waiter")
+  @RequiresModule("loyalty_points")
+  async listLoyaltyTransactions(
+    @Param("customerId") customerId: string,
+    @Query("limit") limit?: string,
+  ): Promise<LoyaltyTransaction[]> {
+    return this.appRepository.listLoyaltyTransactions(customerId, limit ? Number(limit) : 50);
+  }
+
+  // ─── Coupons ──────────────────────────────────────────────────────────
+
+  @Post("coupons")
+  @Roles("admin")
+  async createCoupon(@Body() payload: CouponCreateRequest) {
+    const parsed = couponCreateRequestSchema.parse(payload);
+    const id = `coup_${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const now = new Date().toISOString();
+    const coupon = { id, ...parsed, usedCount: 0, isActive: true, createdAt: now };
+    // Store in memory for now (production would use DB)
+    return coupon;
+  }
+
+  @Post("coupons/validate")
+  @Roles("admin", "waiter")
+  async validateCoupon(@Body() payload: CouponValidateRequest) {
+    const parsed = couponValidateRequestSchema.parse(payload);
+    // For now return a simple validation response
+    return { valid: false, coupon: null, discount: 0, error: 'Coupon system not yet fully implemented' } as CouponValidateResponse;
+  }
+
+  @Get("public/:tenantSlug/self-order/session")
+  @Public()
+  @RequiresModule("self_order_qr")
+  async resolveSelfOrderSession(
+    @Param("tenantSlug") tenantSlug: string,
+    @Query("token") token?: string,
+  ): Promise<SelfOrderResolveResponse> {
+    if (!token || token.trim().length < 12) {
+      throw new BadRequestException("Missing or invalid self-order token");
+    }
+
+    try {
+      return await this.appRepository.resolveSelfOrderSessionByToken(token.trim(), tenantSlug);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Self order disabled for tenant");
+      }
+      if (error instanceof Error && (error.message.includes("not found") || error.message.includes("expired"))) {
+        throw new NotFoundException("Self order session not found");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Self order session invalid");
+    }
+  }
+
+  @Post("public/:tenantSlug/self-order/orders")
+  @Public()
+  @RequiresModule("self_order_qr")
+  async createSelfOrder(
+    @Param("tenantSlug") tenantSlug: string,
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: SelfOrderCreateRequest,
+  ): Promise<SelfOrderCreateResponse> {
+    const parsed = selfOrderCreateRequestSchema.parse(payload);
+    try {
+      const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+      if (!tenant) {
+        throw new NotFoundException("Tenant not found");
+      }
+
+      const consumerUserId = await this.resolveConsumerUserId(request, tenant.id);
+      const config = await this.appRepository.getConsumerAccountsConfig(tenant.id);
+      if (config.requireAccountForSelfOrder && !consumerUserId) {
+        throw new ForbiddenException("Consumer account required for self order");
+      }
+
+      return await this.appRepository.createSelfOrder(tenantSlug, parsed, consumerUserId ?? undefined);
+    } catch (error) {
+      if (
+        error instanceof ForbiddenException ||
+        error instanceof UnauthorizedException ||
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Self order disabled for tenant");
+      }
+      if (error instanceof Error && (error.message.includes("not found") || error.message.includes("expired"))) {
+        throw new NotFoundException("Self order session not found");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Self order create failed");
+    }
+  }
+
+  @Post("public/:tenantSlug/reservations")
+  @Public()
+  @RequiresModule("reservations")
+  async createPublicReservation(
+    @Param("tenantSlug") tenantSlug: string,
+    @Body() payload: ReservationCreateRequest,
+  ): Promise<Reservation> {
+    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    if (!tenant) {
+      throw new NotFoundException("Tenant not found");
+    }
+
+    const parsed = reservationCreateRequestSchema.parse({
+      ...payload,
+      source: "online",
+    });
+
+    try {
+      return await this.appRepository.createReservation(parsed);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Reservation create failed");
+    }
+  }
+
+  @Post("public/:tenantSlug/takeaway/orders")
+  @Public()
+  @RequiresModule("public_takeaway")
+  async createPublicTakeawayOrder(
+    @Param("tenantSlug") tenantSlug: string,
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: PublicTakeawayCreateRequest,
+  ): Promise<PublicTakeawayCreateResponse> {
+    const parsed = publicTakeawayCreateRequestSchema.parse(payload);
+
+    try {
+      const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+      if (!tenant) {
+        throw new NotFoundException("Tenant not found");
+      }
+
+      const consumerUserId = await this.resolveConsumerUserId(request, tenant.id);
+      const config = await this.appRepository.getConsumerAccountsConfig(tenant.id);
+      if (config.requireAccountForTakeaway && !consumerUserId) {
+        throw new ForbiddenException("Consumer account required for takeaway");
+      }
+
+      return await this.appRepository.createPublicTakeawayOrder(tenantSlug, parsed, consumerUserId ?? undefined);
+    } catch (error) {
+      if (
+        error instanceof ForbiddenException ||
+        error instanceof UnauthorizedException ||
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Public takeaway disabled for tenant");
+      }
+      if (error instanceof Error && error.message.includes("not found")) {
+        throw new NotFoundException("Public takeaway tenant not found");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Public takeaway create failed");
+    }
+  }
+
+  @Post("public/:tenantSlug/group-orders")
+  @Public()
+  @RequiresModule("public_group_order")
+  async createPublicGroupOrderSession(
+    @Param("tenantSlug") tenantSlug: string,
+    @Body() payload: GroupOrderCreateSessionRequest,
+  ): Promise<GroupOrderCreateSessionResponse> {
+    const parsed = groupOrderCreateSessionRequestSchema.parse(payload);
+    try {
+      const created = await this.appRepository.createPublicGroupOrderSession(tenantSlug, parsed);
+      await this.realtimeGateway.emitToRoom(`groupOrder:${created.session.id}`, socketEvents.groupOrderJoined, {
+        session: created.session,
+        participant: created.participant,
+      });
+      return created;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Public group order disabled for tenant");
+      }
+      if (error instanceof Error && error.message.includes("not found")) {
+        throw new NotFoundException("Public group order tenant not found");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Public group order create failed");
+    }
+  }
+
+  @Post("public/:tenantSlug/group-orders/:joinCode/join")
+  @Public()
+  @RequiresModule("public_group_order")
+  async joinPublicGroupOrderSession(
+    @Param("tenantSlug") tenantSlug: string,
+    @Param("joinCode") joinCode: string,
+    @Body() payload: GroupOrderJoinSessionRequest,
+  ): Promise<GroupOrderJoinSessionResponse> {
+    const parsed = groupOrderJoinSessionRequestSchema.parse(payload);
+    try {
+      const joined = await this.appRepository.joinPublicGroupOrderSession(tenantSlug, joinCode, parsed);
+      await this.realtimeGateway.emitToRoom(`groupOrder:${joined.session.id}`, socketEvents.groupOrderJoined, {
+        session: joined.session,
+        participant: joined.participant,
+      });
+      return joined;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Public group order disabled for tenant");
+      }
+      if (error instanceof Error && (error.message.includes("not found") || error.message.includes("expired"))) {
+        throw new NotFoundException("Group order session not available");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Group order join failed");
+    }
+  }
+
+  @Patch("public/:tenantSlug/group-orders/:sessionId/cart")
+  @Public()
+  @RequiresModule("public_group_order")
+  async patchPublicGroupOrderCart(
+    @Param("tenantSlug") tenantSlug: string,
+    @Param("sessionId") sessionId: string,
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: GroupOrderPatchCartRequest,
+  ): Promise<GroupOrderPatchCartResponse> {
+    const parsed = groupOrderPatchCartRequestSchema.parse(payload);
+    const joinCode = String(request.headers["x-group-order-code"] ?? "").trim().toLowerCase();
+    const participantToken = String(request.headers["x-group-order-token"] ?? "").trim();
+    if (!joinCode || !participantToken) {
+      throw new UnauthorizedException("Missing group order session credentials");
+    }
+    try {
+      const updated = await this.appRepository.patchPublicGroupOrderCart(
+        tenantSlug,
+        sessionId,
+        joinCode,
+        participantToken,
+        parsed,
+      );
+      await this.realtimeGateway.emitToRoom(`groupOrder:${sessionId}`, socketEvents.groupOrderCartUpdated, {
+        session: updated.session,
+        byParticipantId: updated.session.participants.find((entry) => entry.lastSeenAt === updated.session.updatedAt)?.id ?? "",
+        reconciled: updated.reconciled,
+      });
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("authorized")) {
+        throw new UnauthorizedException("Invalid group order participant token");
+      }
+      if (error instanceof Error && (error.message.includes("not found") || error.message.includes("expired"))) {
+        throw new NotFoundException("Group order session not available");
+      }
+      if (error instanceof Error && error.message.includes("conflict")) {
+        throw new ConflictException("Group order cart version conflict");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Group order cart update failed");
+    }
+  }
+
+  @Post("public/:tenantSlug/group-orders/:sessionId/submit")
+  @Public()
+  @RequiresModule("public_group_order")
+  async submitPublicGroupOrder(
+    @Param("tenantSlug") tenantSlug: string,
+    @Param("sessionId") sessionId: string,
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: GroupOrderSubmitRequest,
+  ): Promise<GroupOrderSubmitResponse> {
+    const parsed = groupOrderSubmitRequestSchema.parse(payload);
+    const joinCode = String(request.headers["x-group-order-code"] ?? "").trim().toLowerCase();
+    const participantToken = String(request.headers["x-group-order-token"] ?? "").trim();
+    if (!joinCode || !participantToken) {
+      throw new UnauthorizedException("Missing group order session credentials");
+    }
+    try {
+      const submitted = await this.appRepository.submitPublicGroupOrder(
+        tenantSlug,
+        sessionId,
+        joinCode,
+        participantToken,
+        parsed,
+      );
+      await this.realtimeGateway.emitToRoom(`groupOrder:${sessionId}`, socketEvents.groupOrderSubmitted, submitted);
+      return submitted;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("Only master")) {
+        throw new ForbiddenException("Only master can submit group order");
+      }
+      if (error instanceof Error && error.message.includes("conflict")) {
+        throw new ConflictException("Group order submit version conflict");
+      }
+      if (error instanceof Error && error.message.includes("not found")) {
+        throw new NotFoundException("Group order session not available");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Group order submit failed");
+    }
+  }
+
+  @Get("public/:tenantSlug/takeaway/orders/:orderId/track")
+  @Public()
+  @RequiresModule("public_takeaway")
+  async trackPublicTakeawayOrder(
+    @Param("tenantSlug") tenantSlug: string,
+    @Param("orderId") orderId: string,
+    @Query("token") token?: string,
+  ): Promise<PublicTakeawayTrackingResponse> {
+    if (!token || token.trim().length < 12) {
+      throw new BadRequestException("Missing or invalid tracking token");
+    }
+
+    try {
+      const payload = await this.appRepository.getPublicTakeawayTracking(tenantSlug, orderId, token.trim());
+      return publicTakeawayTrackingResponseSchema.parse(payload);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("disabled")) {
+        throw new ForbiddenException("Public takeaway disabled for tenant");
+      }
+      if (error instanceof Error && (error.message.includes("not found") || error.message.includes("invalid") || error.message.includes("expired"))) {
+        throw new NotFoundException("Takeaway tracking not available");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Takeaway tracking failed");
+    }
+  }
+
+  @Post("public/:tenantSlug/funnel/events")
+  @Public()
+  async trackPublicFunnelEvent(
+    @Param("tenantSlug") tenantSlug: string,
+    @Body() payload: PublicFunnelEventRequest,
+  ): Promise<PublicFunnelEventResponse> {
+    const parsed = publicFunnelEventRequestSchema.parse(payload);
+    await this.appRepository.trackPublicFunnelEvent(tenantSlug, parsed);
+    return publicFunnelEventResponseSchema.parse({ success: true });
+  }
+
+  // ─── QZ Tray Signing Endpoint ────────────────────────────────────────────
+  // Signs requests for QZ Tray message signing (silent printing).
+  // The certificate must be served as a static file from /signing/digital-certificate.txt
+
+  @Get("sign")
+  @Public()
+  async signQzRequest(@Query("request") request: string): Promise<string> {
+    if (!request) {
+      throw new BadRequestException("Missing 'request' query parameter");
+    }
+
+    const fs = await import("fs");
+    const path = await import("path");
+    const crypto = await import("crypto");
+
+    const keyPath = path.join(process.cwd(), "public", "signing", "private-key.pem");
+
+    let privateKey: string;
+    try {
+      privateKey = fs.readFileSync(keyPath, "utf-8");
+    } catch {
+      throw new NotFoundException("Signing key not found. Run: openssl req -x509 -newkey rsa:2048 -keyout private-key.pem -out certificate.txt -days 365 -nodes -subj '/CN=GustoPOS'");
+    }
+
+    const sign = crypto.createSign("SHA512");
+    sign.update(request);
+    sign.end();
+
+    const signature = sign.sign(privateKey, "base64");
+    return signature;
+  }
+
+  // ─── BOM Prepare & Stock ──────────────────────────────────────────────
+
+  @Post("bom/:id/prepare")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async prepareBom(@Param("id") id: string, @Body() payload: { quantity: number }) {
+    if (!payload.quantity || payload.quantity <= 0) {
+      throw new BadRequestException("Quantity must be positive");
+    }
+    try {
+      return await this.appRepository.prepareBom(id, payload.quantity);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
+  }
+
+  @Get("bom/stock")
+  @Roles("admin", "chef", "waiter")
+  @RequiresModule("inventory")
+  async getBomStock() {
+    return this.appRepository.getBomStock();
+  }
+
+  @Patch("bom/:id/pre-batched")
+  @Roles("admin")
+  @RequiresModule("inventory")
+  async updateBomPreBatched(@Param("id") id: string, @Body() payload: { isPreBatched: boolean }) {
+    await this.appRepository.updateBomPreBatched(id, payload.isPreBatched);
+    return { success: true };
+  }
+
+  // ─── Food Cost Matrix ─────────────────────────────────────────────────
+
+  @Get("food-cost-matrix")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async getFoodCostMatrix() {
+    return this.appRepository.getFoodCostMatrix();
+  }
+
+  @Patch("food-cost-matrix/cell")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async updateFoodCostMatrixCell(
+    @Body() body: { menuItemId: string; ingredientId: string; quantity: number; unit: string },
+  ) {
+    await this.appRepository.updateFoodCostMatrixCell(
+      body.menuItemId,
+      body.ingredientId,
+      body.quantity,
+      body.unit,
+    );
+    return { success: true };
+  }
+
+  @Post("food-cost-matrix/import")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async importFoodCostMatrix(
+    @Body() body: { rows: Array<{ ingredientName: string; menuItemName: string; quantity: number; unit: string }> },
+  ) {
+    return this.appRepository.importFoodCostMatrix(body.rows);
+  }
+
+  @Post("food-cost-matrix/import-full")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async importFoodCostFull(
+    @Body() body: {
+      ingredientCosts: Array<{ name: string; costPerKg: number; costPerPiece: number; gramsPerPortion: number; piecesPerPortion: number }>;
+      recipeRows: Array<{ ingredientName: string; menuItemName: string; quantity: number; unit: string }>;
+    },
+  ) {
+    return this.appRepository.importFoodCostFull(body.ingredientCosts, body.recipeRows);
+  }
+
+  @Post("food-cost-matrix/import-xlsx")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async importFoodCostXlsx(
+    @Body() body: { xlsxBase64: string },
+  ) {
+    if (!body.xlsxBase64) {
+      throw new BadRequestException("xlsxBase64 is required");
+    }
+    const buffer = Buffer.from(body.xlsxBase64, 'base64');
+    return this.appRepository.importFromXlsx(buffer);
+  }
+}
