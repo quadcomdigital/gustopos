@@ -28,7 +28,7 @@ interface BomTabProps {
   loading?: boolean;
   onRefresh?: () => Promise<void>;
   onCreate?: (payload: BomCreateRequest) => Promise<void>;
-  onUpdate?: (id: string, payload: { name?: string; unit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean }) => Promise<void>;
+  onUpdate?: (id: string, payload: { name?: string; unit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean; isPreBatched?: number }) => Promise<void>;
   onReplaceComponents?: (id: string, payload: { components: Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
   onAddComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }) => Promise<void>;
   onRemoveComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom'; componentId: string }) => Promise<void>;
@@ -56,6 +56,7 @@ export default function BomTab({
   const [bomEditCategoryId, setBomEditCategoryId] = useState('');
   const [bomEditUnit, setBomEditUnit] = useState('kg');
   const [bomEditYield, setBomEditYield] = useState('1');
+  const [bomEditPreBatched, setBomEditPreBatched] = useState(0);
 
   const [newBomName, setNewBomName] = useState('');
   const [newBomCategoryId, setNewBomCategoryId] = useState('');
@@ -132,6 +133,7 @@ export default function BomTab({
     setBomEditCategoryId(selectedBom.categoryId ?? '');
     setBomEditUnit(selectedBom.unit);
     setBomEditYield(String(selectedBom.yieldQuantity));
+    setBomEditPreBatched(selectedBom.isPreBatched ?? 0);
   }, [selectedBom]);
 
   const addCreateComponent = () => {
@@ -473,11 +475,16 @@ export default function BomTab({
                     <span className="text-xs font-medium text-secondary">€{costPerUnit.toFixed(2)}/{item.unit}</span>
                   </td>
                   <td className="px-6 py-4">
-                    {item.isActive ? (
-                      <StatusPill label="Attivo" tone="success" />
-                    ) : (
-                      <StatusPill label="Disattivo" tone="neutral" />
-                    )}
+                    <div className="flex flex-col gap-1">
+                      {item.isActive ? (
+                        <StatusPill label="Attivo" tone="success" />
+                      ) : (
+                        <StatusPill label="Disattivo" tone="neutral" />
+                      )}
+                      {item.isPreBatched === 1 && (
+                        <StatusPill label={`Stock: ${item.stockQuantity}`} tone="info" />
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2">
@@ -560,6 +567,23 @@ export default function BomTab({
                     label=""
                   />
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2 mt-2">
+                <label className="text-sm font-medium">Pre-preparata</label>
+                <input
+                  type="checkbox"
+                  checked={bomEditPreBatched === 1}
+                  onChange={(e) => {
+                    const newVal = e.target.checked ? 1 : 0;
+                    setBomEditPreBatched(newVal);
+                    if (selectedBom) void onUpdate?.(selectedBom.id, { isPreBatched: newVal });
+                  }}
+                  className="w-4 h-4"
+                />
+                <span className="text-xs text-gray-500">
+                  Abilita stock separato per questa preparazione
+                </span>
               </div>
 
               <div className="flex items-center gap-2">
