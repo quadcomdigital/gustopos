@@ -1399,6 +1399,17 @@ export const bomRemoveComponentRequestSchema = z.object({
   componentId: z.string().min(1),
 });
 
+export const prepareBomSchema = z.object({
+  quantity: z.number().positive(),
+});
+
+export const bomStockItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  stockQuantity: z.number(),
+  unit: z.string(),
+});
+
 export const menuItemAddRecipeComponentRequestSchema = z.object({
   componentType: bomComponentTypeSchema,
   componentId: z.string().min(1),
@@ -1954,6 +1965,8 @@ export type CouponValidateRequest = z.infer<typeof couponValidateRequestSchema>;
 export type CouponValidateResponse = z.infer<typeof couponValidateResponseSchema>;
 export type BomAddComponentRequest = z.infer<typeof bomAddComponentRequestSchema>;
 export type BomRemoveComponentRequest = z.infer<typeof bomRemoveComponentRequestSchema>;
+export type PrepareBom = z.infer<typeof prepareBomSchema>;
+export type BomStockItem = z.infer<typeof bomStockItemSchema>;
 export type MenuItemAddRecipeComponentRequest = z.infer<typeof menuItemAddRecipeComponentRequestSchema>;
 export type MenuItemRemoveRecipeComponentRequest = z.infer<typeof menuItemRemoveRecipeComponentRequestSchema>;
 
