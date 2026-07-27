@@ -1,0 +1,1 @@
+ALTER TABLE "menu_items" ADD COLUMN "is_active" integer DEFAULT 1 NOT NULL;

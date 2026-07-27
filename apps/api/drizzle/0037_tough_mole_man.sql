@@ -1,0 +1,1 @@
+ALTER TABLE "bom_items" ADD COLUMN "is_container" integer DEFAULT 0 NOT NULL;
