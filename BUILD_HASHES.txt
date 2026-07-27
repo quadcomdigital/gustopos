@@ -1,0 +1,15 @@
+# GustoPOS Phase B + Phase C audit fingerprint
+# Generated: 2026-07-26T23:58:12Z
+# Files: post-pm2-restart, build phash=vite-ready in 404ms
+
+0a61560a487534eccc20b0833e45c811c87d0167ca3887ab50f798b8126e2e9a  apps/web/src/components/print/PrintBridgesPanel.tsx
+210cbb71a7e97533db1bfbc419f19b25ecaecd071d2ea47f2535069a85dd3875  apps/web/src/components/print/BridgeCard.tsx
+cfc93b96d0e44534ad7aedbeb767e77bd892b0d9c1484c26206bf0dc076a4d87  apps/web/src/components/print/BindBridgeMappingModal.tsx
+ef31ca0547b01714e12e258ed83aa6f5c2de0fe6425def9a3ca51b36d0e25365  apps/web/src/components/print/ClaimedAreasModal.tsx
+0ad842347c2a101141f4a9d9113460d0acb08355d6db9382bc4ce87097d8d5ef  apps/web/src/components/SettingsView.tsx
+656b63691ec69684d167bcf61c7308c838d4613268a9a2eeaad4540e488bc887  apps/web/src/store/app-store.ts
+df57cc954330d1d725cc3457e3b151fcc90518efdcd38a821e142639797bc585  apps/api/src/app.controller.ts
+fe0ceafb8f073250344f52ec856dd791271483c9bab3d0bea701c8e063fdb3c1  apps/api/src/repository/app.repository.ts
+69131eb7b688fe6c63cf1494f4a79b216a710e4f4c1bb7b16c63f9649193b2a5  apps/api/src/db/schema.ts
+36621b7e38c1d2119d4a550e473b5542ebf851b9b20ed36098e26f1db06c4c20  packages/shared/src/contracts.ts
+37f2683160a97f3726d27858c790edb61bb9a08db0573b122dbcc5df61144d21  packages/shared/src/events.ts
