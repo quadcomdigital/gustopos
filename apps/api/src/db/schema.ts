@@ -874,3 +874,47 @@ export const prepItems = pgTable("prep_items", {
   index("prep_items_ingredient_idx").on(t.ingredientId),
 ]);
 
+
+// =================================================================
+// Print bridges (PR-5 Option A re-add).
+// Reconstruction of pgTable definitions that were previously stripped.
+// Source-of-truth shapes match WIP at wip-snapshot-pr-decomp and
+// migrations 0050/0052/0053. Keeps print_jobs.bridge_id FK valid.
+// =================================================================
+export const printBridges = pgTable(
+  "print_bridges",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    name: text("name").notNull(),
+    host: text("host"),
+    version: text("version"),
+    status: text("status").notNull().default("active"),
+    areas: text("areas").notNull().default("[]"),
+    printers: text("printers").notNull().default("[]"),
+    mappings: text("mappings").notNull().default("[]"),
+    claimedAreas: text("claimed_areas").notNull().default("[]"),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("print_bridges_tenant_idx").on(table.tenantId),
+    index("print_bridges_status_idx").on(table.status),
+  ],
+);
+
+export const printBridgeOnboardingSecrets = pgTable("print_bridge_onboarding_secrets", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  secretHash: text("secret_hash").notNull(),
+  suggestedBridgeId: text("suggested_bridge_id").notNull(),
+  boundBridgeId: text("bound_bridge_id"),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdByStaffId: text("created_by_staff_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("print_bridge_onboarding_secrets_tenant_idx").on(t.tenantId, t.revokedAt),
+  uniqueIndex("print_bridge_onboarding_secrets_hash_unique_idx").on(t.secretHash),
+]);
