@@ -1,0 +1,1 @@
+-- 0047: placeholder no-op (original file was lost in disruptive session; journal+snapshot kept for chain stability)

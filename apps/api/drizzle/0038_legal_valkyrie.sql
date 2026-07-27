@@ -1,0 +1,1 @@
+ALTER TABLE "menu_items" ADD COLUMN "default_container_id" text;

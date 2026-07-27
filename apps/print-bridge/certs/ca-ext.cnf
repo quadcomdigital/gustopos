@@ -1,0 +1,16 @@
+[req]
+distinguished_name = req_dn
+x509_extensions = v3_ca
+prompt = no
+
+[req_dn]
+C = IT
+ST = Rome
+L = Rome
+O = GustoPOS
+CN = GustoPOS CA
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash

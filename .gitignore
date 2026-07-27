@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local-only artifacts (added at the "complete stack" squash):
+/.opencode/
+/.mimocode/
+/anydesk.deb
+/BUILD_HASHES.txt
+/PLAN-*.md

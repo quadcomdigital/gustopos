@@ -1,0 +1,1139 @@
+import type { Ingredient, Category, IngredientCreateRequest, IngredientUpdateRequest } from '@gustopos/shared';
+import { AlertTriangle, RotateCcw, ToggleRight, ToggleLeft, Eye, Search, ChevronUp, ChevronDown, ChevronRight, Plus, Trash2, Package, ChefHat } from 'lucide-react';
+import { Fragment, useMemo, useState, useEffect, useCallback } from 'react';
+import Button from '../../shared/ui/atoms/Button';
+import Skeleton from '../../shared/ui/atoms/Skeleton';
+import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
+import StatusPill from '../../shared/ui/atoms/StatusPill';
+import Modal from '../../shared/ui/molecules/Modal';
+import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
+import SectionHeader from '../../shared/ui/molecules/SectionHeader';
+import UnitSelect from '../../shared/ui/molecules/UnitSelect';
+import { useScopedCategories } from './useInventoryShared';
+import InlineCategoryPicker from './InlineCategoryPicker';
+import StockMovementsDrawer from './StockMovementsDrawer';
+import { useAppStore } from '../../store/app-store';
+import { useDebounce } from '../../hooks/useDebounce';
+import { required, minLength, positiveNumber, validNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
+import { useConfirm } from '../../shared/ui/hooks/useConfirm';
+import ConfirmDialog from '../ConfirmDialog';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
+
+interface IngredientsTabProps {
+  inventory: Ingredient[];
+  categories: Category[];
+  loading?: boolean;
+  onRefresh?: () => Promise<void>;
+  onCreate?: (payload: IngredientCreateRequest) => Promise<void>;
+  onUpdate?: (id: string, payload: IngredientUpdateRequest) => Promise<void>;
+  onDelete?: (id: string) => Promise<void>;
+  onAdjust?: (id: string, payload: { quantity: number; notes?: string }) => Promise<void>;
+  onCreateCategory?: (payload: { name: string; scope: 'ingredient' | 'bom' | 'menu'; printAreas: Array<'kitchen' | 'bar' | 'cashier'> }) => Promise<void>;
+  onFetchMovements?: (id: string) => Promise<{ movements: any[] }>;
+  onCreateVariant?: (ingredientId: string) => void;
+}
+
+export default function IngredientsTab({
+  inventory,
+  categories,
+  loading = false,
+  onRefresh,
+  onCreate,
+  onUpdate,
+  onDelete,
+  onAdjust,
+  onCreateCategory,
+  onFetchMovements,
+  onCreateVariant,
+}: IngredientsTabProps) {
+  const enabledModules = useAppStore((s) => s.enabledModules);
+  const isSuppliersEnabled = enabledModules.includes('purchasing_suppliers');
+  const { confirm, requestConfirm, handleConfirm, handleCancel } = useConfirm();
+  const [selectedIngredientId, setSelectedIngredientId] = useState<string>('');
+  const [ingredientEditName, setIngredientEditName] = useState('');
+  const [ingredientEditCategoryId, setIngredientEditCategoryId] = useState('');
+  const [ingredientEditQty, setIngredientEditQty] = useState('0');
+  const [ingredientEditUnit, setIngredientEditUnit] = useState('kg');
+  const [ingredientEditThreshold, setIngredientEditThreshold] = useState('0');
+  const [ingredientEditUnitCost, setIngredientEditUnitCost] = useState('0');
+  const [ingredientEditSalePrice, setIngredientEditSalePrice] = useState('');
+  const [newIngredientName, setNewIngredientName] = useState('');
+  const [newIngredientCategoryId, setNewIngredientCategoryId] = useState('');
+  const [newIngredientQty, setNewIngredientQty] = useState('0');
+  const [newIngredientUnit, setNewIngredientUnit] = useState('kg');
+  const [newIngredientThreshold, setNewIngredientThreshold] = useState('0');
+  const [newIngredientUnitCost, setNewIngredientUnitCost] = useState('0');
+  const [newIngredientSalePrice, setNewIngredientSalePrice] = useState('');
+  const [newIngredientIsContainer, setNewIngredientIsContainer] = useState(false);
+  const [ingredientEditIsContainer, setIngredientEditIsContainer] = useState(false);
+  const [filterCategoryId, setFilterCategoryId] = useState('');
+  const [filterLowStock, setFilterLowStock] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearch = useDebounce(searchQuery, 250);
+  type SortKey = 'name' | 'quantity' | 'status';
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortAsc, setSortAsc] = useState(true);
+  const [createErrors, setCreateErrors] = useState<ValidationErrors>({});
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [adjustTargetId, setAdjustTargetId] = useState('');
+  const [adjustDelta, setAdjustDelta] = useState('0');
+  const [adjustNotes, setAdjustNotes] = useState('');
+  const [movementsIngredientId, setMovementsIngredientId] = useState('');
+  const [movements, setMovements] = useState<any[]>([]);
+  const [movementsLoading, setMovementsLoading] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [editErrors, setEditErrors] = useState<ValidationErrors>({});
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (id: string) => {
+    setExpandedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectItem = (id: string) => {
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedItems.size === filteredInventory.length) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(filteredInventory.map((i) => i.id)));
+    }
+  };
+
+  const bulkDeactivate = async () => {
+    if (!onUpdate) return;
+    for (const id of selectedItems) {
+      await onUpdate(id, { isActive: false });
+    }
+    setSelectedItems(new Set());
+    void onRefresh?.();
+  };
+
+  const bulkDelete = async () => {
+    if (!onDelete) return;
+    requestConfirm(`Eliminare ${selectedItems.size} ingrediente/i?`, async () => {
+      for (const id of selectedItems) {
+        await onDelete(id);
+      }
+      setSelectedItems(new Set());
+      void onRefresh?.();
+    });
+  };
+
+  const ingredientCategories = useScopedCategories(categories, 'ingredient');
+
+  const lowStockCount = useMemo(
+    () => inventory.filter((i) => i.quantity <= i.minThreshold).length,
+    [inventory],
+  );
+
+  const filteredInventory = useMemo(() => {
+    let result = filterCategoryId
+      ? inventory.filter((i) => i.categoryId === filterCategoryId)
+      : inventory;
+    if (filterLowStock) {
+      result = result.filter((i) => i.quantity <= i.minThreshold);
+    }
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.trim().toLowerCase();
+      result = result.filter((i) => i.name.toLowerCase().includes(q));
+    }
+    result.sort((a, b) => {
+      const dir = sortAsc ? 1 : -1;
+      if (sortKey === 'name') return a.name.localeCompare(b.name) * dir;
+      if (sortKey === 'quantity') return (a.quantity - b.quantity) * dir;
+      return (Number(a.isActive) - Number(b.isActive)) * dir;
+    });
+    return result;
+  }, [inventory, filterCategoryId, filterLowStock, debouncedSearch, sortKey, sortAsc]);
+
+  const chipOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of inventory) {
+      const catId = item.categoryId ?? '__none__';
+      counts.set(catId, (counts.get(catId) ?? 0) + 1);
+    }
+    return [
+      { value: '', label: 'Tutte', badge: inventory.length },
+      ...ingredientCategories.map((c) => ({
+        value: c.id,
+        label: c.name,
+        badge: counts.get(c.id) ?? 0,
+      })),
+    ];
+  }, [inventory, ingredientCategories]);
+
+  const selectedIngredient = useMemo(
+    () => inventory.find((item) => item.id === selectedIngredientId) ?? null,
+    [inventory, selectedIngredientId],
+  );
+
+  const editModalDirty = useMemo(() => {
+    if (!selectedIngredient) return false;
+    return (
+      ingredientEditName.trim() !== selectedIngredient.name
+      || ingredientEditCategoryId !== (selectedIngredient.categoryId ?? '')
+      || ingredientEditQty !== String(selectedIngredient.quantity)
+      || ingredientEditUnit !== selectedIngredient.unit
+      || ingredientEditThreshold !== String(selectedIngredient.minThreshold)
+      || ingredientEditUnitCost !== String(selectedIngredient.unitCost ?? 0)
+      || ingredientEditSalePrice !== (selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '')
+      || ingredientEditIsContainer !== (selectedIngredient.isContainer === 1)
+    );
+  }, [
+    selectedIngredient,
+    ingredientEditName,
+    ingredientEditCategoryId,
+    ingredientEditQty,
+    ingredientEditUnit,
+    ingredientEditThreshold,
+    ingredientEditUnitCost,
+    ingredientEditSalePrice,
+    ingredientEditIsContainer,
+  ]);
+
+  useEffect(() => {
+    if (!selectedIngredientId) return;
+    if (!inventory.some((item) => item.id === selectedIngredientId)) {
+      setSelectedIngredientId('');
+    }
+  }, [inventory, selectedIngredientId]);
+
+  useEffect(() => {
+    if (!selectedIngredient) return;
+    setIngredientEditName(selectedIngredient.name);
+    setIngredientEditCategoryId(selectedIngredient.categoryId ?? '');
+    setIngredientEditQty(String(selectedIngredient.quantity));
+    setIngredientEditUnit(selectedIngredient.unit);
+    setIngredientEditThreshold(String(selectedIngredient.minThreshold));
+    setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));
+    setIngredientEditSalePrice(selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '');
+    setIngredientEditIsContainer(selectedIngredient.isContainer === 1);
+  }, [selectedIngredient]);
+
+  // Keyboard navigation
+  const listRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const handler = (e: KeyboardEvent) => {
+      // Skip if inside an input/textarea/select or modal
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.closest('[role="dialog"]')) return;
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        e.preventDefault();
+        const list = filteredInventory;
+        const currentIdx = list.findIndex((i) => i.id === selectedIngredientId);
+        const nextIdx = currentIdx < list.length - 1 ? currentIdx + 1 : 0;
+        setSelectedIngredientId(list[nextIdx]?.id ?? '');
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
+        e.preventDefault();
+        const list = filteredInventory;
+        const currentIdx = list.findIndex((i) => i.id === selectedIngredientId);
+        const prevIdx = currentIdx > 0 ? currentIdx - 1 : list.length - 1;
+        setSelectedIngredientId(list[prevIdx]?.id ?? '');
+      } else if (e.key === 'Enter' && selectedIngredientId) {
+        e.preventDefault();
+        // Open edit modal for selected item
+      } else if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        setShowCreateModal(true);
+      }
+    };
+    node.addEventListener('keydown', handler);
+    return () => node.removeEventListener('keydown', handler);
+  }, [filteredInventory, selectedIngredientId]);
+
+  const validateCreateForm = (): ValidationErrors => {
+    const errors: ValidationErrors = {};
+    errors.name = required(newIngredientName, 'Nome') ?? minLength(newIngredientName, 2, 'Nome');
+    errors.qty = validNumber(newIngredientQty);
+    errors.threshold = validNumber(newIngredientThreshold);
+    errors.unitCost = validNumber(newIngredientUnitCost);
+    errors.salePrice = validNumber(newIngredientSalePrice);
+    return errors;
+  };
+
+  const createIngredient = async (): Promise<boolean> => {
+    if (!onCreate) return false;
+    const errors = validateCreateForm();
+    setCreateErrors(errors);
+    const hasError = Object.values(errors).some(Boolean);
+    if (hasError) return false;
+
+    const name = newIngredientName.trim();
+    const quantity = Number(newIngredientQty);
+    const minThreshold = Number(newIngredientThreshold);
+    const unitCost = Number(newIngredientUnitCost);
+
+    try {
+      await onCreate({
+        name,
+        quantity,
+        unit: newIngredientUnit,
+        minThreshold,
+        categoryId: newIngredientCategoryId || undefined,
+        unitCost,
+        salePrice: newIngredientSalePrice ? Number(newIngredientSalePrice) : null,
+        isContainer: newIngredientIsContainer ? 1 : 0,
+      });
+      setNewIngredientName('');
+      setNewIngredientQty('0');
+      setNewIngredientThreshold('0');
+      setNewIngredientUnitCost('0');
+      setNewIngredientSalePrice('');
+      setNewIngredientCategoryId('');
+      setNewIngredientIsContainer(false);
+      setCreateErrors({});
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const saveIngredient = async () => {
+    if (!selectedIngredient || !onUpdate) return;
+    setSaveError('');
+    const errors: ValidationErrors = {};
+    errors.name = required(ingredientEditName, 'Nome') ?? minLength(ingredientEditName, 2, 'Nome');
+    errors.qty = validNumber(ingredientEditQty);
+    errors.threshold = validNumber(ingredientEditThreshold);
+    errors.unitCost = validNumber(ingredientEditUnitCost);
+    errors.salePrice = validNumber(ingredientEditSalePrice);
+    setEditErrors(errors);
+    if (Object.values(errors).some(Boolean)) return;
+
+    const quantity = Number(ingredientEditQty);
+    const minThreshold = Number(ingredientEditThreshold);
+    const unitCost = Number(ingredientEditUnitCost);
+
+    try {
+      await onUpdate(selectedIngredient.id, {
+        name: ingredientEditName.trim(),
+        quantity,
+        unit: ingredientEditUnit,
+        minThreshold,
+        categoryId: ingredientEditCategoryId || undefined,
+        unitCost,
+        salePrice: ingredientEditSalePrice ? Number(ingredientEditSalePrice) : null,
+        isContainer: ingredientEditIsContainer ? 1 : 0,
+      });
+      void onRefresh?.();
+    } catch (err) {
+      setSaveError(`Errore salvataggio: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const toggleIngredientActive = async (ingredient: Ingredient) => {
+    if (!onUpdate) return;
+    await onUpdate(ingredient.id, { isActive: !ingredient.isActive });
+    void onRefresh?.();
+  };
+
+  const toggleContainer = async (ingredient: Ingredient) => {
+    if (!onUpdate) return;
+    await onUpdate(ingredient.id, { isContainer: ingredient.isContainer === 1 ? 0 : 1 });
+    void onRefresh?.();
+  };
+
+  const removeIngredient = async (id: string) => {
+    if (!onDelete) return;
+    requestConfirm('Eliminare questo ingrediente?', async () => {
+      await onDelete(id);
+      if (selectedIngredientId === id) {
+        setSelectedIngredientId('');
+      }
+      void onRefresh?.();
+    });
+  };
+
+  const submitAdjust = async () => {
+    if (!adjustTargetId || !onAdjust) return;
+    const delta = Number(adjustDelta);
+    if (!Number.isFinite(delta) || delta === 0) return;
+    await onAdjust(adjustTargetId, {
+      quantity: delta,
+      notes: adjustNotes || undefined,
+    });
+    setAdjustTargetId('');
+    setAdjustDelta('0');
+    setAdjustNotes('');
+    void onRefresh?.();
+  };
+
+  const openMovements = async (id: string) => {
+    setMovements([]);
+    setMovementsIngredientId(id);
+    if (!onFetchMovements) return;
+    setMovementsLoading(true);
+    try {
+      const res = await onFetchMovements(id);
+      setMovements(res.movements);
+    } catch {
+      setMovements([]);
+    } finally {
+      setMovementsLoading(false);
+    }
+  };
+
+  const movementsIngredient = useMemo(
+    () => inventory.find((i) => i.id === movementsIngredientId),
+    [inventory, movementsIngredientId],
+  );
+
+  return (
+    <div ref={listRef} className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px]" tabIndex={-1}>
+      <SectionHeader
+        title="Ingredienti Singoli"
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => setShowCreateModal(true)}>
+              <Plus size={14} />
+              Nuovo ingrediente
+            </Button>
+            <Button variant="secondary" onClick={() => void onRefresh?.()}>
+              <RotateCcw size={14} />
+              Refresh
+            </Button>
+          </>
+        }
+      />
+
+      {lowStockCount > 0 && (
+        <button
+          onClick={() => setFilterLowStock((prev) => !prev)}
+          className={`w-full border-b px-4 py-3 flex items-center gap-2 sm:gap-3 shrink-0 text-left transition-colors ${
+            filterLowStock
+              ? 'bg-amber-100 border-amber-400'
+              : 'bg-amber-50 border-amber-300 hover:bg-amber-100'
+          }`}
+        >
+          <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
+            <AlertTriangle size={18} className="text-amber-600" />
+          </div>
+          <div>
+            <p className="text-xs sm:text-sm font-bold text-amber-800">
+              {lowStockCount} sotto soglia
+              {filterLowStock && <span className="ml-2 text-[10px] uppercase tracking-wider text-amber-600">(filtrato)</span>}
+            </p>
+            <p className="text-[10px] sm:text-xs text-amber-600">
+              {filterLowStock ? 'Clicca per mostrare tutti' : 'Clicca per filtrare'}
+            </p>
+          </div>
+        </button>
+      )}
+
+      {ingredientCategories.length > 0 && (
+        <div className="px-4 py-2 border-b border-border bg-bg/20">
+          <SegmentedChips
+            ariaLabel="Filtra ingredienti per categoria"
+            value={filterCategoryId}
+            onChange={setFilterCategoryId}
+            options={chipOptions}
+            size="sm"
+          />
+        </div>
+      )}
+
+      <div className="px-4 py-2 border-b border-border bg-bg/20">
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Cerca ingrediente..."
+            className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm"
+          />
+        </div>
+      </div>
+
+      {/* Create Modal */}
+      <Modal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        title="Nuovo ingrediente"
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowCreateModal(false)}>
+              Annulla
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void createIngredient().then((ok) => { if (ok) { void onRefresh?.(); setShowCreateModal(false); } })}
+            >
+              Crea ingrediente
+            </Button>
+          </>
+        }
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Nome</label>
+            <input
+              value={newIngredientName}
+              onChange={(e) => setNewIngredientName(e.target.value)}
+              placeholder="Nome ingrediente"
+              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.name)}`}
+            />
+            {createErrors.name && <p className="text-[9px] text-danger mt-0.5">{createErrors.name.message}</p>}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Categoria</label>
+            <SearchableSelect
+              items={ingredientCategories}
+              getLabel={(cat) => cat.name}
+              getValue={(cat) => cat.id}
+              selectedValue={newIngredientCategoryId}
+              onSelect={setNewIngredientCategoryId}
+              placeholder="Seleziona categoria..."
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Quantità</label>
+            <input
+              value={newIngredientQty}
+              onChange={(e) => setNewIngredientQty(e.target.value.replace(/[^0-9.]/g, ''))}
+              placeholder="Quantità"
+              inputMode="decimal"
+              min="0"
+              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.qty)}`}
+            />
+            {createErrors.qty && <p className="text-[9px] text-danger mt-0.5">{createErrors.qty.message}</p>}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Unità</label>
+            <UnitSelect
+              value={newIngredientUnit}
+              onChange={setNewIngredientUnit}
+              placeholder="Seleziona unità..."
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Soglia minima</label>
+            <input
+              value={newIngredientThreshold}
+              onChange={(e) => setNewIngredientThreshold(e.target.value.replace(/[^0-9.]/g, ''))}
+              placeholder="Soglia minima"
+              inputMode="decimal"
+              min="0"
+              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.threshold)}`}
+            />
+            {createErrors.threshold && <p className="text-[9px] text-danger mt-0.5">{createErrors.threshold.message}</p>}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Costo unità (€)</label>
+            <input
+              value={newIngredientUnitCost}
+              onChange={(e) => setNewIngredientUnitCost(e.target.value.replace(/[^0-9.]/g, ''))}
+              placeholder="Costo unità"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.unitCost)}`}
+            />
+            {createErrors.unitCost && <p className="text-[9px] text-danger mt-0.5">{createErrors.unitCost.message}</p>}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Prezzo vendita (€)</label>
+            <input
+              value={newIngredientSalePrice}
+              onChange={(e) => setNewIngredientSalePrice(e.target.value.replace(/[^0-9.]/g, ''))}
+              placeholder="Prezzo vendita"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.salePrice)}`}
+            />
+            {createErrors.salePrice && <p className="text-[9px] text-danger mt-0.5">{createErrors.salePrice.message}</p>}
+          </div>
+
+          <div className="flex items-center">
+            <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={newIngredientIsContainer}
+                onChange={(e) => setNewIngredientIsContainer(e.target.checked)}
+                className="accent-accent"
+              />
+              Contenitore
+            </label>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Bulk Action Bar */}
+      {selectedItems.size > 0 && (
+        <div className="px-4 py-2 border-b border-border bg-accent/10 flex items-center gap-3">
+          <span className="text-xs font-bold text-accent">{selectedItems.size} selezionati</span>
+          <Button variant="secondary" onClick={() => void bulkDeactivate()}>
+            Disattiva
+          </Button>
+          <Button variant="danger" onClick={() => void bulkDelete()}>
+            <Trash2 size={12} className="inline mr-1" />
+            Elimina
+          </Button>
+          <Button variant="secondary" onClick={() => setSelectedItems(new Set())} className="ml-auto">
+            Deseleziona
+          </Button>
+        </div>
+      )}
+
+      {/* Desktop Table */}
+      <div className="hidden md:block overflow-auto flex-1">
+        <table className="w-full text-left border-collapse">
+          <thead className="sticky top-0 z-10">
+            <tr className="bg-bg/50 border-b border-border">
+              <th className="px-3 py-4 w-8">
+                <input
+                  type="checkbox"
+                  checked={filteredInventory.length > 0 && selectedItems.size === filteredInventory.length}
+                  onChange={toggleSelectAll}
+                  className="accent-accent"
+                  aria-label="Seleziona tutti gli ingredienti"
+                />
+              </th>
+              <th className="px-6 py-4 text-[10px] font-bold text-text-muted uppercase tracking-widest w-8"></th>
+              <th
+                className="px-6 py-4 text-[10px] font-bold text-text-muted uppercase tracking-widest cursor-pointer select-none hover:text-secondary transition-colors"
+                onClick={() => { setSortKey('name'); setSortAsc((p) => sortKey === 'name' ? !p : true); }}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Ingrediente
+                  {sortKey === 'name' && (sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+                </span>
+              </th>
+              {isSuppliersEnabled && (
+                <th className="px-6 py-4 text-[10px] font-bold text-text-muted uppercase tracking-widest">Fornitore</th>
+              )}
+              <th
+                className="px-6 py-4 text-[10px] font-bold text-text-muted uppercase tracking-widest cursor-pointer select-none hover:text-secondary transition-colors"
+                onClick={() => { setSortKey('quantity'); setSortAsc((p) => sortKey === 'quantity' ? !p : false); }}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Giacenza
+                  {sortKey === 'quantity' && (sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+                </span>
+              </th>
+              <th
+                className="px-6 py-4 text-[10px] font-bold text-text-muted uppercase tracking-widest cursor-pointer select-none hover:text-secondary transition-colors"
+                onClick={() => { setSortKey('status'); setSortAsc((p) => sortKey === 'status' ? !p : false); }}
+              >
+                <span className="inline-flex items-center gap-1">
+                  Stato
+                  {sortKey === 'status' && (sortAsc ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+                </span>
+              </th>
+              <th className="px-6 py-4 text-[10px] font-bold text-text-muted uppercase tracking-widest text-right">Azioni</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {filteredInventory.length === 0 && (
+              <tr>
+                <td className="px-6 py-8 text-sm text-text-muted text-center" colSpan={isSuppliersEnabled ? 7 : 6}>
+                  {loading ? (
+                    <div className="space-y-2">
+                      {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+                    </div>
+                  ) : (
+                    <EmptyState
+                      icon={<Package size={24} />}
+                      title={searchQuery ? 'Nessun ingrediente corrisponde alla ricerca.' : filterCategoryId ? 'Nessun ingrediente in questa categoria.' : 'Nessun ingrediente configurato.'}
+                      description={!searchQuery && !filterCategoryId ? 'Crea il primo ingrediente per iniziare.' : undefined}
+                    />
+                  )}
+                </td>
+              </tr>
+            )}
+            {filteredInventory.map((item) => {
+              const isLow = item.quantity <= item.minThreshold;
+              const isExpanded = expandedItems.has(item.id);
+              return (
+                <Fragment key={item.id}>
+                  {/* Collapsed row — always visible */}
+                  <tr
+                    onClick={() => toggleExpanded(item.id)}
+                    className={`transition-colors cursor-pointer group ${!item.isActive ? 'opacity-50' : 'hover:bg-bg/30'}`}
+                  >
+                    <td className="px-3 py-4" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedItems.has(item.id)}
+                        onChange={() => toggleSelectItem(item.id)}
+                        className="accent-accent"
+                      />
+                    </td>
+                    <td className="px-3 py-4">
+                      {isExpanded ? (
+                        <ChevronDown size={14} className="text-text-muted" />
+                      ) : (
+                        <ChevronRight size={14} className="text-text-muted" />
+                      )}
+                    </td>
+                    <td className="px-3 py-4">
+                      <p className="font-bold text-secondary text-sm">{item.name}</p>
+                      {item.salePrice != null && (
+                        <p className="text-[10px] text-accent font-bold">€{item.salePrice.toFixed(2)} vendita</p>
+                      )}
+                    </td>
+                    {isSuppliersEnabled && (
+                      <td className="px-6 py-4">
+                        <span className="text-xs font-medium text-text-muted">
+                          {item.supplierName ?? '-'}
+                        </span>
+                        {item.brandName && (
+                          <p className="text-[10px] text-text-muted">{item.brandName}</p>
+                        )}
+                      </td>
+                    )}
+                    <td className="px-6 py-4">
+                      <span className="font-bold text-primary text-sm">{item.quantity}</span>
+                      <span className="text-[10px] text-text-muted ml-1 uppercase font-bold">{item.unit}</span>
+                      <div className="mt-1 w-full bg-bg rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            isLow ? 'bg-danger' : item.quantity <= item.minThreshold * 1.5 ? 'bg-warning' : 'bg-success'
+                          }`}
+                          style={{ width: `${Math.min(100, (item.quantity / (item.minThreshold * 2)) * 100)}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      {isLow ? (
+                        <StatusPill label="Scorta Bassa" tone="pending" />
+                      ) : (
+                        <StatusPill label="Ottimale" tone="success" />
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button variant="secondary" onClick={(e) => { e.stopPropagation(); setAdjustTargetId(item.id); setAdjustDelta('0'); setAdjustNotes(''); }}>
+                          Regola scorta
+                        </Button>
+                        <Button variant="secondary" onClick={(e) => { e.stopPropagation(); onCreateVariant?.(item.id); }}>
+                          <ChefHat size={14} className="inline mr-1" />
+                          Variante
+                        </Button>
+                        <Button variant="secondary" onClick={(e) => { e.stopPropagation(); setSelectedIngredientId(item.id); }}>
+                          Modifica
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+
+                  {/* Expanded details row */}
+                  {isExpanded && (
+                    <tr className="bg-bg/60 border-l-2 border-accent/30">
+                      <td colSpan={isSuppliersEnabled ? 7 : 6} className="px-6 py-4">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div>
+                            <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Soglia</p>
+                            <p className="font-medium text-secondary text-sm">{item.minThreshold} {item.unit}</p>
+                          </div>
+                          <div>
+                            <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Costo</p>
+                            <p className="font-medium text-secondary text-sm">€{(item.unitCost ?? 0).toFixed(2)}</p>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Attivo</p>
+                            <button
+                              onClick={() => void toggleIngredientActive(item)}
+                              className="inline-flex items-center gap-1 text-xs font-bold"
+                              aria-label={`Attivo: ${item.isActive ? 'Si' : 'No'}`}
+                            >
+                              {item.isActive ? (
+                                <ToggleRight size={18} className="text-accent" />
+                              ) : (
+                                <ToggleLeft size={18} className="text-text-muted" />
+                              )}
+                              <span className={item.isActive ? 'text-accent' : 'text-text-muted'}>
+                                {item.isActive ? 'Si' : 'No'}
+                              </span>
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Contenitore</p>
+                            <button
+                              onClick={() => void toggleContainer(item)}
+                              className="inline-flex items-center gap-1 text-xs font-bold"
+                              aria-label={`Contenitore: ${item.isContainer === 1 ? 'Si' : 'No'}`}
+                            >
+                              {item.isContainer === 1 ? (
+                                <ToggleRight size={18} className="text-accent" />
+                              ) : (
+                                <ToggleLeft size={18} className="text-text-muted" />
+                              )}
+                              <span className={item.isContainer === 1 ? 'text-accent' : 'text-text-muted'}>
+                                {item.isContainer === 1 ? 'Si' : 'No'}
+                              </span>
+                            </button>
+                          </div>
+                          <div className="flex gap-2 ml-auto">
+                            <Button variant="secondary" onClick={() => openMovements(item.id)}>
+                              <Eye size={14} className="inline mr-1" />
+                              Movimenti
+                            </Button>
+                            <Button variant="danger" onClick={() => void removeIngredient(item.id)}>
+                              Elimina
+                            </Button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile Cards */}
+      <div className="md:hidden divide-y divide-border overflow-y-auto flex-1">
+        {filteredInventory.length === 0 && (
+          <div className="p-8 text-sm text-text-muted text-center">
+            {loading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+              </div>
+            ) : (
+              <EmptyState
+                icon={<Package size={24} />}
+                title={searchQuery ? 'Nessun ingrediente corrisponde alla ricerca.' : filterCategoryId ? 'Nessun ingrediente in questa categoria.' : 'Nessun ingrediente configurato.'}
+                description={!searchQuery && !filterCategoryId ? 'Crea il primo ingrediente per iniziare.' : undefined}
+              />
+            )}
+          </div>
+        )}
+        {filteredInventory.map((item) => {
+          const isLow = item.quantity <= item.minThreshold;
+          const isExpanded = expandedItems.has(item.id);
+          return (
+            <div key={item.id} className={`${!item.isActive ? 'opacity-50' : ''}`}>
+              {/* Collapsed header — always visible */}
+              <button
+                onClick={() => toggleExpanded(item.id)}
+                className="w-full px-4 py-3 flex items-center justify-between text-left"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {isExpanded ? (
+                    <ChevronDown size={14} className="text-text-muted shrink-0" />
+                  ) : (
+                    <ChevronRight size={14} className="text-text-muted shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="font-bold text-primary text-sm truncate">{item.name}</p>
+                    {item.salePrice != null && (
+                      <p className="text-[9px] text-accent font-bold">€{item.salePrice.toFixed(2)} vendita</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="text-right">
+                    <p className="font-bold text-accent text-sm">{item.quantity} <span className="text-[10px] text-text-muted font-medium">{item.unit}</span></p>
+                    <div className="mt-1 w-full bg-bg rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          isLow ? 'bg-danger' : item.quantity <= item.minThreshold * 1.5 ? 'bg-warning' : 'bg-success'
+                        }`}
+                        style={{ width: `${Math.min(100, (item.quantity / (item.minThreshold * 2)) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                  {isLow ? (
+                    <StatusPill label="Bassa" tone="pending" />
+                  ) : (
+                    <StatusPill label="Ok" tone="success" />
+                  )}
+                </div>
+              </button>
+
+              {/* Expanded details */}
+              {isExpanded && (
+                <div className="px-4 pb-4 space-y-3 border-t border-border/50 border-l-2 border-accent/30 ml-7">
+                  <div className="flex gap-4 pt-3">
+                    <div>
+                      <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Soglia</p>
+                      <p className="font-medium text-secondary text-sm">{item.minThreshold} {item.unit}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Costo</p>
+                      <p className="font-medium text-secondary text-sm">€{(item.unitCost ?? 0).toFixed(2)}</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button variant="secondary" onClick={() => openMovements(item.id)}>
+                      Movimenti
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setAdjustTargetId(item.id);
+                        setAdjustDelta('0');
+                        setAdjustNotes('');
+                      }}
+                    >
+                      Regola scorta
+                    </Button>
+                    <Button variant="secondary" onClick={() => setSelectedIngredientId(item.id)}>
+                      Modifica
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => void toggleIngredientActive(item)}
+                    >
+                      {item.isActive ? (
+                        <ToggleRight size={14} className="text-accent" />
+                      ) : (
+                        <ToggleLeft size={14} className="text-text-muted" />
+                      )}
+                      {item.isActive ? 'Attivo' : 'Inattivo'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Edit Modal */}
+      <Modal
+        open={!!selectedIngredient}
+        onClose={() => { setSelectedIngredientId(''); setSaveError(''); }}
+        title={selectedIngredient ? `Editor: ${selectedIngredient.name}` : ''}
+        size="md"
+        dirty={editModalDirty}
+        footer={
+          <>
+            {saveError && <p className="text-xs text-danger mr-auto">{saveError}</p>}
+            <Button variant="primary" onClick={() => void saveIngredient()}>
+              Salva ingrediente
+            </Button>
+            {selectedIngredient && (
+              <Button variant="danger" onClick={() => void removeIngredient(selectedIngredient.id)}>
+                Elimina
+              </Button>
+            )}
+            <Button variant="secondary" onClick={() => setSelectedIngredientId('')}>
+              Annulla
+            </Button>
+          </>
+        }
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Nome</label>
+            <input
+              value={ingredientEditName}
+              onChange={(e) => setIngredientEditName(e.target.value)}
+              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
+            />
+            {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Quantità</label>
+            <input
+              value={ingredientEditQty}
+              onChange={(e) => setIngredientEditQty(e.target.value.replace(/[^0-9.]/g, ''))}
+              inputMode="decimal"
+              min="0"
+              aria-label="Quantità"
+              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.qty)}`}
+            />
+            {editErrors.qty && <p className="text-[9px] text-danger">{editErrors.qty.message}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Soglia minima</label>
+            <input
+              value={ingredientEditThreshold}
+              onChange={(e) => setIngredientEditThreshold(e.target.value.replace(/[^0-9.]/g, ''))}
+              inputMode="decimal"
+              min="0"
+              aria-label="Soglia minima"
+              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.threshold)}`}
+            />
+            {editErrors.threshold && <p className="text-[9px] text-danger">{editErrors.threshold.message}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Unità di misura</label>
+            <UnitSelect
+              value={ingredientEditUnit}
+              onChange={setIngredientEditUnit}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Costo unità (€)</label>
+            <input
+              value={ingredientEditUnitCost}
+              onChange={(e) => setIngredientEditUnitCost(e.target.value.replace(/[^0-9.]/g, ''))}
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              aria-label="Costo unità"
+              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.unitCost)}`}
+            />
+            {editErrors.unitCost && <p className="text-[9px] text-danger">{editErrors.unitCost.message}</p>}
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Prezzo vendita (€)</label>
+            <input
+              value={ingredientEditSalePrice}
+              onChange={(e) => setIngredientEditSalePrice(e.target.value.replace(/[^0-9.]/g, ''))}
+              placeholder="Opzionale"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              aria-label="Prezzo vendita"
+              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.salePrice)}`}
+            />
+            {editErrors.salePrice && <p className="text-[9px] text-danger">{editErrors.salePrice.message}</p>}
+          </div>
+          <div className="md:col-span-2 flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Categoria</label>
+            <InlineCategoryPicker
+              categories={ingredientCategories}
+              selectedId={ingredientEditCategoryId}
+              onSelect={setIngredientEditCategoryId}
+              onCreate={async (name) => {
+                if (onCreateCategory) await onCreateCategory({ name, scope: 'ingredient', printAreas: ['kitchen'] });
+              }}
+              label=""
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-xs font-bold cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={ingredientEditIsContainer}
+                onChange={(e) => setIngredientEditIsContainer(e.target.checked)}
+                className="accent-accent"
+              />
+              Container
+            </label>
+          </div>
+          <div className="md:col-span-2 flex items-center gap-3 pt-2 border-t border-border">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</label>
+            {selectedIngredient && (
+              <button
+                onClick={() => void toggleIngredientActive(selectedIngredient)}
+                className="inline-flex items-center gap-1 text-xs font-bold"
+              >
+                {selectedIngredient.isActive ? (
+                  <ToggleRight size={20} className="text-accent" />
+                ) : (
+                  <ToggleLeft size={20} className="text-text-muted" />
+                )}
+                <span className={selectedIngredient.isActive ? 'text-accent' : 'text-text-muted'}>
+                  {selectedIngredient.isActive ? 'Attivo' : 'Inattivo'}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      {/* Adjust Stock Modal */}
+      <Modal
+        open={!!adjustTargetId}
+        onClose={() => setAdjustTargetId('')}
+        title="Regolazione manuale stock"
+        size="sm"
+        footer={
+          <>
+            <Button
+              variant="primary"
+              onClick={() => void submitAdjust()}
+              disabled={adjustDelta === '0' || adjustDelta === ''}
+            >
+              Conferma
+            </Button>
+            <Button variant="secondary" onClick={() => setAdjustTargetId('')}>
+              Annulla
+            </Button>
+          </>
+        }
+      >
+        {(() => {
+          const item = inventory.find((i) => i.id === adjustTargetId);
+          if (!item) return null;
+          const delta = Number(adjustDelta) || 0;
+          const newQty = item.quantity + delta;
+          return (
+            <>
+              <div className="rounded-lg bg-bg/50 p-3 flex items-center justify-between">
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">Ingrediente</p>
+                  <p className="text-sm font-bold text-primary">{item.name}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-text-muted">Stock attuale</p>
+                  <p className="text-lg font-bold text-primary">{item.quantity} <span className="text-xs text-text-muted">{item.unit}</span></p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Quantità (positivo=+, negativo=−)</label>
+                <input
+                  value={adjustDelta}
+                  onChange={(e) => setAdjustDelta(e.target.value.replace(/[^0-9.\-]/g, ''))}
+                  className="px-3 py-2 rounded border border-border text-sm"
+                  type="number"
+                  step="any"
+                  autoFocus
+                />
+              </div>
+              {delta !== 0 && (
+                <div className="rounded-lg border border-border p-2 flex items-center justify-between text-sm">
+                  <span className="text-text-muted">{item.quantity} {item.unit}</span>
+                  <span className="font-bold">{delta > 0 ? '+' : ''}{delta}</span>
+                  <span className="font-bold text-primary">= {newQty} {item.unit}</span>
+                </div>
+              )}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Note (opzionale)</label>
+                <input
+                  value={adjustNotes}
+                  onChange={(e) => setAdjustNotes(e.target.value)}
+                  className="px-3 py-2 rounded border border-border text-sm"
+                />
+              </div>
+            </>
+          );
+        })()}
+      </Modal>
+
+      {/* Stock Movements Drawer */}
+      <StockMovementsDrawer
+        open={!!movementsIngredientId}
+        ingredientName={movementsIngredient?.name ?? ''}
+        movements={movements}
+        onClose={() => setMovementsIngredientId('')}
+      />
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        open={!!confirm}
+        title="Conferma"
+        message={confirm?.message ?? ''}
+        onConfirm={handleConfirm}
+        onCancel={handleCancel}
+      />
+    </div>
+  );
+}

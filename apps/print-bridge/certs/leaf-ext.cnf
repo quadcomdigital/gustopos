@@ -1,0 +1,6 @@
+[v3_leaf]
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = DNS:test.franksbar.it
+subjectKeyIdentifier = hash

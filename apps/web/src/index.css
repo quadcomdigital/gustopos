@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI", Helvetica, Arial, sans-serif;
+  
+  --color-primary: #1a365d;
+  --color-secondary: #2d3748;
+  --color-accent: #3182ce;
+  --color-success: #38a169;
+  --color-warning: #dd6b20;
+  --color-danger: #e53e3e;
+  --color-bg: #f7fafc;
+  --color-border: #e2e8f0;
+  --color-text-main: #2d3748;
+  --color-text-muted: #718096;
+}
+
+@layer base {
+  body {
+    @apply antialiased text-text-main bg-bg;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .panel-card {
+    @apply bg-white rounded-xl border border-border p-5 shadow-sm;
+  }
+  
+  .badge {
+    @apply px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wide;
+  }
+  
+  .badge-warning { @apply bg-orange-100 text-orange-800; }
+  .badge-success { @apply bg-green-100 text-green-800; }
+  .badge-danger { @apply bg-red-100 text-red-800; }
+  .badge-info { @apply bg-blue-100 text-blue-800; }
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
