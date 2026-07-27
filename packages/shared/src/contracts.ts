@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const staffRoleSchema = z.enum(["admin", "waiter", "chef"]);
+// (no-op marker)
 export const moduleKeySchema = z.enum([
   "kitchen",
   "inventory",
@@ -82,12 +83,13 @@ export const ingredientAdjustRequestSchema = z.object({
   quantity: z.number(),
   notes: z.string().optional(),
 });
-
 export const stockMovementTypeSchema = z.enum([
   "order_deduction",
   "order_reversal",
   "manual_adjustment",
   "purchase_receipt",
+  "prep_consumption",
+  "prep_restoration",
 ]);
 
 export const stockMovementSchema = z.object({
@@ -177,7 +179,7 @@ export const categoryModifierPoolUpdateRequestSchema = z.object({
   options: z.array(categoryModifierPoolOptionSchema.omit({ id: true })).optional(),
 });
 
-export const bomComponentTypeSchema = z.enum(["ingredient", "bom"]);
+export const bomComponentTypeSchema = z.enum(["ingredient", "bom", "prep"]);
 
 export const bomComponentSchema = z.object({
   id: z.string(),
@@ -2074,3 +2076,57 @@ export const foodCostAnalysisSchema = z.object({
 });
 
 export type FoodCostAnalysis = z.infer<typeof foodCostAnalysisSchema>;
+
+// =================================================================
+// Inventory pivot: prep_items + unit_conversions + prep flows (PR-4)
+// =================================================================
+export const prepItemSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  ingredientId: z.string(),
+  name: z.string(),
+  quantityPerUnit: z.number(),
+  unit: z.string(),
+  stockQuantity: z.number().nonnegative().default(0),
+  createdAt: z.string(),
+});
+
+export type PrepItem = z.infer<typeof prepItemSchema>;
+
+export const prepItemUpdateRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  quantityPerUnit: z.number().positive().optional(),
+  unit: z.string().min(1).optional(),
+});
+
+export type PrepItemUpdateRequest = z.infer<typeof prepItemUpdateRequestSchema>;
+
+export const unitConversionSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  inventoryId: z.string(),
+  fromUnit: z.string(),
+  toUnit: z.string(),
+  factor: z.number(),
+  createdAt: z.string(),
+});
+
+export type UnitConversion = z.infer<typeof unitConversionSchema>;
+
+export const unitConversionCreateRequestSchema = z.object({
+  fromUnit: z.string().min(1),
+  toUnit: z.string().min(1),
+  factor: z.number().positive(),
+});
+
+export type UnitConversionCreateRequest = z.infer<typeof unitConversionCreateRequestSchema>;
+
+export const preparePrepItemResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  previousStock: z.number(),
+  newStock: z.number(),
+  ingredientDeducted: z.number(),
+});
+
+export type PreparePrepItemResponse = z.infer<typeof preparePrepItemResponseSchema>;
