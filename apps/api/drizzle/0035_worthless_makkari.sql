@@ -1,0 +1,1 @@
+ALTER TABLE "supplier_ingredients" ADD COLUMN "brand_name" text;

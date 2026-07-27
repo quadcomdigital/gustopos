@@ -1,0 +1,1 @@
+ALTER TABLE "inventory" ADD COLUMN "is_container" integer DEFAULT 0 NOT NULL;

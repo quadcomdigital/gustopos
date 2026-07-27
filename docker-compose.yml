@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: gustopos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gustopos
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - gustopos_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: gustopos-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - gustopos_redis_data:/data
+
+volumes:
+  gustopos_postgres_data:
+  gustopos_redis_data:

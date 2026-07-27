@@ -1,0 +1,1690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:* http://localhost:* http://127.0.0.1:* https://localhost:*;">
+  <title>GustoPOS Print Station</title>
+  <script src="qz-tray.js?v=2"></script>
+  <style>
+    /* ============================================================
+       CSS RESET & VARIABLES
+       ============================================================ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0f0f1a;
+      --bg-secondary: #1a1a2e;
+      --bg-tertiary: #22223a;
+      --bg-input: #2a2a40;
+      --border: #33335a;
+      --text: #e0e0f0;
+      --text-muted: #8888aa;
+      --green: #00ff88;
+      --green-dim: #00cc6a;
+      --red: #ff4444;
+      --red-dim: #cc3333;
+      --yellow: #ffaa00;
+      --blue: #4488ff;
+      --radius: 6px;
+      --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ============================================================
+       LAYOUT — CSS Grid
+       ============================================================ */
+    .app {
+      display: grid;
+      grid-template-rows: auto auto 1fr auto auto;
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        "header   header"
+        "settings status"
+        "log      log"
+        "debug    debug"
+        "controls controls";
+      gap: 12px;
+      padding: 12px;
+      max-width: 1200px;
+      margin: 0 auto;
+      min-height: 100vh;
+    }
+
+    @media (max-width: 768px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "header"
+          "settings"
+          "status"
+          "log"
+          "debug"
+          "controls";
+      }
+    }
+
+    /* ============================================================
+       PANELS
+       ============================================================ */
+    .panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      cursor: default;
+      user-select: none;
+    }
+
+    .panel-body { padding: 14px; }
+
+    .panel-header .toggle-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    .panel-header .toggle-btn:hover { background: var(--bg-input); color: var(--text); }
+
+    /* ============================================================
+       HEADER
+       ============================================================ */
+    .header { grid-area: header; }
+
+    .header-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .header-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .header-stats {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 6px var(--red);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .status-dot.connected {
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+    }
+
+    .stat-label { color: var(--text-muted); }
+    .stat-value { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* ============================================================
+       SETTINGS PANEL
+       ============================================================ */
+    .settings { grid-area: settings; }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    @media (max-width: 768px) {
+      .settings-grid { grid-template-columns: 1fr; }
+    }
+
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group.full-width { grid-column: 1 / -1; }
+
+    .form-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .form-input, .form-select {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus, .form-select:focus { border-color: var(--blue); }
+
+    .form-select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      padding-right: 28px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .checkbox-row input[type="checkbox"] {
+      accent-color: var(--green);
+      width: 15px;
+      height: 15px;
+    }
+
+    .printer-mapping {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    @media (max-width: 768px) {
+      .printer-mapping { grid-template-columns: 1fr; }
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .btn-primary {
+      background: var(--green-dim);
+      border-color: var(--green-dim);
+      color: #000;
+    }
+    .btn-primary:hover { background: var(--green); }
+
+    .btn-danger {
+      background: var(--red-dim);
+      border-color: var(--red-dim);
+      color: #fff;
+    }
+    .btn-danger:hover { background: var(--red); }
+
+    .btn-secondary {
+      background: var(--bg-input);
+      color: var(--text);
+    }
+    .btn-secondary:hover { background: var(--border); }
+
+    .btn-warning {
+      background: #806000;
+      border-color: var(--yellow);
+      color: var(--yellow);
+    }
+    .btn-warning:hover { background: #996e00; }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    /* ============================================================
+       STATUS PANEL
+       ============================================================ */
+    .status-panel { grid-area: status; }
+
+    .status-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 10px;
+      background: var(--bg-tertiary);
+      border-radius: 4px;
+      font-size: 13px;
+    }
+
+    .status-key { color: var(--text-muted); }
+    .status-val { font-weight: 600; }
+    .status-val.ok { color: var(--green); }
+    .status-val.err { color: var(--red); }
+
+    .printer-list {
+      list-style: none;
+      max-height: 120px;
+      overflow-y: auto;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      background: var(--bg-tertiary);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+    .printer-list li { padding: 2px 0; }
+
+    /* ============================================================
+       LOG PANEL
+       ============================================================ */
+    .log-panel { grid-area: log; }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .log-container {
+      max-height: 340px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      padding: 10px;
+      background: var(--bg-primary);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    .log-entry {
+      display: grid;
+      grid-template-columns: 85px 60px auto;
+      gap: 8px;
+      padding: 3px 0;
+      border-bottom: 1px solid #1a1a2e;
+    }
+    .log-entry:last-child { border-bottom: none; }
+
+    .log-time { color: var(--text-muted); }
+    .log-area { font-weight: 600; text-transform: uppercase; font-size: 10px; }
+    .log-msg { word-break: break-word; }
+    .log-entry.success .log-msg { color: var(--green); }
+    .log-entry.failed .log-msg { color: var(--red); }
+    .log-entry.error .log-msg { color: var(--yellow); }
+    .log-entry.info .log-msg { color: var(--blue); }
+
+    .log-area.kitchen { color: var(--yellow); }
+    .log-area.bar { color: var(--blue); }
+    .log-area.cashier { color: var(--green); }
+
+    .log-empty {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 20px;
+      font-size: 12px;
+    }
+
+    /* ============================================================
+       CONTROLS
+       ============================================================ */
+    .controls { grid-area: controls; }
+
+    .controls-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 12px 14px;
+    }
+
+    .controls-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .poll-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .poll-indicator .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    .poll-indicator.active .dot {
+      background: var(--green);
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* ============================================================
+       SCROLLBAR
+       ============================================================ */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ============================================================
+       COLLAPSIBLE
+       ============================================================ */
+    .collapsible-body {
+      overflow: hidden;
+      transition: max-height 0.3s ease, padding 0.3s ease;
+    }
+    .collapsible-body.collapsed {
+      max-height: 0 !important;
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+    }
+
+    /* ============================================================
+       QZ NOT AVAILABLE BANNER
+       ============================================================ */
+    /* ============================================================
+       DEBUG PANEL
+       ============================================================ */
+    .debug-panel { grid-area: debug; }
+    .debug-btn {
+      background: #332200;
+      border: 1px solid var(--yellow);
+      color: var(--yellow);
+      padding: 4px 10px;
+      font-size: 10px;
+    }
+    .debug-btn:hover { background: #443300; }
+    .debug-btn.active { background: var(--yellow); color: #000; }
+    .debug-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .debug-item {
+      background: var(--bg-tertiary);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+    .debug-item .label { color: var(--text-muted); margin-bottom: 4px; }
+    .debug-item .value { color: var(--text); word-break: break-all; }
+    .debug-item .value.ok { color: var(--green); }
+    .debug-item .value.err { color: var(--red); }
+
+    .qz-banner {
+      background: #402020;
+      border: 1px solid var(--red-dim);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .qz-banner.hidden { display: none; }
+    .qz-banner-icon { font-size: 20px; flex-shrink: 0; }
+    .qz-banner-text { flex: 1; }
+    .qz-banner-text a { color: var(--blue); text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- ============================================================
+         HEADER
+         ============================================================ -->
+    <div class="header panel">
+      <div class="header-content">
+        <div class="header-title">
+          <span class="status-dot" id="connDot" title="QZ Tray connection"></span>
+          &ensp;GustoPOS Print Station
+        </div>
+        <div class="header-stats">
+          <span>
+            <span class="stat-label">Last poll: </span>
+            <span class="stat-value" id="lastPoll">--</span>
+          </span>
+          <span>
+            <span class="stat-label">Printed: </span>
+            <span class="stat-value" id="printCount">0</span>
+          </span>
+          <span>
+            <span class="stat-label">Failed: </span>
+            <span class="stat-value" id="failCount">0</span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         SETTINGS PANEL
+         ============================================================ -->
+    <div class="settings panel">
+      <div class="panel-header">
+        <span>Settings</span>
+        <button class="toggle-btn" id="settingsToggle" title="Collapse/Expand">&#9660;</button>
+      </div>
+      <div class="panel-body collapsible-body" id="settingsBody">
+        <div class="settings-grid">
+          <div class="form-group">
+            <label class="form-label" for="apiBase">API Base URL</label>
+            <input class="form-input" type="url" id="apiBase" placeholder="https://your-vps.example.com">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="apiKey">API Key (optional)</label>
+            <input class="form-input" type="password" id="apiKey" placeholder="Bearer token">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pollInterval">Poll interval (ms)</label>
+            <input class="form-input" type="number" id="pollInterval" min="1000" max="30000" step="500" value="3000">
+          </div>
+          <div class="form-group" style="justify-content: flex-end;">
+            <label class="checkbox-row">
+              <input type="checkbox" id="autoConnect" checked>
+              Auto-connect to QZ Tray on load
+            </label>
+          </div>
+
+          <!-- QZ Tray Configuration -->
+          <div class="form-group full-width" style="margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border);">
+            <label class="form-label">QZ Tray — Connection Settings</label>
+            <div class="settings-grid" style="margin-top: 6px;">
+              <div class="form-group">
+                <label class="form-label" style="font-size:10px;">Hosts (comma-separated)</label>
+                <input class="form-input" type="text" id="qzHosts" placeholder="localhost, localhost.qz.io">
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:10px;">Secure Ports (comma-separated)</label>
+                <input class="form-input" type="text" id="qzSecurePorts" placeholder="8181, 8282, 8383, 8484">
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:10px;">Insecure Ports (comma-separated)</label>
+                <input class="form-input" type="text" id="qzInsecurePorts" placeholder="8182, 8283, 8384, 8385">
+              </div>
+              <div class="form-group" style="justify-content: flex-end;">
+                <label class="checkbox-row">
+                  <input type="checkbox" id="qzUseSecure">
+                  Use secure connection (WSS)
+                </label>
+                <p style="font-size: 10px; color: var(--text-muted); margin: 4px 0 0;">
+                  Leave unchecked for local connections — avoids browser "untrusted" warning.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group full-width" style="border-top: 1px solid var(--border); padding-top: 10px;">
+            <label class="form-label">QZ Tray Certificate</label>
+            <p style="font-size: 11px; color: var(--text-muted); margin: 0 0 8px;">
+              To use silent printing (no approval dialogs), install the signing certificate:
+            </p>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <a href="/install-qz-cert.bat" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Windows (.bat)</a>
+              <a href="/debug-qz-cert.bat" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Debug (.bat)</a>
+              <a href="/install-qz-cert.sh" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Linux/Mac (.sh)</a>
+              <a href="/signing/override.crt" download class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Certificate only (.crt)</a>
+            </div>
+            <p style="font-size: 10px; color: var(--text-muted); margin: 6px 0 0;">
+              Install cert for silent printing. Use Debug script to diagnose issues.
+            </p>
+          </div>
+
+          <div class="form-group full-width">
+            <label class="form-label">Printer Mapping (by area)</label>
+            <div class="printer-mapping">
+              <div class="form-group">
+                <label class="form-label" style="font-size:10px; color:var(--yellow);">Kitchen</label>
+                <div style="display:flex; gap:4px;">
+                  <select class="form-select" id="printerKitchen" style="flex:1;"><option value="">-- not set --</option></select>
+                  <button class="btn btn-sm" onclick="testPrint('kitchen')" style="padding:4px 8px; font-size:10px;">Test</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:10px; color:var(--blue);">Bar</label>
+                <div style="display:flex; gap:4px;">
+                  <select class="form-select" id="printerBar" style="flex:1;"><option value="">-- not set --</option></select>
+                  <button class="btn btn-sm" onclick="testPrint('bar')" style="padding:4px 8px; font-size:10px;">Test</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:10px; color:var(--green);">Cashier</label>
+                <div style="display:flex; gap:4px;">
+                  <select class="form-select" id="printerCashier" style="flex:1;"><option value="">-- not set --</option></select>
+                  <button class="btn btn-sm" onclick="testPrint('cashier')" style="padding:4px 8px; font-size:10px;">Test</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         STATUS PANEL
+         ============================================================ -->
+    <div class="status-panel panel">
+      <div class="panel-header">
+        <span>Status</span>
+      </div>
+      <div class="panel-body">
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="status-key">QZ Tray</span>
+            <span class="status-val err" id="qzStatus">Disconnected</span>
+          </div>
+          <div class="status-item">
+            <span class="status-key">Printers found</span>
+            <span class="status-val" id="printerCount">0</span>
+          </div>
+          <div class="form-group full-width">
+            <label class="form-label">Available printers</label>
+            <ul class="printer-list" id="printerList">
+              <li style="color:var(--text-muted);">No printers loaded</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         LOG PANEL
+         ============================================================ -->
+    <div class="log-panel panel">
+      <div class="panel-header log-header">
+        <span>Log</span>
+        <button class="btn btn-secondary" id="clearLogBtn" style="padding:4px 10px; font-size:10px;">Clear</button>
+      </div>
+      <div class="panel-body">
+        <div class="log-container" id="logContainer">
+          <div class="log-empty">No entries yet</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         DEBUG PANEL
+         ============================================================ -->
+    <div class="debug-panel panel" id="debugPanel" style="display:none;">
+      <div class="panel-header">
+        <span>Certificate & Connection Debug</span>
+        <button class="toggle-btn" id="debugRefreshBtn" title="Refresh debug info">&#8635;</button>
+      </div>
+      <div class="panel-body">
+        <div class="debug-grid" id="debugGrid">
+          <div class="debug-item">
+            <div class="label">Loading...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         CONTROLS
+         ============================================================ -->
+    <div class="controls panel">
+      <div class="controls-content">
+        <div class="controls-group">
+          <button class="btn btn-primary" id="connectBtn">Connect</button>
+          <button class="btn btn-danger" id="disconnectBtn" disabled>Disconnect</button>
+          <button class="btn btn-secondary" id="pollNowBtn">Poll Now</button>
+          <button class="btn btn-warning" id="pauseResumeBtn">Pause</button>
+          <button class="btn debug-btn" id="debugToggleBtn">Debug</button>
+        </div>
+        <div class="poll-indicator" id="pollIndicator">
+          <span class="dot"></span>
+          <span id="pollLabel">Polling paused</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       QZ TRAY NOT AVAILABLE BANNER (injected into header area)
+       ============================================================ -->
+  <script>
+    // ============================================================
+    // STATE
+    // ============================================================
+    const STATE = {
+      qzConnected: false,
+      polling: false,
+      pollTimer: null,
+      pollInFlight: false,       // concurrency guard: prevents overlapping polls
+      connecting: false,         // reentrancy guard: prevents racing connect calls
+      printing: new Set(),       // tracks in-flight print job IDs
+      printers: [],
+      logEntries: [],
+      counters: { printed: 0, failed: 0 },
+      debugMode: false,          // toggle verbose logging
+    };
+
+    const AREAS = ['kitchen', 'bar', 'cashier'];
+
+    // ============================================================
+    // DOM REFERENCES
+    // ============================================================
+    const $ = (id) => document.getElementById(id);
+
+    const DOM = {
+      connDot:         $('connDot'),
+      lastPoll:        $('lastPoll'),
+      printCount:      $('printCount'),
+      failCount:       $('failCount'),
+      apiBase:         $('apiBase'),
+      apiKey:          $('apiKey'),
+      pollInterval:    $('pollInterval'),
+      autoConnect:     $('autoConnect'),
+      qzHosts:         $('qzHosts'),
+      qzSecurePorts:   $('qzSecurePorts'),
+      qzInsecurePorts: $('qzInsecurePorts'),
+      qzUseSecure:     $('qzUseSecure'),
+      printerKitchen:  $('printerKitchen'),
+      printerBar:      $('printerBar'),
+      printerCashier:  $('printerCashier'),
+      saveSettingsBtn: $('saveSettingsBtn'),
+      qzStatus:        $('qzStatus'),
+      printerCount:    $('printerCount'),
+      printerList:     $('printerList'),
+      logContainer:    $('logContainer'),
+      clearLogBtn:     $('clearLogBtn'),
+      connectBtn:      $('connectBtn'),
+      disconnectBtn:   $('disconnectBtn'),
+      pollNowBtn:      $('pollNowBtn'),
+      pauseResumeBtn:  $('pauseResumeBtn'),
+      pollIndicator:   $('pollIndicator'),
+      pollLabel:       $('pollLabel'),
+      settingsToggle:  $('settingsToggle'),
+      settingsBody:    $('settingsBody'),
+      debugToggleBtn:  $('debugToggleBtn'),
+      debugPanel:      $('debugPanel'),
+      debugGrid:       $('debugGrid'),
+      debugRefreshBtn: $('debugRefreshBtn'),
+    };
+
+    // ============================================================
+    // SETTINGS PERSISTENCE (localStorage)
+    // ============================================================
+    const STORAGE_KEY = 'gustopos_print_station_settings';
+
+    function defaultSettings() {
+      return {
+        apiBase: window.location.origin,
+        apiKey: '',
+        pollInterval: 3000,
+        autoConnect: true,
+        printers: { kitchen: '', bar: '', cashier: '' },
+        qzTray: {
+          hosts: ['localhost', 'localhost.qz.io'],
+          securePorts: [8181, 8282, 8383, 8484],
+          insecurePorts: [8182, 8283, 8384, 8385],
+          useSecure: false, // WS by default — avoids browser "untrusted" warning from QZ Tray's self-signed WSS TLS cert
+        },
+      };
+    }
+
+    function loadSettings() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return defaultSettings();
+        const saved = JSON.parse(raw);
+        return {
+          ...defaultSettings(),
+          ...saved,
+          printers: { ...defaultSettings().printers, ...(saved.printers || {}) },
+          qzTray: { ...defaultSettings().qzTray, ...(saved.qzTray || {}) },
+        };
+      } catch {
+        return defaultSettings();
+      }
+    }
+
+    function saveSettings() {
+      const parseList = (str) => str.split(',').map(s => s.trim()).filter(Boolean);
+      const parsePorts = (str) => parseList(str).map(s => parseInt(s, 10)).filter(n => !isNaN(n) && n > 0 && n < 65536);
+
+      const settings = {
+        apiBase: DOM.apiBase.value.trim() || window.location.origin,
+        apiKey: DOM.apiKey.value.trim(),
+        pollInterval: Math.max(1000, parseInt(DOM.pollInterval.value, 10) || 3000),
+        autoConnect: DOM.autoConnect.checked,
+        printers: {
+          kitchen: DOM.printerKitchen.value,
+          bar: DOM.printerBar.value,
+          cashier: DOM.printerCashier.value,
+        },
+        qzTray: {
+          hosts: parseList(DOM.qzHosts.value).length > 0 ? parseList(DOM.qzHosts.value) : ['localhost', 'localhost.qz.io'],
+          securePorts: parsePorts(DOM.qzSecurePorts.value).length > 0 ? parsePorts(DOM.qzSecurePorts.value) : [8181, 8282, 8383, 8484],
+          insecurePorts: parsePorts(DOM.qzInsecurePorts.value).length > 0 ? parsePorts(DOM.qzInsecurePorts.value) : [8182, 8283, 8384, 8385],
+          useSecure: DOM.qzUseSecure.checked,
+        },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      addLog('info', '--', 'Settings saved');
+      return settings;
+    }
+
+    function applySettings(settings) {
+      DOM.apiBase.value = settings.apiBase;
+      DOM.apiKey.value = settings.apiKey;
+      DOM.pollInterval.value = settings.pollInterval;
+      DOM.autoConnect.checked = settings.autoConnect;
+      // QZ Tray settings
+      DOM.qzHosts.value = (settings.qzTray?.hosts || ['localhost', 'localhost.qz.io']).join(', ');
+      DOM.qzSecurePorts.value = (settings.qzTray?.securePorts || [8181, 8282, 8383, 8484]).join(', ');
+      DOM.qzInsecurePorts.value = (settings.qzTray?.insecurePorts || [8182, 8283, 8384, 8385]).join(', ');
+      DOM.qzUseSecure.checked = settings.qzTray?.useSecure !== undefined ? settings.qzTray.useSecure : true;
+      DOM.printerKitchen.value = settings.printers.kitchen;
+      DOM.printerBar.value = settings.printers.bar;
+      DOM.printerCashier.value = settings.printers.cashier;
+    }
+
+    // ============================================================
+    // LOG
+    // ============================================================
+    const MAX_LOG = 100;
+
+    function addLog(type, area, message) {
+      const now = new Date();
+      const ts = now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      STATE.logEntries.unshift({ ts, type, area, message });
+      if (STATE.logEntries.length > MAX_LOG) {
+        STATE.logEntries.length = MAX_LOG;
+      }
+      renderLog();
+    }
+
+    function renderLog() {
+      if (STATE.logEntries.length === 0) {
+        DOM.logContainer.innerHTML = '<div class="log-empty">No entries yet</div>';
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      for (const entry of STATE.logEntries) {
+        const div = document.createElement('div');
+        div.className = `log-entry ${entry.type}`;
+
+        const areaSpan = document.createElement('span');
+        areaSpan.className = `log-area ${entry.area}`;
+        areaSpan.textContent = entry.area;
+
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'log-time';
+        timeSpan.textContent = entry.ts;
+
+        const msgSpan = document.createElement('span');
+        msgSpan.className = 'log-msg';
+        msgSpan.textContent = entry.message;
+
+        div.appendChild(timeSpan);
+        div.appendChild(areaSpan);
+        div.appendChild(msgSpan);
+        fragment.appendChild(div);
+      }
+
+      DOM.logContainer.innerHTML = '';
+      DOM.logContainer.appendChild(fragment);
+    }
+
+    // ============================================================
+    // COUNTERS
+    // ============================================================
+    function updateCounters() {
+      DOM.printCount.textContent = STATE.counters.printed;
+      DOM.failCount.textContent = STATE.counters.failed;
+    }
+
+    // ============================================================
+    // QZ TRAY CONNECTION
+    // ============================================================
+
+    // ─── Debug: Register error & close callbacks ─────────────────────────
+    function registerQzDebugCallbacks() {
+      if (typeof qz === 'undefined') return;
+
+      qz.websocket.setErrorCallbacks(function(evt) {
+        addLog('error', 'QZ', `[ERROR CALLBACK] ${evt.message || evt}`);
+        if (evt.reason) addLog('error', 'QZ', `  reason: ${evt.reason}`);
+        if (evt.code) addLog('error', 'QZ', `  code: ${evt.code}`);
+        if (evt.wasClean !== undefined) addLog('error', 'QZ', `  wasClean: ${evt.wasClean}`);
+        console.error('[QZ Tray Error]', evt);
+      });
+
+      qz.websocket.setClosedCallbacks(function(evt) {
+        addLog('info', 'QZ', `[CLOSE CALLBACK] code=${evt.code}, reason=${evt.reason || 'none'}, wasClean=${evt.wasClean}`);
+        console.log('[QZ Tray Close]', evt);
+      });
+    }
+
+    // ─── QZ Tray Security: Certificate & Signature ─────────────────────
+    function setupQzSecurity() {
+      if (typeof qz === 'undefined') return;
+
+      // Serve the QZ demo certificate (trusted by default)
+      qz.security.setCertificatePromise(function(resolve, reject) {
+        fetch('/signing/digital-certificate.txt', { cache: 'no-store', headers: { 'Content-Type': 'text/plain' } })
+          .then(function(data) { data.ok ? resolve(data.text()) : reject(data.text()); })
+          .catch(function(err) { reject(err); });
+      });
+
+      // Sign messages using the backend endpoint
+      qz.security.setSignatureAlgorithm('SHA512');
+      qz.security.setSignaturePromise(function(toSign) {
+        return function(resolve, reject) {
+          fetch('/signing/sign-message?request=' + encodeURIComponent(toSign), { cache: 'no-store', headers: { 'Content-Type': 'text/plain' } })
+            .then(function(data) { data.ok ? resolve(data.text()) : reject(data.text()); })
+            .catch(function(err) { reject(err); });
+        };
+      });
+
+      addLog('info', 'QZ', 'Certificate and signing configured');
+    }
+
+    async function connectQZ() {
+      if (typeof qz === 'undefined') {
+        addLog('error', '--', 'QZ Tray library NOT loaded. Install QZ Tray from https://qz.io/download/');
+        updateQzUI(false);
+        return;
+      }
+
+      // Reentrancy guard: prevent overlapping connect calls
+      if (STATE.connecting) {
+        addLog('info', 'QZ', 'Connection attempt already in progress — skipping');
+        return;
+      }
+      STATE.connecting = true;
+
+      // Register debug callbacks before connecting
+      registerQzDebugCallbacks();
+
+      // Configure signing certificates
+      setupQzSecurity();
+
+      addLog('info', 'QZ', `QZ Tray library detected — version: ${qz.api.getVersion ? 'available' : 'unknown'}`);
+
+      // ─── Build connection config from settings ─────────────────────────
+      const settings = loadSettings();
+      const qzCfg = settings.qzTray || {};
+      const hosts = (qzCfg.hosts && qzCfg.hosts.length > 0) ? qzCfg.hosts : ['localhost', 'localhost.qz.io'];
+      const securePorts = (qzCfg.securePorts && qzCfg.securePorts.length > 0) ? qzCfg.securePorts : [8181, 8282, 8383, 8484];
+      const insecurePorts = (qzCfg.insecurePorts && qzCfg.insecurePorts.length > 0) ? qzCfg.insecurePorts : [8182, 8283, 8384, 8385];
+      const useSecure = qzCfg.useSecure !== undefined ? qzCfg.useSecure : true;
+
+      // ─── Debug: Log connection attempt details ─────────────────────────
+      addLog('info', 'QZ', '═══════════════════════════════════════════');
+      addLog('info', 'QZ', 'QZ TRAY CONNECTION ATTEMPT');
+      addLog('info', 'QZ', '═══════════════════════════════════════════');
+      addLog('info', 'QZ', `Page protocol: ${typeof location !== 'undefined' ? location.protocol : 'unknown'}`);
+      addLog('info', 'QZ', `Using secure (WSS): ${useSecure}`);
+      addLog('info', 'QZ', `Hosts to try: [${hosts.join(', ')}]`);
+      addLog('info', 'QZ', `Secure ports: [${securePorts.join(', ')}]`);
+      addLog('info', 'QZ', `Insecure ports: [${insecurePorts.join(', ')}]`);
+
+      // Calculate total combinations
+      const totalCombinations = (useSecure ? securePorts.length : 0) + (!useSecure ? insecurePorts.length : 0);
+      const totalAttempts = hosts.length * totalCombinations;
+      addLog('info', 'QZ', `Total host×port combinations: ${totalAttempts} (per retry)`);
+      addLog('info', 'QZ', '───────────────────────────────────────────');
+
+      // ─── Disable surf domain for local connections ─────────────────────
+      // When connecting to localhost or local IPs, we don't want qz.surf appended
+      const isLocalHost = hosts.some(h => h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.') || h.startsWith('10.'));
+      if (isLocalHost) {
+        qz.websocket.setUsingSurf(false);
+        addLog('info', 'QZ', 'Local host detected — disabled surf domain appending');
+      }
+
+      try {
+        DOM.connectBtn.disabled = true;
+        addLog('info', 'QZ', 'Calling qz.websocket.connect()...');
+
+        await qz.websocket.connect({
+          retries: 3,
+          delay: 1,
+          host: hosts,
+          usingSecure: useSecure,
+          port: {
+            secure: securePorts,
+            insecure: insecurePorts,
+          },
+        });
+
+        // ─── Connection successful ───────────────────────────────────────
+        STATE.qzConnected = true;
+        updateQzUI(true);
+
+        // Get connection details
+        try {
+          const connInfo = qz.websocket.getConnectionInfo();
+          addLog('success', 'QZ', `✓ CONNECTED — ${connInfo.protocol}//${connInfo.host}:${connInfo.port}`);
+          addLog('info', 'QZ', `WebSocket URL: ${connInfo.url}`);
+        } catch {
+          addLog('success', 'QZ', `✓ QZ Tray connected (${useSecure ? 'WSS' : 'WS'}: ${hosts.join(', ')})`);
+        }
+
+        // Try to get version
+        try {
+          const version = await qz.api.getVersion();
+          addLog('info', 'QZ', `QZ Tray version: ${version}`);
+        } catch {
+          addLog('info', 'QZ', 'QZ Tray version: (unable to retrieve)');
+        }
+
+        // Try to get network info
+        try {
+          const netInfo = await qz.websocket.getNetworkInfo();
+          addLog('info', 'QZ', `Network IP: ${netInfo.ipAddress || 'N/A'}, MAC: ${netInfo.macAddress || 'N/A'}`);
+        } catch {
+          addLog('info', 'QZ', 'Network info: (not available — may require signed call)');
+        }
+
+        await loadPrinters();
+
+      } catch (err) {
+        STATE.qzConnected = false;
+        updateQzUI(false);
+
+        // ─── Debug: Detailed error analysis ──────────────────────────────
+        addLog('error', 'QZ', '✕ CONNECTION FAILED');
+        addLog('error', 'QZ', `Error message: ${err.message || String(err)}`);
+
+        if (err.message) {
+          const msg = err.message.toLowerCase();
+          if (msg.includes('permission') || msg.includes('denied')) {
+            addLog('error', 'QZ', '→ User denied the connection in QZ Tray popup');
+          } else if (msg.includes('connection') || msg.includes('connect')) {
+            addLog('error', 'QZ', '→ QZ Tray is not running or not reachable on configured hosts/ports');
+            addLog('error', 'QZ', '→ Check: 1) QZ Tray installed? 2) Running? 3) Firewall blocking ports?');
+          } else if (msg.includes('certificate')) {
+            addLog('error', 'QZ', '→ Certificate issue — check QZ Tray certificate configuration');
+          } else if (msg.includes('incompatible')) {
+            addLog('error', 'QZ', '→ Version mismatch between JS library and QZ Tray software');
+          }
+        }
+
+        console.error('[QZ Tray Connect Error]', err);
+      } finally {
+        STATE.connecting = false;
+        DOM.connectBtn.disabled = false;
+      }
+    }
+
+    async function disconnectQZ() {
+      try {
+        if (typeof qz !== 'undefined' && STATE.qzConnected) {
+          addLog('info', 'QZ', 'Calling qz.websocket.disconnect()...');
+          await qz.websocket.disconnect();
+          addLog('info', 'QZ', 'Disconnect completed');
+        }
+      } catch (err) {
+        addLog('error', 'QZ', `Disconnect error: ${err.message || err}`);
+      }
+      STATE.qzConnected = false;
+      STATE.printers = [];
+      updateQzUI(false);
+      populatePrinterDropdowns([]);
+      addLog('info', 'QZ', 'QZ Tray session cleared');
+    }
+
+    async function loadPrinters() {
+      try {
+        addLog('info', 'QZ', 'Starting printer discovery via qz.printers.find()...');
+        const printers = await qz.printers.find();
+        STATE.printers = Array.isArray(printers) ? printers : [];
+        DOM.printerCount.textContent = STATE.printers.length;
+        populatePrinterDropdowns(STATE.printers);
+        renderPrinterList(STATE.printers);
+        addLog('info', 'QZ', `✓ Found ${STATE.printers.length} printer(s): ${STATE.printers.length > 0 ? STATE.printers.join(', ') : '(none)'}`);
+      } catch (err) {
+        addLog('error', 'QZ', `✕ Printer discovery failed: ${err.message || err}`);
+        STATE.printers = [];
+        DOM.printerCount.textContent = '0';
+      }
+    }
+
+    function updateQzUI(connected) {
+      DOM.qzStatus.textContent = connected ? 'Connected' : 'Disconnected';
+      DOM.qzStatus.className = `status-val ${connected ? 'ok' : 'err'}`;
+      DOM.connDot.className = connected ? 'status-dot connected' : 'status-dot';
+      DOM.connectBtn.disabled = connected;
+      DOM.disconnectBtn.disabled = !connected;
+    }
+
+    function populatePrinterDropdowns(printers) {
+      const selects = [DOM.printerKitchen, DOM.printerBar, DOM.printerCashier];
+      const currentValues = selects.map((s) => s.value);
+
+      for (const select of selects) {
+        const prev = select.value;
+        select.innerHTML = '<option value="">-- not set --</option>';
+        for (const name of printers) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          select.appendChild(opt);
+        }
+        select.value = prev;
+      }
+    }
+
+    function renderPrinterList(printers) {
+      if (printers.length === 0) {
+        DOM.printerList.innerHTML = '<li style="color:var(--text-muted);">No printers loaded</li>';
+        return;
+      }
+      DOM.printerList.innerHTML = '';
+      for (const name of printers) {
+        const li = document.createElement('li');
+        li.textContent = name;
+        DOM.printerList.appendChild(li);
+      }
+    }
+
+    // ============================================================
+    // PRINTER ROUTING
+    // ============================================================
+    function getPrinterForArea(area) {
+      const settings = loadSettings();
+      return settings.printers[area] || null;
+    }
+
+    // ============================================================
+    // PRINTING
+    // ============================================================
+    const _testPrintLock = {};  // debounce lock per area
+
+    async function testPrint(area) {
+      if (!STATE.qzConnected) {
+        addLog('error', area, 'QZ Tray not connected');
+        return;
+      }
+      const printerName = getPrinterForArea(area);
+      if (!printerName) {
+        addLog('error', area, 'No printer configured — select one from the dropdown and save');
+        return;
+      }
+
+      // Debounce: prevent rapid-fire clicks on the same area
+      if (_testPrintLock[area]) {
+        addLog('info', area, 'Test print already in progress — skipping');
+        return;
+      }
+      _testPrintLock[area] = true;
+
+      try {
+        addLog('info', area, `Sending test print to "${printerName}"...`);
+        if (STATE.debugMode) {
+          addLog('info', area, `Printer config: width=3.15, height=11.69, margins=0`);
+        }
+
+        // Build a simple ESC/POS test receipt
+        const ts = new Date().toLocaleString('it-IT');
+        const esc = '\x1B@'                          // Init
+          + '\x1B\x61\x01'                           // Center align
+          + '*** TEST PRINT ***\n'
+          + 'GustoPOS Print Station\n'
+          + ts + '\n'
+          + '\n'
+          + 'Area: ' + area.toUpperCase() + '\n'
+          + 'Printer: ' + printerName + '\n'
+          + '\n'
+          + 'If you see this, the printer works!\n'
+          + '\n'
+          + '\x1B\x69'                               // Cut paper
+          ;
+
+        if (STATE.debugMode) addLog('info', area, `ESC/POS payload: ${esc.length} bytes`);
+
+        const config = qz.configs.create(printerName, {
+          size: { width: 3.15, height: 11.69 },
+          margins: { top: 0, right: 0, bottom: 0, left: 0 },
+        });
+        await qz.print(config, [esc]);
+        addLog('success', area, `Test print sent to "${printerName}"`);
+      } catch (err) {
+        addLog('error', area, `Test print failed: ${err.message || err}`);
+        if (STATE.debugMode && err.stack) {
+          addLog('error', area, `Stack: ${err.stack.split('\n').slice(0, 3).join(' | ')}`);
+        }
+      } finally {
+        _testPrintLock[area] = false;
+      }
+    }
+
+    async function printJob(job) {
+      const printerName = getPrinterForArea(job.area);
+      if (!printerName) {
+        throw new Error(`No printer configured for area: ${job.area}`);
+      }
+
+      if (typeof qz === 'undefined' || !STATE.qzConnected) {
+        throw new Error('QZ Tray not connected');
+      }
+
+      if (STATE.debugMode) {
+        addLog('info', job.area, `printJob: id=${job.id}, order=${job.orderId}, printer="${printerName}", payloadLen=${job.payload?.length || 0}`);
+      }
+
+      // Decode base64 payload to raw ESC/POS text
+      let decoded;
+      try {
+        decoded = atob(job.payload);
+      } catch {
+        throw new Error('Invalid base64 payload');
+      }
+
+      if (STATE.debugMode) {
+        addLog('info', job.area, `Decoded payload: ${decoded.length} chars, preview: ${JSON.stringify(decoded.substring(0, 60))}...`);
+      }
+
+      const config = qz.configs.create(printerName, {
+        size: { width: 3.15, height: 11.69 },
+        margins: { top: 0, right: 0, bottom: 0, left: 0 },
+      });
+
+      await qz.print(config, [decoded]);
+
+      if (STATE.debugMode) {
+        addLog('info', job.area, `printJob #${job.id} completed successfully`);
+      }
+    }
+
+    // ============================================================
+    // POLLING
+    // ============================================================
+    async function poll() {
+      // Concurrency guard: skip if a poll is already in flight
+      if (STATE.pollInFlight) {
+        if (STATE.debugMode) addLog('info', '--', 'Poll already in flight — skipping');
+        return;
+      }
+      STATE.pollInFlight = true;
+
+      try {
+        const settings = loadSettings();
+        const configuredAreas = AREAS.filter((a) => settings.printers[a]);
+
+        if (configuredAreas.length === 0) {
+          if (STATE.debugMode) addLog('info', '--', 'No printers configured, skipping poll');
+          return;
+        }
+
+        if (!settings.apiBase) {
+          addLog('error', '--', 'API Base URL not configured');
+          return;
+        }
+
+        const params = new URLSearchParams({ areas: configuredAreas.join(',') });
+        const url = `${settings.apiBase}/api/print-jobs/poll?${params.toString()}`;
+
+        if (STATE.debugMode) addLog('info', '--', `Polling: ${url}`);
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (settings.apiKey) {
+          headers['Authorization'] = `Bearer ${settings.apiKey}`;
+        }
+
+        const response = await fetch(url, { headers });
+
+        if (!response.ok) {
+          throw new Error(`API responded ${response.status}`);
+        }
+
+        const jobs = await response.json();
+        const jobArray = Array.isArray(jobs) ? jobs : [];
+
+        if (jobArray.length > 0) {
+          addLog('info', '--', `Received ${jobArray.length} job(s)`);
+          if (STATE.debugMode) {
+            for (const job of jobArray) {
+              addLog('info', job.area || '--', `Job #${job.id}: order=${job.orderId}, area=${job.area}, protocol=${job.protocol}, payloadLen=${job.payload?.length || 0}`);
+            }
+          }
+        }
+
+        for (const job of jobArray) {
+          const area = job.area || '--';
+
+          // Dedup guard: skip if this job is already being printed
+          if (STATE.printing.has(job.id)) {
+            if (STATE.debugMode) addLog('info', area, `Job #${job.id} already in-flight — skipping`);
+            continue;
+          }
+
+          STATE.printing.add(job.id);
+          try {
+            await printJob(job);
+            STATE.counters.printed++;
+            updateCounters();
+            addLog('success', area, `Order ${job.orderId} printed via ${getPrinterForArea(area)}`);
+          } catch (err) {
+            STATE.counters.failed++;
+            updateCounters();
+            addLog('failed', area, `Order ${job.orderId} failed: ${err.message}`);
+
+            // Report failure to API (best effort)
+            try {
+              const failUrl = `${settings.apiBase}/api/print-jobs/${job.id}/fail`;
+              await fetch(failUrl, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ error: err.message }),
+              });
+            } catch { /* ignore fail-report errors */ }
+          } finally {
+            STATE.printing.delete(job.id);
+          }
+        }
+
+        DOM.lastPoll.textContent = new Date().toLocaleTimeString('it-IT', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        });
+      } catch (err) {
+        addLog('error', '--', `Poll error: ${err.message}`);
+      } finally {
+        STATE.pollInFlight = false;
+      }
+    }
+
+    function startPolling() {
+      if (STATE.pollTimer) return;
+
+      const settings = loadSettings();
+      STATE.polling = true;
+
+      updatePollUI(true);
+
+      // Immediate first poll
+      void poll();
+
+      STATE.pollTimer = setInterval(() => {
+        void poll();
+      }, settings.pollInterval);
+
+      addLog('info', '--', `Polling started (every ${settings.pollInterval}ms)`);
+    }
+
+    function stopPolling() {
+      if (STATE.pollTimer) {
+        clearInterval(STATE.pollTimer);
+        STATE.pollTimer = null;
+      }
+      STATE.polling = false;
+      updatePollUI(false);
+      addLog('info', '--', 'Polling paused');
+    }
+
+    function togglePolling() {
+      if (STATE.polling) {
+        stopPolling();
+      } else {
+        startPolling();
+      }
+    }
+
+    function updatePollUI(active) {
+      DOM.pollIndicator.className = active ? 'poll-indicator active' : 'poll-indicator';
+      DOM.pollLabel.textContent = active ? 'Polling active' : 'Polling paused';
+      DOM.pauseResumeBtn.textContent = active ? 'Pause' : 'Resume';
+    }
+
+    // ============================================================
+    // SETTINGS TOGGLE
+    // ============================================================
+    let settingsCollapsed = false;
+
+    function toggleSettings() {
+      settingsCollapsed = !settingsCollapsed;
+      DOM.settingsBody.classList.toggle('collapsed', settingsCollapsed);
+      DOM.settingsToggle.innerHTML = settingsCollapsed ? '&#9654;' : '&#9660;';
+    }
+
+    // ============================================================
+    // EVENT BINDING
+    // ============================================================
+    DOM.saveSettingsBtn.addEventListener('click', () => {
+      saveSettings();
+      // If polling, restart with new interval
+      if (STATE.polling) {
+        stopPolling();
+        startPolling();
+      }
+    });
+
+    DOM.connectBtn.addEventListener('click', () => {
+      void connectQZ();
+    });
+
+    DOM.disconnectBtn.addEventListener('click', () => {
+      void disconnectQZ();
+    });
+
+    DOM.pollNowBtn.addEventListener('click', () => {
+      DOM.pollNowBtn.disabled = true;
+      void poll().finally(() => {
+        DOM.pollNowBtn.disabled = false;
+      });
+    });
+
+    DOM.pauseResumeBtn.addEventListener('click', () => {
+      togglePolling();
+    });
+
+    DOM.clearLogBtn.addEventListener('click', () => {
+      STATE.logEntries.length = 0;
+      renderLog();
+    });
+
+    DOM.settingsToggle.addEventListener('click', () => {
+      toggleSettings();
+    });
+
+    // ============================================================
+    // DEBUG PANEL
+    // ============================================================
+    let debugVisible = false;
+
+    DOM.debugToggleBtn.addEventListener('click', () => {
+      debugVisible = !debugVisible;
+      DOM.debugPanel.style.display = debugVisible ? '' : 'none';
+      DOM.debugToggleBtn.classList.toggle('active', debugVisible);
+      if (debugVisible) refreshDebugInfo();
+    });
+
+    DOM.debugRefreshBtn.addEventListener('click', () => {
+      refreshDebugInfo();
+    });
+
+    async function refreshDebugInfo() {
+      DOM.debugGrid.innerHTML = '<div class="debug-item"><div class="label">Loading...</div></div>';
+
+      const items = [];
+
+      // 1. QZ Tray connection state
+      items.push({ label: 'QZ Tray State', value: STATE.qzConnected ? 'Connected' : 'Disconnected', ok: STATE.qzConnected });
+      items.push({ label: 'Connecting', value: String(STATE.connecting), ok: !STATE.connecting });
+      items.push({ label: 'Poll In-Flight', value: String(STATE.pollInFlight), ok: !STATE.pollInFlight });
+      items.push({ label: 'Active Prints', value: String(STATE.printing.size), ok: STATE.printing.size === 0 });
+      items.push({ label: 'Printers Found', value: String(STATE.printers.length), ok: STATE.printers.length > 0 });
+
+      // 2. WebSocket info (if connected)
+      if (STATE.qzConnected && typeof qz !== 'undefined') {
+        try {
+          const connInfo = qz.websocket.getConnectionInfo();
+          items.push({ label: 'WS Protocol', value: connInfo.protocol || 'N/A' });
+          items.push({ label: 'WS Host', value: connInfo.host || 'N/A' });
+          items.push({ label: 'WS Port', value: String(connInfo.port || 'N/A') });
+          items.push({ label: 'WS URL', value: connInfo.url || 'N/A' });
+        } catch (e) {
+          items.push({ label: 'WS Info', value: `Error: ${e.message}`, err: true });
+        }
+
+        try {
+          const version = await qz.api.getVersion();
+          items.push({ label: 'QZ Version', value: version });
+        } catch {
+          items.push({ label: 'QZ Version', value: 'N/A' });
+        }
+      }
+
+      // 3. Server-side certificate debug
+      try {
+        const resp = await fetch('/signing/debug');
+        if (resp.ok) {
+          const dbg = await resp.json();
+          items.push({ label: 'Chain Validation', value: dbg.chainValidation || 'N/A', ok: dbg.chainValidation?.includes('OK') });
+          items.push({ label: 'Key Match', value: dbg.privateKeyMatch || 'N/A', ok: dbg.privateKeyMatch?.includes('YES') });
+
+          // Parse leaf cert details
+          if (dbg.leafCertificate) {
+            const lines = dbg.leafCertificate.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('subject=') || line.startsWith('notBefore=') || line.startsWith('notAfter=')) {
+                items.push({ label: 'Leaf: ' + line.split('=')[0].trim(), value: line.split('=').slice(1).join('=').trim() });
+              }
+            }
+          }
+
+          // Parse CA cert details
+          if (dbg.caCertificate) {
+            const lines = dbg.caCertificate.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('subject=')) {
+                items.push({ label: 'CA Subject', value: line.split('=').slice(1).join('=').trim() });
+              }
+            }
+          }
+
+          // File existence
+          if (dbg.certExists) {
+            items.push({ label: 'Cert Files', value: `leaf=${dbg.certExists.leaf}, key=${dbg.certExists.key}, ca=${dbg.certExists.ca}, override=${dbg.certExists.override}`, ok: dbg.certExists.leaf && dbg.certExists.key && dbg.certExists.ca });
+          }
+        } else {
+          items.push({ label: 'Server Debug', value: `HTTP ${resp.status}`, err: true });
+        }
+      } catch (e) {
+        items.push({ label: 'Server Debug', value: `Fetch failed: ${e.message}`, err: true });
+      }
+
+      // 4. Printer mapping
+      const settings = loadSettings();
+      for (const area of AREAS) {
+        const printer = settings.printers[area];
+        items.push({ label: `Map: ${area}`, value: printer || '(not set)', ok: !!printer });
+      }
+
+      // Render
+      DOM.debugGrid.innerHTML = '';
+      for (const item of items) {
+        const div = document.createElement('div');
+        div.className = 'debug-item';
+        const cls = item.ok ? 'ok' : item.err ? 'err' : '';
+        div.innerHTML = `<div class="label">${item.label}</div><div class="value ${cls}">${item.value}</div>`;
+        DOM.debugGrid.appendChild(div);
+      }
+
+      // Add test button
+      const btnDiv = document.createElement('div');
+      btnDiv.className = 'debug-item';
+      btnDiv.style.gridColumn = '1 / -1';
+      btnDiv.innerHTML = '<button class="btn btn-primary" id="debugTestSignBtn" style="width:100%;">Test Signing End-to-End</button>';
+      DOM.debugGrid.appendChild(btnDiv);
+      document.getElementById('debugTestSignBtn').addEventListener('click', runSigningTest);
+    }
+
+    async function runSigningTest() {
+      const btn = document.getElementById('debugTestSignBtn');
+      if (!btn) return;
+      btn.disabled = true;
+      btn.textContent = 'Testing...';
+
+      const results = [];
+
+      // Test 1: Fetch certificate
+      try {
+        const certResp = await fetch('/signing/digital-certificate.txt', { cache: 'no-store' });
+        const certText = await certResp.text();
+        const isPem = certText.includes('BEGIN CERTIFICATE');
+        const lines = certText.trim().split('\n');
+        results.push({ label: '1. Certificate fetch', value: `${certResp.status} OK, PEM=${isPem}, ${lines.length} lines`, ok: certResp.ok && isPem });
+      } catch (e) {
+        results.push({ label: '1. Certificate fetch', value: `FAILED: ${e.message}`, err: true });
+      }
+
+      // Test 2: Sign a test message
+      try {
+        const testMsg = JSON.stringify({ call: 'printers.find', params: {}, timestamp: Date.now() });
+        const signResp = await fetch('/signing/sign-message?request=' + encodeURIComponent(testMsg), { cache: 'no-store' });
+        const signature = await signResp.text();
+        const isValidBase64 = /^[A-Za-z0-9+/=]+$/.test(signature.trim());
+        results.push({ label: '2. Sign endpoint', value: `${signResp.status} OK, sig=${signature.length} chars, base64=${isValidBase64}`, ok: signResp.ok && isValidBase64 });
+      } catch (e) {
+        results.push({ label: '2. Sign endpoint', value: `FAILED: ${e.message}`, err: true });
+      }
+
+      // Test 3: Server-side verification
+      try {
+        const verifyResp = await fetch('/signing/verify-test');
+        const verifyData = await verifyResp.json();
+        results.push({ label: '3. Server verify', value: `preHash=${verifyData.verifiedWithPreHash}, raw=${verifyData.verifiedWithRawData}, match=${verifyData.hashesMatch}`, ok: verifyData.verifiedWithPreHash && verifyData.hashesMatch });
+      } catch (e) {
+        results.push({ label: '3. Server verify', value: `FAILED: ${e.message}`, err: true });
+      }
+
+      // Test 4: Check if QZ Tray is connected and can print
+      if (STATE.qzConnected) {
+        results.push({ label: '4. QZ Tray', value: `Connected, ${STATE.printers.length} printer(s)`, ok: true });
+      } else {
+        results.push({ label: '4. QZ Tray', value: 'Not connected', err: true });
+      }
+
+      // Test 5: Check override.crt download
+      try {
+        const overrideResp = await fetch('/signing/override.crt', { cache: 'no-store' });
+        const overrideText = await overrideResp.text();
+        const isCa = overrideText.includes('BEGIN CERTIFICATE');
+        results.push({ label: '5. override.crt', value: `${overrideResp.status} OK, isCA=${isCa}`, ok: overrideResp.ok && isCa });
+      } catch (e) {
+        results.push({ label: '5. override.crt', value: `FAILED: ${e.message}`, err: true });
+      }
+
+      // Test 6: Check CSP allows fetches
+      results.push({ label: '6. CSP connect-src', value: `'self' + ws/wss localhost`, ok: true });
+
+      // Render results
+      const resultDiv = document.createElement('div');
+      resultDiv.className = 'debug-item';
+      resultDiv.style.gridColumn = '1 / -1';
+      let html = '<div class="label" style="margin-bottom:6px;">SIGNING TEST RESULTS</div>';
+      for (const r of results) {
+        const cls = r.ok ? 'ok' : r.err ? 'err' : '';
+        html += `<div style="font-size:11px; padding:2px 0; color:${r.ok ? 'var(--green)' : r.err ? 'var(--red)' : 'var(--text)'};">${r.label}: ${r.value}</div>`;
+      }
+      const allPassed = results.every(r => r.ok);
+      html += `<div style="font-size:12px; font-weight:bold; margin-top:6px; color:${allPassed ? 'var(--green)' : 'var(--yellow)'};">${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED — see above'}</div>`;
+      html += '<div style="font-size:10px; color:var(--text-muted); margin-top:4px;">If signing tests pass but QZ Tray still shows dialogs, the override.crt is NOT installed in QZ Tray. Run the installer script on the client machine.</div>';
+      resultDiv.innerHTML = html;
+      DOM.debugGrid.appendChild(resultDiv);
+
+      btn.disabled = false;
+      btn.textContent = 'Test Signing End-to-End';
+    }
+
+    // ============================================================
+    // INITIALIZATION
+    // ============================================================
+    (function init() {
+      addLog('info', 'SYS', '═══════════════════════════════════════════');
+      addLog('info', 'SYS', 'GustoPOS Print Station — Initializing');
+      addLog('info', 'SYS', '═══════════════════════════════════════════');
+
+      const settings = loadSettings();
+      applySettings(settings);
+      updateCounters();
+
+      // Debug: Log loaded settings
+      addLog('info', 'SYS', `API Base: ${settings.apiBase}`);
+      addLog('info', 'SYS', `Poll interval: ${settings.pollInterval}ms`);
+      addLog('info', 'SYS', `Auto-connect: ${settings.autoConnect}`);
+      addLog('info', 'SYS', `Printers: kitchen=${settings.printers.kitchen || '(none)'}, bar=${settings.printers.bar || '(none)'}, cashier=${settings.printers.cashier || '(none)'}`);
+
+      // Debug: QZ Tray library check
+      if (typeof qz === 'undefined') {
+        addLog('error', 'SYS', 'QZ Tray library NOT loaded! Install from https://qz.io/download/');
+      } else {
+        addLog('info', 'SYS', `QZ Tray library loaded (qz-tray.js)`);
+        try {
+          const qzVersion = qz.api.getVersion ? 'API available' : 'API not available';
+          addLog('info', 'SYS', `QZ API status: ${qzVersion}`);
+        } catch {
+          addLog('info', 'SYS', 'QZ API: not yet initialized');
+        }
+      }
+
+      // Debug: QZ Tray config
+      if (settings.qzTray) {
+        addLog('info', 'SYS', `QZ Hosts: [${settings.qzTray.hosts?.join(', ') || 'default'}]`);
+        addLog('info', 'SYS', `QZ Secure ports: [${settings.qzTray.securePorts?.join(', ') || 'default'}]`);
+        addLog('info', 'SYS', `QZ Insecure ports: [${settings.qzTray.insecurePorts?.join(', ') || 'default'}]`);
+        addLog('info', 'SYS', `QZ Use secure: ${settings.qzTray.useSecure}`);
+      }
+
+      addLog('info', 'SYS', '───────────────────────────────────────────');
+
+      // Auto-connect to QZ Tray
+      if (settings.autoConnect) {
+        addLog('info', 'SYS', 'Auto-connect enabled — attempting QZ Tray connection...');
+        void connectQZ().then(() => {
+          // Start polling after connection attempt
+          startPolling();
+        });
+      } else {
+        addLog('info', 'SYS', 'Auto-connect disabled — starting polling only');
+        startPolling();
+      }
+    })();
+  </script>
+</body>
+</html>

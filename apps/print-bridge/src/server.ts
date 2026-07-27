@@ -1,0 +1,568 @@
+import express from "express";
+import { createServer } from "node:http";
+import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import path from "node:path";
+
+const app = express();
+
+// Serve static files (print-station.html, qz-tray.js) from public/
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const elapsed = Date.now() - start;
+    // eslint-disable-next-line no-console
+    console.log(`${req.method} ${req.url} ${res.statusCode} ${elapsed}ms`);
+  });
+  next();
+});
+
+app.use(express.json({ limit: "2mb" }));
+
+const port = Number(process.env.PRINT_BRIDGE_PORT ?? 11905);
+const DEFAULT_SPOOL_DIR = "/var/spool/gustopos-print";
+const FALLBACK_SPOOL_DIR = path.resolve(process.cwd(), "spool");
+
+function ensureSpoolDirSync(preferred: string, fallback: string): string {
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    fs.accessSync(preferred, fs.constants.W_OK);
+    return preferred;
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[print-bridge] Cannot use spool directory "${preferred}" (permission denied or unavailable). Falling back to "${fallback}".`,
+    );
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+}
+
+const spoolDir = ensureSpoolDirSync(
+  process.env.PRINT_BRIDGE_SPOOL_DIR ?? DEFAULT_SPOOL_DIR,
+  FALLBACK_SPOOL_DIR,
+);
+const printBridgeSecret = process.env.PRINT_BRIDGE_SECRET?.trim();
+
+// ─── Print-bridge lifecycle (client side) ────────────────────────────────────
+
+const API_URL = (process.env.API_URL ?? '').replace(/\/$/, '');
+const BRIDGE_ID = process.env.PRINT_BRIDGE_ID ?? `bridge_${process.env.PRINT_BRIDGE_HOSTNAME ?? require('os').hostname()}`;
+const BRIDGE_NAME = process.env.PRINT_BRIDGE_NAME ?? BRIDGE_ID;
+const BRIDGE_AREAS = (process.env.PRINT_BRIDGE_AREAS ?? 'kitchen,bar,cashier')
+  .split(',').map((a) => a.trim()).filter((a): a is 'kitchen' | 'bar' | 'cashier' => a === 'kitchen' || a === 'bar' || a === 'cashier');
+const BRIDGE_PRINTERS = (() => {
+  try {
+    const raw = process.env.PRINT_BRIDGE_PRINTERS;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+})();
+const HEARTBEAT_INTERVAL_MS = Number(process.env.PRINT_BRIDGE_HEARTBEAT_MS ?? 30_000);
+const CLAIM_INTERVAL_MS = Number(process.env.PRINT_BRIDGE_CLAIM_MS ?? 3_000);
+const CLAIM_BATCH_SIZE = Number(process.env.PRINT_BRIDGE_CLAIM_BATCH ?? 10);
+
+async function bridgeApi(pathname: string, init?: RequestInit): Promise<any> {
+  const url = `${API_URL}${pathname}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (printBridgeSecret) {
+    headers['X-Print-Bridge-Key'] = printBridgeSecret;
+  }
+  const res = await fetch(url, { ...init, headers });
+  const text = await res.text();
+  let body: any;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  if (!res.ok) {
+    const msg = typeof body === 'object' && body && 'message' in body ? body.message : `HTTP ${res.status}`;
+    throw new Error(`bridgeApi ${pathname} failed: ${msg}`);
+  }
+  return body;
+}
+
+const BRIDGE_HOSTNAME = require('os').hostname();
+
+async function sendHeartbeat(): Promise<void> {
+  try {
+    const host = BRIDGE_HOSTNAME;
+    await bridgeApi('/api/print-bridge/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({
+        bridgeId: BRIDGE_ID,
+        name: BRIDGE_NAME,
+        host,
+        areas: BRIDGE_AREAS,
+        printers: BRIDGE_PRINTERS,
+      }),
+    });
+    console.log(`[print-bridge] heartbeat ok (bridge=${BRIDGE_ID}, areas=${BRIDGE_AREAS.join(',')})`);
+  } catch (err) {
+    console.warn(`[print-bridge] heartbeat failed: ${(err as Error).message}`);
+  }
+}
+
+async function drivePrinterJob(job: { id: string; orderId: string; area: string; protocol: string; payload: string }): Promise<void> {
+  // Existing spool-to-disk behavior. A separate PR will wire this to a real printer driver.
+  const safeArea = job.area.replace(/[^a-z0-9_-]/gi, '_');
+  const fileName = `${Date.now()}_${safeArea}_${job.id}.escpos`;
+  const filePath = path.resolve(spoolDir, safeArea, fileName);
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.promises.writeFile(filePath, Buffer.from(job.payload, 'base64'));
+  console.log(`[print-bridge] claimed job ${job.id} → ${filePath}`);
+}
+
+async function claimAndProcess(): Promise<void> {
+  let jobs: Array<{ id: string; orderId: string; area: string; protocol: string; payload: string }>;
+  try {
+    const res = await bridgeApi('/api/print-bridge/claim', {
+      method: 'POST',
+      body: JSON.stringify({ bridgeId: BRIDGE_ID, limit: CLAIM_BATCH_SIZE }),
+    });
+    jobs = res?.jobs ?? [];
+  } catch (err) {
+    console.warn(`[print-bridge] claim failed: ${(err as Error).message}`);
+    return;
+  }
+  for (const job of jobs) {
+    try {
+      await drivePrinterJob(job);
+      await bridgeApi(`/api/print-bridge/jobs/${job.id}/complete`, {
+        method: 'POST',
+        body: JSON.stringify({ bridgeId: BRIDGE_ID }),
+      });
+    } catch (err) {
+      const msg = (err as Error).message ?? 'drive failed';
+      console.error(`[print-bridge] job ${job.id} failed: ${msg}`);
+      try {
+        await bridgeApi(`/api/print-bridge/jobs/${job.id}/fail`, {
+          method: 'POST',
+          body: JSON.stringify({ bridgeId: BRIDGE_ID, error: msg }),
+        });
+      } catch (reportErr) {
+        console.error(`[print-bridge] failed to report error for ${job.id}: ${(reportErr as Error).message}`);
+      }
+    }
+  }
+}
+
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let claimTimer: ReturnType<typeof setInterval> | null = null;
+
+function startBridgeLifecycle(): void {
+  if (!API_URL) {
+    console.log('[print-bridge] API_URL not set; skipping bridge lifecycle (signing endpoints still active)');
+    return;
+  }
+  if (!printBridgeSecret) {
+    console.warn('[print-bridge] PRINT_BRIDGE_SECRET not set; bridge lifecycle requires it to authenticate against the API. Skipping.');
+    return;
+  }
+  if (BRIDGE_AREAS.length === 0) {
+    console.log('[print-bridge] PRINT_BRIDGE_AREAS empty; skipping bridge lifecycle');
+    return;
+  }
+  console.log(`[print-bridge] starting lifecycle as bridge=${BRIDGE_ID} areas=${BRIDGE_AREAS.join(',')}`);
+  void sendHeartbeat();
+  void claimAndProcess();
+  heartbeatTimer = setInterval(() => { void sendHeartbeat(); }, HEARTBEAT_INTERVAL_MS);
+  claimTimer = setInterval(() => { void claimAndProcess(); }, CLAIM_INTERVAL_MS);
+}
+
+function stopBridgeLifecycle(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (claimTimer) clearInterval(claimTimer);
+  heartbeatTimer = null;
+  claimTimer = null;
+}
+
+
+type PrintRequest = {
+  id: string;
+  orderId: string;
+  area: string;
+  protocol: string;
+  payload: string; // base64-encoded ESC/POS binary data
+};
+
+// CORS headers for /print endpoint (localhost-only, so * is safe)
+function setCorsHeaders(res: express.Response): void {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Print-Bridge-Key");
+}
+
+// Shared secret authentication middleware
+function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!printBridgeSecret) {
+    // Dev mode: no secret set, allow all
+    next();
+    return;
+  }
+
+  const providedKey = req.headers["x-print-bridge-key"];
+  if (!providedKey || providedKey !== printBridgeSecret) {
+    res.status(401).json({ error: "Unauthorized: invalid or missing X-Print-Bridge-Key" });
+    return;
+  }
+  next();
+}
+
+// QZ Tray signing endpoints
+const CERTS_DIR = path.resolve(__dirname, "..", "certs");
+const PRIVATE_KEY_PATH = path.join(CERTS_DIR, "private-key.pem");
+const CERT_PATH = path.join(CERTS_DIR, "digital-certificate.pem");
+const CA_CERT_PATH = path.join(CERTS_DIR, "ca-cert.pem");
+
+// Cache cert/key content to avoid blocking the event loop on every request
+let _cachedCert: string | null = null;
+let _cachedKey: string | null = null;
+let _cachedCaCert: string | null = null;
+let _cacheModified = 0;
+
+function getCerts() {
+  try {
+    const stat = fs.statSync(CERT_PATH);
+    const mtimeMs = stat.mtimeMs;
+    if (mtimeMs !== _cacheModified || _cachedCert === null) {
+      _cachedCert = fs.readFileSync(CERT_PATH, "utf-8");
+      _cachedKey = fs.readFileSync(PRIVATE_KEY_PATH, "utf-8");
+      _cachedCaCert = fs.readFileSync(CA_CERT_PATH, "utf-8");
+      _cacheModified = mtimeMs;
+      console.log("[print-bridge] Reloaded cert/key from disk (mtime changed)");
+    }
+    return { cert: _cachedCert!, key: _cachedKey!, caCert: _cachedCaCert! };
+  } catch (err) {
+    console.error("[print-bridge] Failed to load certs:", err);
+    throw err;
+  }
+}
+
+// Serve the public certificate
+app.get("/signing/digital-certificate.txt", (_req, res) => {
+  try {
+    const { cert } = getCerts();
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.send(cert);
+  } catch {
+    res.status(500).send("Certificate not found");
+  }
+});
+
+// Sign a message with the private key (SHA512)
+app.get("/signing/sign-message", (req, res) => {
+  const request = req.query.request as string;
+  if (!request) {
+    res.status(400).send("Missing request parameter");
+    return;
+  }
+
+  try {
+    const { key } = getCerts();
+    const sign = crypto.createSign("SHA512");
+    sign.update(request);
+    const signature = sign.sign(key, "base64");
+    console.log(`[print-bridge] Signed message: ${request.substring(0, 80)}${request.length > 80 ? '...' : ''} (${request.length} bytes)`);
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.send(signature);
+  } catch (err) {
+    console.error("[print-bridge] Signing error:", err);
+    res.status(500).send("Signing failed");
+  }
+});
+
+// Serve the root CA certificate for download (for QZ Tray override.crt)
+app.get("/signing/override.crt", (_req, res) => {
+  try {
+    const { caCert } = getCerts();
+    res.setHeader("Content-Type", "application/x-x509-ca-cert");
+    res.setHeader("Content-Disposition", "attachment; filename=override.crt");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.send(caCert);
+  } catch {
+    res.status(500).send("Certificate not found");
+  }
+});
+
+// Debug endpoint: validate the certificate chain and return diagnostic info
+app.get("/signing/debug", (_req, res) => {
+  try {
+    const { cert, caCert } = getCerts();
+    const { execSync } = require("node:child_process");
+
+    // Parse the leaf cert
+    const leafInfo = execSync(
+      `echo '${cert.replace(/\n/g, '\\n')}' | openssl x509 -noout -subject -issuer -dates -ext subjectAltName -serial 2>&1`,
+      { encoding: "utf-8" },
+    );
+
+    // Parse the CA cert
+    const caInfo = execSync(
+      `echo '${caCert.replace(/\n/g, '\\n')}' | openssl x509 -noout -subject -issuer -dates -ext basicConstraints -serial 2>&1`,
+      { encoding: "utf-8" },
+    );
+
+    // Verify chain
+    let chainResult = "N/A";
+    try {
+      const tmpLeaf = "/tmp/gustopos-leaf.pem";
+      const tmpCa = "/tmp/gustopos-ca.pem";
+      fs.writeFileSync(tmpLeaf, cert);
+      fs.writeFileSync(tmpCa, caCert);
+      chainResult = execSync(`openssl verify -CAfile ${tmpCa} ${tmpLeaf} 2>&1`, { encoding: "utf-8" }).trim();
+      fs.unlinkSync(tmpLeaf);
+      fs.unlinkSync(tmpCa);
+    } catch (e: any) {
+      chainResult = `Verify failed: ${e.message}`;
+    }
+
+    // Check if private key matches the certificate
+    let keyMatch = "N/A";
+    try {
+      const { key } = getCerts();
+      const tmpKey = "/tmp/gustopos-key.pem";
+      const tmpCert2 = "/tmp/gustopos-cert2.pem";
+      fs.writeFileSync(tmpKey, key);
+      fs.writeFileSync(tmpCert2, cert);
+      const certMod = execSync(`openssl x509 -noout -modulus -in ${tmpCert2} 2>&1`, { encoding: "utf-8" }).trim();
+      const keyMod = execSync(`openssl rsa -noout -modulus -in ${tmpKey} 2>&1`, { encoding: "utf-8" }).trim();
+      keyMatch = certMod === keyMod ? "YES — private key matches certificate" : "NO — private key does NOT match certificate";
+      fs.unlinkSync(tmpKey);
+      fs.unlinkSync(tmpCert2);
+    } catch (e: any) {
+      keyMatch = `Check failed: ${e.message}`;
+    }
+
+    res.json({
+      leafCertificate: leafInfo.trim(),
+      caCertificate: caInfo.trim(),
+      chainValidation: chainResult,
+      privateKeyMatch: keyMatch,
+      filesOnDisk: {
+        certPath: CERT_PATH,
+        keyPath: PRIVATE_KEY_PATH,
+        caCertPath: CA_CERT_PATH,
+        overrideCrtPath: path.join(CERTS_DIR, "override.crt"),
+      },
+      certExists: {
+        leaf: fs.existsSync(CERT_PATH),
+        key: fs.existsSync(PRIVATE_KEY_PATH),
+        ca: fs.existsSync(CA_CERT_PATH),
+        override: fs.existsSync(path.join(CERTS_DIR, "override.crt")),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Verification test endpoint: simulates QZ Tray's exact verification flow
+// QZ Tray Java code does: isSignatureValid(algorithm, signature, jsonString)
+//   -> SHA256(jsonString) -> feeds to SHA512withRSA verifier -> verify
+app.get("/signing/verify-test", (req, res) => {
+  try {
+    const { cert, key } = getCerts();
+
+    // Simulate a typical QZ Tray call payload
+    const testPayload = JSON.stringify({
+      call: "printers.find",
+      params: {},
+      timestamp: Date.now(),
+    });
+
+    // Step 1: Sign like our server does (same as what qz-tray.js sends)
+    // The JS library hashes with SHA-256 first, then sends the hash to us
+    const dataHash = crypto.createHash("sha256").update(testPayload).digest("hex");
+    const sign = crypto.createSign("SHA512");
+    sign.update(dataHash);
+    const signature = sign.sign(key, "base64");
+
+    // Step 2: Verify like QZ Tray Java does
+    // Java: DigestUtils.sha256Hex(data) -> feeds to SHA512withRSA verifier
+    // The Java side receives the raw JSON string (not the hash), and hashes it itself
+    const verifier = crypto.createVerify("SHA512");
+    // Java does: verifier.update(SHA256(jsonString).getBytes())
+    const javaHash = crypto.createHash("sha256").update(testPayload).digest("hex");
+    verifier.update(javaHash);
+    const verified = verifier.verify(cert, signature, "base64");
+
+    // Step 3: Also test if we can verify with the raw data (no pre-hash)
+    const verifier2 = crypto.createVerify("SHA512");
+    verifier2.update(testPayload);
+    const verifiedRaw = verifier2.verify(cert, signature, "base64");
+
+    res.json({
+      testPayload,
+      dataHash,
+      javaHash,
+      signature: signature.substring(0, 40) + "...",
+      hashesMatch: dataHash === javaHash,
+      verifiedWithPreHash: verified,
+      verifiedWithRawData: verifiedRaw,
+      note: "QZ Tray Java hashes data with SHA-256 before feeding to SHA512withRSA verifier. verifiedWithPreHash should be true for correct signing.",
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Returns the exact line to add to QZ Tray's allowed.dat for whitelist pre-population
+app.get("/signing/whitelist-entry", (_req, res) => {
+  try {
+    const { execSync } = require("node:child_process");
+    const { cert } = getCerts();
+
+    // Write cert to temp file for openssl processing
+    const tmpCert = "/tmp/gustopos-wl-cert.pem";
+    fs.writeFileSync(tmpCert, cert);
+
+    // Compute SHA-1 fingerprint (same algorithm QZ Tray uses)
+    const fpRaw = execSync(`openssl x509 -in ${tmpCert} -noout -fingerprint -sha1`, { encoding: "utf-8" }).trim();
+    const fingerprint = fpRaw.replace(/[Ss][Hh][Aa]1 Fingerprint=/, "").replace(/:/g, "");
+
+    // Extract subject fields using separate openssl calls
+    const subjectLine = execSync(`openssl x509 -in ${tmpCert} -noout -subject`, { encoding: "utf-8" }).trim();
+    const startLine = execSync(`openssl x509 -in ${tmpCert} -noout -startdate`, { encoding: "utf-8" }).trim();
+    const endLine = execSync(`openssl x509 -in ${tmpCert} -noout -enddate`, { encoding: "utf-8" }).trim();
+    fs.unlinkSync(tmpCert);
+
+    // Parse subject: "subject=C = IT, ST = Rome, O = GustoPOS, CN = test.franksbar.it"
+    const subjectParts = subjectLine.replace(/^subject\s*=\s*/, "").split(",").map((s: string) => s.trim());
+    const cn = subjectParts.find((p: string) => p.startsWith("CN = "))?.replace("CN = ", "") || "";
+    const org = subjectParts.find((p: string) => p.startsWith("O = "))?.replace("O = ", "") || "";
+    const validFrom = startLine.replace("notBefore=", "");
+    const validTo = endLine.replace("notAfter=", "");
+
+    // Format as QZ Tray expects (tab-separated)
+    const entry = `${fingerprint}\t${cn}\t${org}\t${validFrom}\t${validTo}\tTrue`;
+
+    res.json({
+      fingerprint,
+      commonName: cn,
+      organization: org,
+      validFrom,
+      validTo,
+      entry,
+      allowedDatLocations: {
+        windows: "%APPDATA%\\qz\\allowed.dat",
+        macos: "$HOME/Library/Application Support/qz/allowed.dat",
+        linux: "$HOME/.qz/allowed.dat",
+      },
+      manualInstructions: `Add this line to allowed.dat:\n${entry}`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Plain-text whitelist entry for installer scripts (actual tab characters)
+app.get("/signing/whitelist-entry.txt", (_req, res) => {
+  try {
+    const { execSync } = require("node:child_process");
+    const { cert } = getCerts();
+
+    const tmpCert = "/tmp/gustopos-wl-cert.pem";
+    fs.writeFileSync(tmpCert, cert);
+
+    const fpRaw = execSync(`openssl x509 -in ${tmpCert} -noout -fingerprint -sha1`, { encoding: "utf-8" }).trim();
+    const fingerprint = fpRaw.replace(/[Ss][Hh][Aa]1 Fingerprint=/, "").replace(/:/g, "");
+
+    const subjectLine = execSync(`openssl x509 -in ${tmpCert} -noout -subject`, { encoding: "utf-8" }).trim();
+    const startLine = execSync(`openssl x509 -in ${tmpCert} -noout -startdate`, { encoding: "utf-8" }).trim();
+    const endLine = execSync(`openssl x509 -in ${tmpCert} -noout -enddate`, { encoding: "utf-8" }).trim();
+    fs.unlinkSync(tmpCert);
+
+    const subjectParts = subjectLine.replace(/^subject\s*=\s*/, "").split(",").map((s: string) => s.trim());
+    const cn = subjectParts.find((p: string) => p.startsWith("CN = "))?.replace("CN = ", "") || "";
+    const org = subjectParts.find((p: string) => p.startsWith("O = "))?.replace("O = ", "") || "";
+    const validFrom = startLine.replace("notBefore=", "");
+    const validTo = endLine.replace("notAfter=", "");
+
+    // Use actual tab characters (not \t escape)
+    const entry = `${fingerprint}\t${cn}\t${org}\t${validFrom}\t${validTo}\tTrue`;
+    res.setHeader("Content-Type", "text/plain");
+    res.send(entry);
+  } catch (err: any) {
+    res.status(500).send("Error: " + err.message);
+  }
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, port });
+});
+
+app.options("/print", (req, res) => {
+  setCorsHeaders(res);
+  res.sendStatus(204);
+});
+
+app.post("/print", authMiddleware, async (req, res) => {
+  setCorsHeaders(res);
+
+  const body = req.body as Partial<PrintRequest>;
+  if (!body.id || !body.orderId || !body.area || !body.protocol || !body.payload) {
+    res.status(400).json({ error: "Missing required print job fields" });
+    return;
+  }
+
+  const safeArea = body.area.replace(/[^a-z0-9_-]/gi, "_");
+  const fileName = `${Date.now()}_${safeArea}_${body.id}.escpos`;
+  const dir = path.resolve(spoolDir, safeArea);
+  const filePath = path.resolve(dir, fileName);
+
+  await fs.promises.mkdir(dir, { recursive: true });
+  const buffer = Buffer.from(body.payload, "base64");
+  await fs.promises.writeFile(filePath, buffer);
+
+  res.json({ ok: true, filePath });
+});
+
+// Export app and helpers for testing
+export { app, ensureSpoolDirSync, authMiddleware, setCorsHeaders };
+
+// Only start server when run directly (not when imported by tests)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+if (require.main === module) {
+  const server = createServer(app);
+
+  startBridgeLifecycle();
+  server.listen(port, "127.0.0.1", () => {
+    // eslint-disable-next-line no-console
+    console.log(`[print-bridge] listening on 127.0.0.1:${port}`);
+  });
+
+  // Graceful shutdown
+  function gracefulShutdown(signal: string): void {
+    // eslint-disable-next-line no-console
+    console.log(`[print-bridge] ${signal} received, shutting down gracefully...`);
+    server.close(() => {
+      // eslint-disable-next-line no-console
+      console.log("[print-bridge] server closed");
+      process.exit(0);
+    });
+
+    // Force shutdown after timeout
+    setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.error("[print-bridge] forced shutdown after timeout");
+      process.exit(1);
+    }, 5000);
+  }
+
+  process.on("SIGTERM", () => { stopBridgeLifecycle(); gracefulShutdown("SIGTERM"); });
+  process.on("SIGINT", () => { stopBridgeLifecycle(); gracefulShutdown("SIGINT"); });
+
+}

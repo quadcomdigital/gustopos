@@ -1,4 +1,4 @@
-import type { Ingredient, BomItem, Category, BomCreateRequest } from '@gustopos/shared';
+import type { Ingredient, BomItem, Category, BomCreateRequest, PrepItem } from '@gustopos/shared';
 import { RotateCcw, Save, AlertTriangle, Search, Plus, ChevronDown, Layers } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import Modal from '../../shared/ui/molecules/Modal';
@@ -9,7 +9,7 @@ import Button from '../../shared/ui/atoms/Button';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
 import Skeleton from '../../shared/ui/atoms/Skeleton';
 import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
-import { useScopedCategories } from './useInventoryShared';
+import { useScopedCategories, explodeBomCost } from './useInventoryShared';
 import InlineCategoryPicker from './InlineCategoryPicker';
 import RecipeBuilder from './RecipeBuilder';
 import BomCards from './BomCards';
@@ -18,26 +18,28 @@ import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
 import EmptyState from '../../shared/ui/atoms/EmptyState';
 
-const componentTypeLabel = (componentType: 'ingredient' | 'bom' | undefined) =>
-  componentType === 'ingredient' ? 'Ingrediente' : 'BoM';
+const componentTypeLabel = (componentType: 'ingredient' | 'bom' | 'prep' | undefined) =>
+  componentType === 'ingredient' ? 'Ingrediente' : componentType === 'prep' ? 'Preparato' : 'BoM';
 
 interface BomTabProps {
   bomItems: BomItem[];
+  prepItems: PrepItem[];
   inventory: Ingredient[];
   categories: Category[];
   loading?: boolean;
   onRefresh?: () => Promise<void>;
   onCreate?: (payload: BomCreateRequest) => Promise<void>;
-  onUpdate?: (id: string, payload: { name?: string; unit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean; isPreBatched?: number }) => Promise<void>;
-  onReplaceComponents?: (id: string, payload: { components: Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
-  onAddComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }) => Promise<void>;
-  onRemoveComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom'; componentId: string }) => Promise<void>;
+  onUpdate?: (id: string, payload: { name?: string; unit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean }) => Promise<void>;
+  onReplaceComponents?: (id: string, payload: { components: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
+  onAddComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) => Promise<void>;
+  onRemoveComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
   onCreateCategory?: (payload: { name: string; scope: 'ingredient' | 'bom' | 'menu'; printAreas: Array<'kitchen' | 'bar' | 'cashier'> }) => Promise<void>;
 }
 
 export default function BomTab({
   bomItems,
+  prepItems,
   inventory,
   categories,
   loading = false,
@@ -56,15 +58,14 @@ export default function BomTab({
   const [bomEditCategoryId, setBomEditCategoryId] = useState('');
   const [bomEditUnit, setBomEditUnit] = useState('kg');
   const [bomEditYield, setBomEditYield] = useState('1');
-  const [bomEditPreBatched, setBomEditPreBatched] = useState(0);
 
   const [newBomName, setNewBomName] = useState('');
   const [newBomCategoryId, setNewBomCategoryId] = useState('');
   const [newBomUnit, setNewBomUnit] = useState('kg');
   const [newBomYield, setNewBomYield] = useState('1');
-  const [newBomComponents, setNewBomComponents] = useState<Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }>>([]);
+  const [newBomComponents, setNewBomComponents] = useState<Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }>>([]);
 
-  const [createComponentType, setCreateComponentType] = useState<'ingredient' | 'bom'>('ingredient');
+  const [createComponentType, setCreateComponentType] = useState<'ingredient' | 'bom' | 'prep'>('ingredient');
   const [createComponentId, setCreateComponentId] = useState('');
   const [createComponentQty, setCreateComponentQty] = useState('1');
   const [createComponentUnit, setCreateComponentUnit] = useState('kg');
@@ -114,9 +115,11 @@ export default function BomTab({
 
   const ingredientNameById = useMemo(() => new Map(inventory.map((i) => [i.id, i.name])), [inventory]);
   const bomNameById = useMemo(() => new Map(bomItems.map((b) => [b.id, b.name])), [bomItems]);
+  const prepNameById = useMemo(() => new Map(prepItems.map((p) => [p.id, p.name])), [prepItems]);
 
   const componentName = (componentType: string, componentId: string) => {
     if (componentType === 'ingredient') return ingredientNameById.get(componentId) ?? componentId;
+    if (componentType === 'prep') return prepNameById.get(componentId) ?? componentId;
     return bomNameById.get(componentId) ?? componentId;
   };
 
@@ -124,8 +127,11 @@ export default function BomTab({
     if (createComponentType === 'ingredient') {
       return inventory.map((item) => ({ id: item.id, label: item.name, unit: item.unit, stockLevel: item.quantity, unitCost: item.unitCost }));
     }
+    if (createComponentType === 'prep') {
+      return prepItems.map((item) => ({ id: item.id, label: item.name, unit: item.unit, stockLevel: item.stockQuantity }));
+    }
     return bomItems.map((item) => ({ id: item.id, label: item.name, unit: item.unit }));
-  }, [createComponentType, inventory, bomItems]);
+  }, [createComponentType, inventory, bomItems, prepItems]);
 
   useEffect(() => {
     if (!selectedBom) return;
@@ -133,7 +139,6 @@ export default function BomTab({
     setBomEditCategoryId(selectedBom.categoryId ?? '');
     setBomEditUnit(selectedBom.unit);
     setBomEditYield(String(selectedBom.yieldQuantity));
-    setBomEditPreBatched(selectedBom.isPreBatched ?? 0);
   }, [selectedBom]);
 
   const addCreateComponent = () => {
@@ -167,7 +172,6 @@ export default function BomTab({
         yieldQuantity,
         categoryId: newBomCategoryId || undefined,
         isContainer: 0,
-        isPreBatched: 0,
         components: newBomComponents,
       });
       setNewBomName('');
@@ -267,6 +271,7 @@ export default function BomTab({
             <BomCards
               items={filteredBomItems}
               inventory={inventory}
+              prepItems={prepItems}
               onEdit={(id) => setSelectedBomId(id)}
               onDelete={(id) => void removeBom(id)}
               onToggleActive={(id, active) => void onUpdate?.(id, { isActive: active })}
@@ -341,11 +346,12 @@ export default function BomTab({
           <div className="flex flex-wrap items-end gap-2">
             <select
               value={createComponentType}
-              onChange={(e) => { setCreateComponentType(e.target.value as 'ingredient' | 'bom'); setCreateComponentId(''); }}
+              onChange={(e) => { setCreateComponentType(e.target.value as 'ingredient' | 'bom' | 'prep'); setCreateComponentId(''); }}
               className="px-3 py-2 rounded border border-border text-sm"
             >
               <option value="ingredient">Ingrediente</option>
               <option value="bom">BoM</option>
+              <option value="prep">Preparato</option>
             </select>
             <SearchableSelect
               items={createComponentCandidates}
@@ -436,13 +442,7 @@ export default function BomTab({
               </tr>
             )}
             {filteredBomItems.map((item) => {
-              let totalCost = 0;
-              for (const comp of item.components) {
-                if (comp.componentType === 'ingredient') {
-                  const ing = inventory.find((i) => i.id === comp.componentId);
-                  if (ing?.unitCost) totalCost += comp.quantity * ing.unitCost;
-                }
-              }
+              const totalCost = explodeBomCost(item.components, inventory, bomItems, prepItems);
               const costPerUnit = item.yieldQuantity > 0 ? totalCost / item.yieldQuantity : 0;
               const inactiveCount = item.components.filter(
                 (c) => c.componentType === 'ingredient' && !inventory.find((i) => i.id === c.componentId)?.isActive
@@ -481,9 +481,6 @@ export default function BomTab({
                       ) : (
                         <StatusPill label="Disattivo" tone="neutral" />
                       )}
-                      {item.isPreBatched === 1 && (
-                        <StatusPill label={`Stock: ${item.stockQuantity}`} tone="info" />
-                      )}
                     </div>
                   </td>
                   <td className="px-6 py-4 text-right">
@@ -507,129 +504,113 @@ export default function BomTab({
             })}
           </tbody>
         </table>
-
-        {/* Edit Modal */}
-        <Modal
-          open={!!selectedBom}
-          onClose={() => setSelectedBomId('')}
-          title={selectedBom ? `Editor BoM: ${selectedBom.name}` : ''}
-          size="lg"
-          dirty={editModalDirty}
-          footer={
-            <>
-              <Button variant="secondary" onClick={() => setSelectedBomId('')}>
-                Chiudi
-              </Button>
-            </>
-          }
-        >
-          {selectedBom && (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Nome</label>
-                  <input
-                    value={bomEditName}
-                    onChange={(e) => setBomEditName(e.target.value)}
-                    className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
-                  />
-                  {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Unità</label>
-                  <UnitSelect
-                    value={bomEditUnit}
-                    onChange={setBomEditUnit}
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Resa</label>
-                  <input
-                    value={bomEditYield}
-                    onChange={(e) => setBomEditYield(e.target.value.replace(/[^0-9.]/g, ''))}
-                    inputMode="decimal"
-                    min="0.01"
-                    step="0.1"
-                    aria-label="Resa"
-                    className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.yield)}`}
-                  />
-                  {editErrors.yield && <p className="text-[9px] text-danger">{editErrors.yield.message}</p>}
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Categoria</label>
-                  <InlineCategoryPicker
-                    categories={bomCategories}
-                    selectedId={bomEditCategoryId}
-                    onSelect={setBomEditCategoryId}
-                    onCreate={async (name) => {
-                      if (onCreateCategory) await onCreateCategory({ name, scope: 'bom', printAreas: ['kitchen'] });
-                    }}
-                    label=""
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 mt-2">
-                <label className="text-sm font-medium">Pre-preparata</label>
-                <input
-                  type="checkbox"
-                  checked={bomEditPreBatched === 1}
-                  onChange={(e) => {
-                    const newVal = e.target.checked ? 1 : 0;
-                    setBomEditPreBatched(newVal);
-                    if (selectedBom) void onUpdate?.(selectedBom.id, { isPreBatched: newVal });
-                  }}
-                  className="w-4 h-4"
-                />
-                <span className="text-xs text-gray-500">
-                  Abilita stock separato per questa preparazione
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button variant="primary" onClick={() => void saveBomMetadata()}>
-                  <Save size={14} />
-                  Salva dettagli
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => void onUpdate?.(selectedBom.id, { isActive: !selectedBom.isActive })}
-                >
-                  {selectedBom.isActive ? 'Disattiva' : 'Attiva'}
-                </Button>
-                <Button variant="danger" onClick={() => void removeBom(selectedBom.id)}>
-                  Elimina
-                </Button>
-              </div>
-
-              <RecipeBuilder
-                components={selectedBom.components.map((c) => ({
-                  componentType: c.componentType as 'ingredient' | 'bom',
-                  componentId: c.componentId,
-                  quantity: c.quantity,
-                  unit: c.unit,
-                }))}
-                inventory={inventory}
-                bomItems={bomItems.filter((b) => b.id !== selectedBom.id)}
-                onChange={(updated) => {
-                  if (!onReplaceComponents) return;
-                  void onReplaceComponents(selectedBom.id, { components: updated });
-                }}
-                showCost
-                bomItemId={selectedBom.id}
-              />
-            </>
-          )}
-        </Modal>
-
-        <ConfirmDialog
-          open={!!confirm}
-          title="Conferma"
-          message={confirm?.message ?? ''}
-          onConfirm={handleConfirm}
-          onCancel={handleCancel}
-        />
       </div>
+
+      {/* Edit Modal */}
+      <Modal
+        open={!!selectedBom}
+        onClose={() => setSelectedBomId('')}
+        title={selectedBom ? `Editor BoM: ${selectedBom.name}` : ''}
+        size="lg"
+        dirty={editModalDirty}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setSelectedBomId('')}>
+              Chiudi
+            </Button>
+          </>
+        }
+      >
+        {selectedBom && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Nome</label>
+                <input
+                  value={bomEditName}
+                  onChange={(e) => setBomEditName(e.target.value)}
+                  className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
+                />
+                {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Unità</label>
+                <UnitSelect
+                  value={bomEditUnit}
+                  onChange={setBomEditUnit}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Resa</label>
+                <input
+                  value={bomEditYield}
+                  onChange={(e) => setBomEditYield(e.target.value.replace(/[^0-9.]/g, ''))}
+                  inputMode="decimal"
+                  min="0.01"
+                  step="0.1"
+                  aria-label="Resa"
+                  className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.yield)}`}
+                />
+                {editErrors.yield && <p className="text-[9px] text-danger">{editErrors.yield.message}</p>}
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Categoria</label>
+                <InlineCategoryPicker
+                  categories={bomCategories}
+                  selectedId={bomEditCategoryId}
+                  onSelect={setBomEditCategoryId}
+                  onCreate={async (name) => {
+                    if (onCreateCategory) await onCreateCategory({ name, scope: 'bom', printAreas: ['kitchen'] });
+                  }}
+                  label=""
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button variant="primary" onClick={() => void saveBomMetadata()}>
+                <Save size={14} />
+                Salva dettagli
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => void onUpdate?.(selectedBom.id, { isActive: !selectedBom.isActive })}
+              >
+                {selectedBom.isActive ? 'Disattiva' : 'Attiva'}
+              </Button>
+              <Button variant="danger" onClick={() => void removeBom(selectedBom.id)}>
+                Elimina
+              </Button>
+            </div>
+
+            <RecipeBuilder
+              components={selectedBom.components.map((c) => ({
+                componentType: c.componentType as 'ingredient' | 'bom' | 'prep',
+                componentId: c.componentId,
+                quantity: c.quantity,
+                unit: c.unit,
+              }))}
+              inventory={inventory}
+              bomItems={bomItems.filter((b) => b.id !== selectedBom.id)}
+              prepItems={prepItems}
+              onChange={(updated) => {
+                if (!onReplaceComponents) return;
+                void onReplaceComponents(selectedBom.id, { components: updated });
+              }}
+              showCost
+              bomItemId={selectedBom.id}
+            />
+          </>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={!!confirm}
+        title="Conferma"
+        message={confirm?.message ?? ''}
+        onConfirm={handleConfirm}
+        onCancel={handleCancel}
+      />
     </div>
   );
 }

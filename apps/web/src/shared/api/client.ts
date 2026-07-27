@@ -4,7 +4,6 @@ import {
   bomCreateRequestSchema,
   bomItemSchema,
   bomListResponseSchema,
-  bomStockItemSchema,
   bomUpdateRequestSchema,
   bomUpsertComponentsRequestSchema,
   createOrderRequestSchema,
@@ -54,6 +53,18 @@ import {
   paymentsListResponseSchema,
   printJobSchema,
   printJobsListResponseSchema,
+  printJobsPollQuerySchema,
+  printBridgeListResponseSchema,
+  printBridgeSchema,
+  printBridgeUpdateMappingsRequestSchema,
+  printBridgeUpdateClaimedAreasRequestSchema,
+  printBridgeOnboardingSecretCreateRequestSchema,
+  printBridgeOnboardingSecretCreateResponseSchema,
+  printBridgeOnboardingSecretsListResponseSchema,
+  printBridgeTestPrintRequestSchema,
+  type PrintBridgeOnboardingSecret,
+  type PrintBridgeOnboardingSecretCreateResponse,
+  printBridgeTestPrintResponseSchema,
   printJobsQuerySchema,
   dispatchPrintJobRequestSchema,
   reservationSchema,
@@ -143,10 +154,14 @@ import {
   loyaltyBalanceSchema,
   loyaltyTransactionSchema,
   loyaltyTransactionsListSchema,
+  prepItemSchema,
+  prepItemUpdateRequestSchema,
+  preparePrepItemResponseSchema,
+  unitConversionSchema,
+  unitConversionCreateRequestSchema,
   type AppData,
   type BomCreateRequest,
   type BomItem,
-  type BomStockItem,
   type BomUpdateRequest,
   type BomUpsertComponentsRequest,
   type CreateOrderRequest,
@@ -155,6 +170,8 @@ import {
   type Ingredient,
   type IngredientCreateRequest,
   type IngredientUpdateRequest,
+  type PrepItem,
+  type UnitConversion,
   type Category,
   type CategoryCreateRequest,
   type CategoryUpdateRequest,
@@ -191,6 +208,13 @@ import {
   type RefundPaymentResponse,
   type PrintJob,
   type PrintJobsQuery,
+  type PrintBridge,
+  type PrintBridgePrinterMapping,
+  type PrintBridgeUpdateMappingsRequest,
+  type PrintBridgeUpdateClaimedAreasRequest,
+  type PrintBridgeTestPrintRequest,
+  type PrintBridgeTestPrintResponse,
+  type PrintArea,
   type DispatchPrintJobRequest,
   type Reservation,
   type ReservationCreateRequest,
@@ -476,6 +500,13 @@ async function authorizedFetch(url: string, init?: RequestInit, retried = false,
       : undefined
   );
 
+  if (!getAccessToken() && !retried) {
+    const refreshed = await refreshSession();
+    if (!refreshed) {
+      throw new Error('Sessione scaduta. Effettua di nuovo il login.');
+    }
+  }
+
   const response = await fetch(url, {
     ...init,
     headers: {
@@ -559,6 +590,7 @@ export interface BootstrapResponse {
   printJobs: PrintJob[];
   inventoryItems: Ingredient[];
   bomItems: BomItem[];
+  prepItems: PrepItem[];
   menuItemsAdmin: MenuItemAdmin[];
   categories: Category[];
   customers: Customer[];
@@ -575,6 +607,7 @@ const bootstrapResponseSchema = z.object({
   printJobs: printJobsListResponseSchema,
   inventoryItems: z.array(ingredientSchema),
   bomItems: bomListResponseSchema,
+  prepItems: z.array(prepItemSchema),
   menuItemsAdmin: menuItemAdminListResponseSchema,
   categories: categoriesListResponseSchema,
   customers: customerListResponseSchema,
@@ -604,6 +637,59 @@ export async function createIngredient(payload: IngredientCreateRequest): Promis
 export async function fetchInventory(): Promise<Ingredient[]> {
   const response = await authorizedFetch(`${API_URL}/api/inventory`);
   return readJson(response, z.array(ingredientSchema));
+}
+
+export async function listPrepItems(): Promise<PrepItem[]> {
+  const response = await authorizedFetch(`${API_URL}/api/prep-items`);
+  return readJson(response, z.array(prepItemSchema));
+}
+
+export async function createPrepItem(payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }): Promise<PrepItem> {
+  const response = await authorizedFetch(`${API_URL}/api/prep-items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJson(response, prepItemSchema);
+}
+
+export async function updatePrepItem(id: string, payload: { name?: string; quantityPerUnit?: number; unit?: string }): Promise<PrepItem> {
+  const request = prepItemUpdateRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/prep-items/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, prepItemSchema);
+}
+
+export async function deletePrepItem(id: string): Promise<{ success: boolean }> {
+  const response = await authorizedFetch(`${API_URL}/api/prep-items/${id}`, { method: 'DELETE' });
+  return readJson(response, z.object({ success: z.boolean() }));
+}
+
+export async function preparePrepItem(id: string, quantity: number): Promise<{ id: string; name: string; previousStock: number; newStock: number; ingredientDeducted: number }> {
+  const response = await authorizedFetch(`${API_URL}/api/prep-items/${id}/prepare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity }),
+  });
+  return readJson(response, preparePrepItemResponseSchema);
+}
+
+export async function fetchUnitConversions(inventoryId: string): Promise<UnitConversion[]> {
+  const response = await authorizedFetch(`${API_URL}/api/inventory/${inventoryId}/conversions`);
+  return readJson(response, z.array(unitConversionSchema));
+}
+
+export async function createUnitConversion(inventoryId: string, payload: { fromUnit: string; toUnit: string; factor: number }): Promise<UnitConversion> {
+  const request = unitConversionCreateRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/inventory/${inventoryId}/conversions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, unitConversionSchema);
 }
 
 export async function updateIngredient(id: string, payload: IngredientUpdateRequest): Promise<Ingredient> {
@@ -1258,40 +1344,6 @@ export async function deleteBomItem(id: string): Promise<LogoutResponse> {
   return readJson(response, logoutResponseSchema);
 }
 
-export async function fetchBomStock(): Promise<BomStockItem[]> {
-  const response = await authorizedFetch(`${API_URL}/api/bom/stock`);
-  return readJson(response, z.array(bomStockItemSchema));
-}
-
-export async function prepareBom(id: string, quantity: number): Promise<{
-  bomId: string;
-  name: string;
-  previousStock: number;
-  newStock: number;
-  ingredientsDeducted: Array<{ id: string; name: string; quantity: number; unit: string }>;
-}> {
-  const response = await authorizedFetch(`${API_URL}/api/bom/${id}/prepare`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quantity }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error((err as { message?: string }).message || 'Failed to prepare BOM');
-  }
-
-  return response.json();
-}
-
-export async function updateBomPreBatched(id: string, isPreBatched: boolean): Promise<void> {
-  await authorizedFetch(`${API_URL}/api/bom/${id}/pre-batched`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ isPreBatched }),
-  });
-}
-
 export async function fetchPayments(filters: PaymentFilters = {}): Promise<Payment[]> {
   const parsed = paymentFiltersSchema.parse(filters);
   const query = new URLSearchParams();
@@ -1332,6 +1384,84 @@ export async function fetchPrintJobs(queryPayload: PrintJobsQuery = {}): Promise
   return readJson(response, printJobsListResponseSchema);
 }
 
+export async function pollPrintJobsRequest(areas: PrintArea[]): Promise<PrintJob[]> {
+  const parsed = printJobsPollQuerySchema.parse({ areas: areas.join(',') });
+  const response = await authorizedFetch(`${API_URL}/api/print-jobs/poll?areas=${encodeURIComponent(parsed.areas)}`);
+  return readJson(response, printJobsListResponseSchema);
+}
+
+export async function listPrintBridges(): Promise<PrintBridge[]> {
+  const response = await authorizedFetch(`${API_URL}/api/print-bridge`);
+  return readJson(response, printBridgeListResponseSchema);
+}
+
+export async function listOnboardingSecrets(): Promise<PrintBridgeOnboardingSecret[]> {
+  const r = await authorizedFetch(`${API_URL}/api/print-bridge/onboarding-secret`);
+  return printBridgeOnboardingSecretsListResponseSchema.parse(r);
+}
+
+export async function createOnboardingSecretClient(payload?: { bridgeIdHint?: string }): Promise<PrintBridgeOnboardingSecretCreateResponse> {
+  const r = await authorizedFetch(`${API_URL}/api/print-bridge/onboarding-secret`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  return printBridgeOnboardingSecretCreateResponseSchema.parse(r);
+}
+
+export async function revokeOnboardingSecretClient(id: string): Promise<{ success: true; id: string }> {
+  return authorizedFetch(`${API_URL}/api/print-bridge/onboarding-secret/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function updateBridgeMappings(
+  bridgeId: string,
+  payload: PrintBridgeUpdateMappingsRequest,
+): Promise<PrintBridge> {
+  const request = printBridgeUpdateMappingsRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/print-bridge/${bridgeId}/mappings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, printBridgeSchema);
+}
+
+export async function updateBridgeClaimedAreas(
+  bridgeId: string,
+  payload: PrintBridgeUpdateClaimedAreasRequest,
+): Promise<PrintBridge> {
+  const request = printBridgeUpdateClaimedAreasRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/print-bridge/${bridgeId}/claimed-areas`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, printBridgeSchema);
+}
+
+export async function triggerBridgeTestPrint(
+  bridgeId: string,
+  payload: PrintBridgeTestPrintRequest,
+): Promise<PrintBridgeTestPrintResponse> {
+  const request = printBridgeTestPrintRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/print-bridge/${bridgeId}/test-print`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, printBridgeTestPrintResponseSchema);
+}
+
+export type {
+  PrintBridgePrinterMapping,
+  PrintBridgeUpdateMappingsRequest,
+  PrintBridgeUpdateClaimedAreasRequest,
+  PrintBridgeTestPrintRequest,
+  PrintBridgeTestPrintResponse,
+} from '@gustopos/shared';
+
 export async function dispatchPrintJob(id: string, payload: DispatchPrintJobRequest = {}): Promise<PrintJob> {
   const request = dispatchPrintJobRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/print-jobs/${id}/dispatch`, {
@@ -1350,6 +1480,17 @@ export async function completePrintJob(id: string): Promise<PrintJob> {
     headers: {
       'Content-Type': 'application/json',
     },
+  });
+  return readJson(response, printJobSchema);
+}
+
+export async function failPrintJob(id: string, error: string): Promise<PrintJob> {
+  const response = await authorizedFetch(`${API_URL}/api/print-jobs/${id}/fail`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ error }),
   });
   return readJson(response, printJobSchema);
 }

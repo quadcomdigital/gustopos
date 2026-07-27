@@ -14,8 +14,9 @@ import type {
   MenuItemCreateRequest,
   MenuItemReplaceRecipeRequest,
   MenuItemUpdateRequest,
+  PrepItem,
 } from '@gustopos/shared';
-import { Package, ChevronUp, ChevronDown } from 'lucide-react';
+import { Package, ChevronUp, ChevronDown, ChefHat } from 'lucide-react';
 import LowStockAlert from './LowStockAlert';
 import StockLevelChart from './StockLevelChart';
 import CategoriesTab from './CategoriesTab';
@@ -24,20 +25,22 @@ import BomTab from './BomTab';
 import MenuItemsTab from './MenuItemsTab';
 import CategoryPoolEditor from './CategoryPoolEditor';
 import FoodCostMatrixTab from './FoodCostMatrixTab';
-import BomStockCard from './BomStockCard';
+import PrepView from './PrepView';
 import type { CategoryModifierPool, CategoryModifierPoolCreateRequest, CategoryModifierPoolUpdateRequest } from '@gustopos/shared';
 
-export type InventoryTabKey = 'stock' | 'bom' | 'menu' | 'categories' | 'pools' | 'foodcost';
+export type InventoryTabKey = 'stock' | 'bom' | 'prep' | 'menu' | 'categories' | 'pools' | 'foodcost';
 type TabKey = InventoryTabKey;
 
 interface InventoryTabsProps {
   inventory: Ingredient[];
   bomItems: BomItem[];
+  prepItems: PrepItem[];
   menuItems: MenuItemAdmin[];
   categories: Category[];
   simpleCatalogMode?: boolean;
   onRefreshInventory?: () => Promise<void>;
   onRefreshBom?: () => Promise<void>;
+  onRefreshPrepItems?: () => Promise<void>;
   onRefreshCategories?: () => Promise<void>;
   onRefreshMenu?: () => Promise<void>;
   onCreateCategory?: (payload: CategoryCreateRequest) => Promise<void>;
@@ -57,7 +60,7 @@ interface InventoryTabsProps {
   onReplaceMenuRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   onSetMenuItemActive?: (id: string, active: boolean) => Promise<void>;
   onDeleteMenuItem?: (id: string) => Promise<void>;
-  onCreateCategoryForMenu?: (name: string) => Promise<void>;
+  onCreateCategoryForMenu?: (name: string, scope: Category['scope']) => Promise<void>;
   categoryModifierPools?: CategoryModifierPool[];
   onRefreshCategoryModifierPools?: () => Promise<void>;
   onCreateCategoryModifierPool?: (payload: CategoryModifierPoolCreateRequest) => Promise<void>;
@@ -114,6 +117,7 @@ interface InventoryTabsProps {
 
 const TABS: Array<{ key: InventoryTabKey; label: string }> = [
   { key: 'stock', label: 'Ingredienti' },
+  { key: 'prep', label: 'Preparazioni' },
   { key: 'bom', label: 'BoM' },
   { key: 'menu', label: 'Menu' },
   { key: 'categories', label: 'Categorie' },
@@ -130,11 +134,13 @@ const SIMPLE_TABS: Array<{ key: InventoryTabKey; label: string }> = [
 export default function InventoryTabs({
   inventory,
   bomItems,
+  prepItems,
   menuItems,
   categories,
   simpleCatalogMode = false,
   onRefreshInventory,
   onRefreshBom,
+  onRefreshPrepItems,
   onRefreshCategories,
   onRefreshMenu,
   onCreateCategory,
@@ -170,7 +176,7 @@ export default function InventoryTabs({
 }: InventoryTabsProps) {
   const tabs = simpleCatalogMode ? SIMPLE_TABS : TABS;
   const [activeTab, setActiveTab] = useState<InventoryTabKey>(simpleCatalogMode ? 'menu' : 'stock');
-  const [cardsHidden, setCardsHidden] = useState(false);
+  const [cardsHidden, setCardsHidden] = useState(true);
 
   const handleTabSwitch = (tab: InventoryTabKey) => {
     setActiveTab(tab);
@@ -203,7 +209,7 @@ export default function InventoryTabs({
       {/* Summary Cards */}
       {!cardsHidden && (
       <div className="mb-4 sm:mb-6 space-y-3">
-        <div className={`grid gap-3 sm:gap-4 ${simpleCatalogMode ? 'grid-cols-2 md:grid-cols-3' : 'grid-cols-2 md:grid-cols-3'}`}>
+        <div className={`grid gap-3 sm:gap-4 ${simpleCatalogMode ? 'grid-cols-2 md:grid-cols-3' : 'grid-cols-2 md:grid-cols-4'}`}>
           <div className="panel-card">
             <div className="w-8 h-8 sm:w-10 sm:h-10 bg-blue-50 text-accent rounded-lg flex items-center justify-center mb-2 sm:mb-3">
               <Package size={18} />
@@ -215,11 +221,20 @@ export default function InventoryTabs({
           </div>
           {!simpleCatalogMode && (
             <div className="panel-card">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center mb-2 sm:mb-3">
+              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-accent/10 text-accent rounded-lg flex items-center justify-center mb-2 sm:mb-3">
                 <Package size={18} />
               </div>
               <p className="text-[9px] sm:text-[10px] font-bold text-text-muted uppercase tracking-widest">BoM</p>
               <p className="text-lg sm:text-2xl font-bold text-primary">{bomItems.length}</p>
+            </div>
+          )}
+          {!simpleCatalogMode && (
+            <div className="panel-card">
+              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-orange-50 text-warning rounded-lg flex items-center justify-center mb-2 sm:mb-3">
+                <ChefHat size={18} />
+              </div>
+              <p className="text-[9px] sm:text-[10px] font-bold text-text-muted uppercase tracking-widest">Preparazioni</p>
+              <p className="text-lg sm:text-2xl font-bold text-primary">{prepItems.length}</p>
             </div>
           )}
           <div className="panel-card">
@@ -257,7 +272,6 @@ export default function InventoryTabs({
             }}
           />
         )}
-        {!simpleCatalogMode && <BomStockCard />}
       </div>
       )}
 
@@ -290,16 +304,15 @@ export default function InventoryTabs({
 
       {/* Mobile Tabs */}
       <div className="md:hidden sticky top-0 z-30 bg-bg pt-1 pb-2 -mx-4 px-4">
-        <div className="grid gap-1.5 bg-white rounded-xl border border-border p-1 shadow-sm"
-          style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}
-        >
+        <div className="flex gap-1.5 bg-white rounded-xl border border-border p-1 shadow-sm overflow-x-auto no-scrollbar" style={{ scrollSnapType: 'x mandatory' }}>
           {tabs.map(({ key, label }) => (
             <button
               key={key}
               onClick={() => handleTabSwitch(key)}
-              className={`py-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 ${
+              className={`py-2.5 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 whitespace-nowrap flex-shrink-0 ${
                 activeTab === key ? 'bg-primary text-white shadow-sm' : 'text-secondary'
               }`}
+              style={{ scrollSnapAlign: 'start' }}
             >
               {label}
             </button>
@@ -339,6 +352,7 @@ export default function InventoryTabs({
         {activeTab === 'bom' && !simpleCatalogMode && (
           <BomTab
             bomItems={bomItems}
+            prepItems={prepItems}
             inventory={inventory}
             categories={categories}
             loading={false}
@@ -351,12 +365,22 @@ export default function InventoryTabs({
           />
         )}
 
+        {activeTab === 'prep' && !simpleCatalogMode && (
+          <PrepView
+            inventory={inventory}
+            prepItems={prepItems}
+            onRefresh={onRefreshPrepItems}
+          />
+        )}
+
         {activeTab === 'menu' && (
           <MenuItemsTab
             menuItems={menuItems}
             inventory={inventory}
             bomItems={bomItems}
+            prepItems={prepItems}
             categories={categories}
+            categoryModifierPools={categoryModifierPools}
             simpleCatalogMode={simpleCatalogMode}
             loading={false}
             onRefresh={onRefreshMenu}

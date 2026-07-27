@@ -4,6 +4,7 @@ import type {
   BomItem,
   MenuItemAdmin,
   Category,
+  PrepItem,
 } from '@gustopos/shared';
 
 export const COMMON_UNITS = ['kg', 'g', 'lt', 'ml', 'pz', 'unit'] as const;
@@ -20,9 +21,9 @@ export interface InventoryTabProps {
   onCreateCategory?: (payload: { name: string; scope: Category['scope']; printAreas: Array<'kitchen' | 'bar' | 'cashier'> }) => Promise<void>;
   onUpdateCategory?: (id: string, payload: { name?: string; isActive?: boolean; printAreas?: Array<'kitchen' | 'bar' | 'cashier'> }) => Promise<void>;
   onDeleteCategory?: (id: string) => Promise<void>;
-  onCreateBom?: (payload: { name: string; unit: string; yieldQuantity: number; categoryId?: string; isPreBatched: number; components: Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
+  onCreateBom?: (payload: { name: string; unit: string; yieldQuantity: number; categoryId?: string; components: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
   onUpdateBom?: (id: string, payload: { name?: string; unit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean }) => Promise<void>;
-  onReplaceBomComponents?: (id: string, payload: { components: Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
+  onReplaceBomComponents?: (id: string, payload: { components: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
   onDeleteBom?: (id: string) => Promise<void>;
   onCreateIngredient?: (payload: { name: string; quantity: number; unit: string; minThreshold: number; categoryId?: string }) => Promise<void>;
   onUpdateIngredient?: (id: string, payload: { name?: string; quantity?: number; unit?: string; minThreshold?: number; categoryId?: string }) => Promise<void>;
@@ -33,7 +34,7 @@ export interface InventoryTabProps {
     category: string;
     categoryId?: string;
     printAreas?: Array<'kitchen' | 'bar' | 'cashier'>;
-    recipe: Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }>;
+    recipe: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }>;
     modifierGroups?: Array<{
       id: string;
       name: string;
@@ -59,7 +60,7 @@ export interface InventoryTabProps {
     }>;
   }) => Promise<void>;
   onReplaceMenuRecipe?: (id: string, payload: {
-    recipe: Array<{ componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }>;
+    recipe: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }>;
   }) => Promise<void>;
   onSetMenuItemActive?: (id: string, active: boolean) => Promise<void>;
   onDeleteMenuItem?: (id: string) => Promise<void>;
@@ -74,32 +75,39 @@ export function useScopedCategories(categories: Category[], scope: Category['sco
   );
 }
 
-/** Build a map of component key → display name for ingredients + BoM */
-export function useComponentNameMap(inventory: Ingredient[], bomItems: BomItem[]) {
-  return useMemo(() => {
-    const entries: Array<[string, string]> = [];
-    for (const ing of inventory) entries.push([`ingredient:${ing.id}`, ing.name]);
-    for (const bom of bomItems) entries.push([`bom:${bom.id}`, bom.name]);
-    return new Map(entries);
-  }, [inventory, bomItems]);
-}
+export const componentTypeLabel = (componentType: 'ingredient' | 'bom' | 'prep' | undefined) =>
+  componentType === 'ingredient' ? 'Ingrediente' : componentType === 'prep' ? 'Preparato' : 'BoM';
 
-/** Build recipe candidates for select dropdowns */
-export function useRecipeCandidates(
-  type: 'ingredient' | 'bom',
+export function explodeBomCost(
+  components: Array<{ componentType: string; componentId: string; quantity: number }>,
   inventory: Ingredient[],
   bomItems: BomItem[],
-  excludeBomId?: string,
-) {
-  return useMemo(() => {
-    if (type === 'ingredient') {
-      return inventory.map((item) => ({ id: item.id, label: `${item.name} (${item.id})`, unit: item.unit }));
+  prepItems: PrepItem[],
+  visitedBomIds?: Set<string>,
+): number {
+  const visited = visitedBomIds ?? new Set<string>();
+  let total = 0;
+  for (const comp of components) {
+    if (comp.componentType === 'ingredient') {
+      const ing = inventory.find((i) => i.id === comp.componentId);
+      if (ing?.unitCost) total += comp.quantity * ing.unitCost;
+    } else if (comp.componentType === 'prep') {
+      const prep = prepItems.find((p) => p.id === comp.componentId);
+      if (prep) {
+        const ing = inventory.find((i) => i.id === prep.ingredientId);
+        if (ing?.unitCost) total += comp.quantity * prep.quantityPerUnit * ing.unitCost;
+      }
+    } else if (comp.componentType === 'bom') {
+      if (visited.has(comp.componentId)) continue;
+      visited.add(comp.componentId);
+      const subBom = bomItems.find((b) => b.id === comp.componentId);
+      if (subBom) {
+        const subCost = explodeBomCost(subBom.components, inventory, bomItems, prepItems, visited);
+        if (subBom.yieldQuantity > 0) {
+          total += comp.quantity * (subCost / subBom.yieldQuantity);
+        }
+      }
     }
-    return bomItems
-      .filter((item) => item.id !== excludeBomId)
-      .map((item) => ({ id: item.id, label: `${item.name} (${item.id})`, unit: item.unit }));
-  }, [type, inventory, bomItems, excludeBomId]);
+  }
+  return total;
 }
-
-export const componentTypeLabel = (componentType: 'ingredient' | 'bom' | undefined) =>
-  componentType === 'ingredient' ? 'Ingrediente' : 'BoM';

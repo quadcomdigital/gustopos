@@ -1,19 +1,22 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import type { BomItem, Ingredient } from '@gustopos/shared';
+import type { BomItem, Ingredient, PrepItem } from '@gustopos/shared';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
+import { explodeBomCost } from './useInventoryShared';
 
 interface BomCardsProps {
   items: BomItem[];
   inventory: Ingredient[];
+  prepItems?: PrepItem[];
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onToggleActive: (id: string, active: boolean) => void;
 }
 
-export default function BomCards({ items, inventory, onEdit, onDelete, onToggleActive }: BomCardsProps) {
+export default function BomCards({ items, inventory, prepItems = [], onEdit, onDelete, onToggleActive }: BomCardsProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const ingredientNameById = new Map(inventory.map((i) => [i.id, i.name]));
+  const prepNameById = new Map(prepItems.map((p) => [p.id, p.name]));
 
   const toggle = (id: string) => {
     setExpanded((prev) => {
@@ -30,13 +33,7 @@ export default function BomCards({ items, inventory, onEdit, onDelete, onToggleA
     <div className="divide-y divide-border">
       {items.map((item) => {
         const isExpanded = expanded.has(item.id);
-        let totalCost = 0;
-        for (const comp of item.components) {
-          if (comp.componentType === 'ingredient') {
-            const ing = inventory.find((i) => i.id === comp.componentId);
-            if (ing?.unitCost) totalCost += comp.quantity * ing.unitCost;
-          }
-        }
+        const totalCost = explodeBomCost(item.components, inventory, items, prepItems);
         const costPerUnit = item.yieldQuantity > 0 ? totalCost / item.yieldQuantity : 0;
 
         return (
@@ -53,9 +50,6 @@ export default function BomCards({ items, inventory, onEdit, onDelete, onToggleA
                 </div>
               </div>
               <div className="shrink-0 flex items-center gap-2">
-                {item.isPreBatched === 1 && (
-                  <StatusPill label={`Stock: ${item.stockQuantity}`} tone="info" />
-                )}
                 <StatusPill label={item.isActive ? 'Attivo' : 'Inattivo'} tone={item.isActive ? 'success' : 'neutral'} />
               </div>
             </button>
@@ -65,8 +59,8 @@ export default function BomCards({ items, inventory, onEdit, onDelete, onToggleA
                 <div className="space-y-1 pt-2">
                   {item.components.map((comp) => (
                     <p key={comp.id} className="text-xs text-secondary">
-                      <span className="font-bold uppercase text-[10px] mr-1">{comp.componentType === 'ingredient' ? 'Ingred' : 'BoM'}</span>
-                      {comp.componentType === 'ingredient' ? (ingredientNameById.get(comp.componentId) ?? comp.componentId) : comp.componentId}
+                      <span className="font-bold uppercase text-[10px] mr-1">{comp.componentType === 'ingredient' ? 'Ingred' : comp.componentType === 'prep' ? 'Prep' : 'BoM'}</span>
+                      {comp.componentType === 'ingredient' ? (ingredientNameById.get(comp.componentId) ?? comp.componentId) : comp.componentType === 'prep' ? (prepNameById.get(comp.componentId) ?? comp.componentId) : comp.componentId}
                       {' · '}{comp.quantity} {comp.unit}
                     </p>
                   ))}

@@ -83,17 +83,71 @@ export const ingredientAdjustRequestSchema = z.object({
   notes: z.string().optional(),
 });
 
+export const prepItemSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  ingredientId: z.string(),
+  name: z.string(),
+  quantityPerUnit: z.number(),
+  unit: z.string(),
+  stockQuantity: z.number().nonnegative().default(0),
+  createdAt: z.string(),
+});
+
+export type PrepItem = z.infer<typeof prepItemSchema>;
+
+export const prepItemUpdateRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  quantityPerUnit: z.number().positive().optional(),
+  unit: z.string().min(1).optional(),
+});
+
+export type PrepItemUpdateRequest = z.infer<typeof prepItemUpdateRequestSchema>;
+
+export const unitConversionSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  inventoryId: z.string(),
+  fromUnit: z.string(),
+  toUnit: z.string(),
+  factor: z.number(),
+  createdAt: z.string(),
+});
+
+export type UnitConversion = z.infer<typeof unitConversionSchema>;
+
+export const unitConversionCreateRequestSchema = z.object({
+  fromUnit: z.string().min(1),
+  toUnit: z.string().min(1),
+  factor: z.number().positive(),
+});
+
+export type UnitConversionCreateRequest = z.infer<typeof unitConversionCreateRequestSchema>;
+
+export const preparePrepItemResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  previousStock: z.number(),
+  newStock: z.number(),
+  ingredientDeducted: z.number(),
+});
+
+export type PreparePrepItemResponse = z.infer<typeof preparePrepItemResponseSchema>;
+
 export const stockMovementTypeSchema = z.enum([
   "order_deduction",
   "order_reversal",
   "manual_adjustment",
   "purchase_receipt",
+  "prep_consumption",
+  "prep_restoration",
 ]);
 
 export const stockMovementSchema = z.object({
   id: z.string(),
   tenantId: z.string(),
-  ingredientId: z.string(),
+  ingredientId: z.string().nullable().optional(),
+  prepItemId: z.string().nullable().optional(),
   orderId: z.string().nullable().optional(),
   movementType: stockMovementTypeSchema,
   quantity: z.number(),
@@ -177,7 +231,7 @@ export const categoryModifierPoolUpdateRequestSchema = z.object({
   options: z.array(categoryModifierPoolOptionSchema.omit({ id: true })).optional(),
 });
 
-export const bomComponentTypeSchema = z.enum(["ingredient", "bom"]);
+export const bomComponentTypeSchema = z.enum(["ingredient", "bom", "prep"]);
 
 export const bomComponentSchema = z.object({
   id: z.string(),
@@ -196,8 +250,6 @@ export const bomItemSchema = z.object({
   categoryId: z.string().optional(),
   components: z.array(bomComponentSchema),
   isContainer: z.number().default(0),
-  stockQuantity: z.number().default(0),
-  isPreBatched: z.number().default(0),
 });
 
 export const bomListResponseSchema = z.array(bomItemSchema);
@@ -1355,7 +1407,6 @@ export const bomCreateRequestSchema = z.object({
   yieldQuantity: z.number().positive(),
   categoryId: z.string().optional(),
   isContainer: z.number().optional().default(0),
-  isPreBatched: z.number().optional().default(0),
   components: z.array(
     z.object({
       componentType: bomComponentTypeSchema,
@@ -1373,7 +1424,6 @@ export const bomUpdateRequestSchema = z.object({
   categoryId: z.string().optional(),
   isActive: z.boolean().optional(),
   isContainer: z.number().optional(),
-  isPreBatched: z.number().optional(),
 });
 
 export const bomUpsertComponentsRequestSchema = z.object({
@@ -1397,17 +1447,6 @@ export const bomAddComponentRequestSchema = z.object({
 export const bomRemoveComponentRequestSchema = z.object({
   componentType: bomComponentTypeSchema,
   componentId: z.string().min(1),
-});
-
-export const prepareBomSchema = z.object({
-  quantity: z.number().positive(),
-});
-
-export const bomStockItemSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  stockQuantity: z.number(),
-  unit: z.string(),
 });
 
 export const menuItemAddRecipeComponentRequestSchema = z.object({
@@ -1586,6 +1625,7 @@ export const printJobSchema = z.object({
   status: z.enum(["pending", "dispatched", "completed", "failed"]),
   payload: z.string(),
   error: z.string().optional(),
+  bridgeId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   dispatchedAt: z.string().optional(),
@@ -1606,6 +1646,144 @@ export const dispatchPrintJobRequestSchema = z.object({
 export const printJobsPollQuerySchema = z.object({
   areas: z.string().min(1), // comma-separated: "kitchen,bar,cashier"
 });
+
+export const printBridgeStatusSchema = z.enum(["active", "offline"]);
+
+export const printBridgePrinterSchema = z.object({
+  area: printAreaSchema,
+  name: z.string().min(1),
+  ip: z.string().nullable().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+});
+
+export const printBridgePrinterMappingSchema = z.object({
+  area: printAreaSchema,
+  name: z.string().min(1),
+  ip: z.string().nullable().optional(),
+  port: z.number().int().positive().nullable().optional(),
+});
+
+export const printBridgeUpdateMappingsRequestSchema = z.object({
+  mappings: z.array(printBridgePrinterMappingSchema).default([]),
+});
+
+export const printBridgeUpdateClaimedAreasRequestSchema = z.object({
+  claimedAreas: z.array(printAreaSchema).min(1),
+});
+
+export const printBridgeTestPrintRequestSchema = z.object({
+  area: printAreaSchema,
+  message: z.string().max(200).optional(),
+});
+
+export const printBridgeTestPrintResponseSchema = z.object({
+  jobId: z.string(),
+  bridgeId: z.string(),
+  area: printAreaSchema,
+  orderId: z.string(),
+});
+
+export const printBridgeSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  name: z.string(),
+  host: z.string().nullable().optional(),
+  version: z.string().nullable().optional(),
+  status: printBridgeStatusSchema,
+  areas: z.array(printAreaSchema),
+  printers: z.array(printBridgePrinterSchema),
+  mappings: z.array(printBridgePrinterMappingSchema).default([]),
+  claimedAreas: z.array(printAreaSchema).default([]),
+  lastHeartbeatAt: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const printBridgeListResponseSchema = z.array(printBridgeSchema);
+
+export const printBridgeHeartbeatRequestSchema = z.object({
+  bridgeId: z.string().min(1),
+  name: z.string().min(1).optional(),
+  host: z.string().nullable().optional(),
+  version: z.string().nullable().optional(),
+  areas: z.array(printAreaSchema).min(1),
+  printers: z.array(printBridgePrinterSchema).default([]),
+});
+
+export const printBridgeHeartbeatResponseSchema = z.object({
+  bridge: printBridgeSchema,
+  serverTime: z.string(),
+});
+
+export const printBridgeClaimRequestSchema = z.object({
+  bridgeId: z.string().min(1),
+  limit: z.number().int().min(1).max(100).default(10),
+});
+
+export const printBridgeClaimResponseSchema = z.object({
+  jobs: z.array(printJobSchema),
+});
+
+export const printBridgeJobCompleteRequestSchema = z.object({
+  bridgeId: z.string().min(1),
+  notes: z.string().max(500).optional(),
+});
+
+export const printBridgeJobFailRequestSchema = z.object({
+  bridgeId: z.string().min(1),
+  error: z.string().min(1).max(500),
+});
+
+export const printBridgeOnboardingSecretSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  suggestedBridgeId: z.string(),
+  boundBridgeId: z.string().nullable().optional(),
+  lastUsedAt: z.string().nullable().optional(),
+  revokedAt: z.string().nullable().optional(),
+  createdByStaffId: z.string().nullable().optional(),
+  createdAt: z.string(),
+  isActive: z.boolean(),
+});
+
+export const printBridgeOnboardingSecretCreateRequestSchema = z.object({
+  bridgeIdHint: z
+    .string()
+    .min(1)
+    .max(80)
+    .regex(/^[A-Za-z0-9_-]+$/, "Only letters, numbers, underscore, hyphen")
+    .optional(),
+});
+
+export const printBridgeOnboardingSecretCreateResponseSchema = z.object({
+  secret: printBridgeOnboardingSecretSchema,
+  plaintext: z.string(),
+  suggestedBridgeId: z.string(),
+  bootstrapSnippet: z.string(),
+});
+
+export const localBridgeArea = z.enum(["kitchen", "bar", "cashier"]);
+export const localBridgePrinterPerAreaSchema = z.object({
+  area: localBridgeArea,
+  printerName: z.string().min(1),
+});
+export const localBridgeConfigSchema = z.object({
+  enabled: z.boolean(),
+  bridgeId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+  deviceName: z.string().min(1).max(80),
+  areas: z.array(localBridgeArea).min(1),
+  printersPerArea: z.array(localBridgePrinterPerAreaSchema).default([]),
+  enableWakeLock: z.boolean().default(true),
+  enableKeepaliveWorker: z.boolean().default(true),
+  heartbeatIntervalMs: z.number().int().min(5000).max(120000).default(15000),
+  claimIntervalMs: z.number().int().min(1000).max(60000).default(3000),
+  enabledAt: z.string().nullable().optional(),
+});
+export type LocalBridgeArea = z.infer<typeof localBridgeArea>;
+export type LocalBridgePrinterPerArea = z.infer<typeof localBridgePrinterPerAreaSchema>;
+export type LocalBridgeConfig = z.infer<typeof localBridgeConfigSchema>;
+
+export const printBridgeOnboardingSecretsListResponseSchema = z.array(printBridgeOnboardingSecretSchema);
 
 export const failPrintJobRequestSchema = z.object({
   error: z.string().min(1).max(500),
@@ -1901,6 +2079,25 @@ export type RefundPaymentResponse = z.infer<typeof refundPaymentResponseSchema>;
 export type PrintJob = z.infer<typeof printJobSchema>;
 export type PrintJobsListResponse = z.infer<typeof printJobsListResponseSchema>;
 export type PrintJobsQuery = z.infer<typeof printJobsQuerySchema>;
+export type PrintBridgeStatus = z.infer<typeof printBridgeStatusSchema>;
+export type PrintBridgePrinter = z.infer<typeof printBridgePrinterSchema>;
+export type PrintBridge = z.infer<typeof printBridgeSchema>;
+export type PrintBridgePrinterMapping = z.infer<typeof printBridgePrinterMappingSchema>;
+export type PrintBridgeUpdateMappingsRequest = z.infer<typeof printBridgeUpdateMappingsRequestSchema>;
+export type PrintBridgeUpdateClaimedAreasRequest = z.infer<typeof printBridgeUpdateClaimedAreasRequestSchema>;
+export type PrintBridgeTestPrintRequest = z.infer<typeof printBridgeTestPrintRequestSchema>;
+export type PrintBridgeTestPrintResponse = z.infer<typeof printBridgeTestPrintResponseSchema>;
+export type PrintBridgeListResponse = z.infer<typeof printBridgeListResponseSchema>;
+export type PrintBridgeHeartbeatRequest = z.infer<typeof printBridgeHeartbeatRequestSchema>;
+export type PrintBridgeHeartbeatResponse = z.infer<typeof printBridgeHeartbeatResponseSchema>;
+export type PrintBridgeClaimRequest = z.infer<typeof printBridgeClaimRequestSchema>;
+export type PrintBridgeClaimResponse = z.infer<typeof printBridgeClaimResponseSchema>;
+export type PrintBridgeJobCompleteRequest = z.infer<typeof printBridgeJobCompleteRequestSchema>;
+export type PrintBridgeJobFailRequest = z.infer<typeof printBridgeJobFailRequestSchema>;
+export type PrintBridgeOnboardingSecret = z.infer<typeof printBridgeOnboardingSecretSchema>;
+export type PrintBridgeOnboardingSecretCreateRequest = z.infer<typeof printBridgeOnboardingSecretCreateRequestSchema>;
+export type PrintBridgeOnboardingSecretCreateResponse = z.infer<typeof printBridgeOnboardingSecretCreateResponseSchema>;
+export type PrintBridgeOnboardingSecretsListResponse = z.infer<typeof printBridgeOnboardingSecretsListResponseSchema>;
 export type DispatchPrintJobRequest = z.infer<typeof dispatchPrintJobRequestSchema>;
 export type ConfirmPrintJobRequest = z.infer<typeof confirmPrintJobRequestSchema>;
 export type RetryPrintJobRequest = z.infer<typeof retryPrintJobRequestSchema>;
@@ -1965,8 +2162,6 @@ export type CouponValidateRequest = z.infer<typeof couponValidateRequestSchema>;
 export type CouponValidateResponse = z.infer<typeof couponValidateResponseSchema>;
 export type BomAddComponentRequest = z.infer<typeof bomAddComponentRequestSchema>;
 export type BomRemoveComponentRequest = z.infer<typeof bomRemoveComponentRequestSchema>;
-export type PrepareBom = z.infer<typeof prepareBomSchema>;
-export type BomStockItem = z.infer<typeof bomStockItemSchema>;
 export type MenuItemAddRecipeComponentRequest = z.infer<typeof menuItemAddRecipeComponentRequestSchema>;
 export type MenuItemRemoveRecipeComponentRequest = z.infer<typeof menuItemRemoveRecipeComponentRequestSchema>;
 

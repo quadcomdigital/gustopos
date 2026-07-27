@@ -1,0 +1,226 @@
+import { useState, useMemo, useEffect } from 'react';
+import type { Category, Ingredient, BomItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
+import { Plus, Trash2, Loader2 } from 'lucide-react';
+import Modal from '../../../shared/ui/molecules/Modal';
+import Button from '../../../shared/ui/atoms/Button';
+import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
+import InlineCategoryPicker from '../InlineCategoryPicker';
+import ModifierGroupsEditor from '../ModifierGroupsEditor';
+import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
+
+const PRINT_AREA_LABELS: Record<string, string> = { kitchen: 'Cucina', bar: 'Bar', cashier: 'Cassa' };
+
+interface Variant {
+  id: string;
+  name: string;
+  price: string;
+  ingredientId: string;
+  quantity: string;
+  unit: string;
+}
+
+interface VariableProductModalProps {
+  open: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+  categories: Category[];
+  inventory: Ingredient[];
+  bomItems: BomItem[];
+  categoryModifierPools?: CategoryModifierPool[];
+  onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
+  onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
+  onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
+  editItem?: MenuItemAdmin | null;
+}
+
+let variantSeq = 0;
+
+export default function VariableProductModal({
+  open, onClose, onSuccess, categories, inventory, bomItems, categoryModifierPools = [], onCreateCategory, onCreateMenuItem, onUpdateMenuItem, editItem,
+}: VariableProductModalProps) {
+  const isEdit = !!editItem;
+  const [name, setName] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [categoryName, setCategoryName] = useState('');
+  const [printAreas, setPrintAreas] = useState<PrintArea[]>(['kitchen']);
+  const [variants, setVariants] = useState<Variant[]>([]);
+  const [additionalModifierGroups, setAdditionalModifierGroups] = useState<ModifierGroup[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<ValidationErrors>({});
+  const [error, setError] = useState('');
+
+  const menuCategories = useMemo(() => categories.filter((c) => !c.scope || c.scope === 'menu'), [categories]);
+  const rawIngredients = useMemo(() => inventory.filter((i) => i.isActive && i.isContainer !== 1).map((i) => ({ id: i.id, name: i.name, unit: i.unit })), [inventory]);
+
+  useEffect(() => {
+    if (editItem && open) {
+      setName(editItem.name);
+      setCategoryId(editItem.categoryId ?? '');
+      setCategoryName(editItem.category);
+      setPrintAreas(editItem.printAreas?.length ? editItem.printAreas : ['kitchen']);
+      const additional = (editItem.modifierGroups ?? []).filter((g) => g.name !== 'Formato');
+      setAdditionalModifierGroups(additional);
+    } else if (!open) {
+      setName(''); setCategoryId(''); setCategoryName(''); setPrintAreas(['kitchen']); setVariants([]); setAdditionalModifierGroups([]); setErrors({}); setError('');
+    }
+  }, [editItem, open]);
+
+  const addVariant = () => {
+    variantSeq++;
+    setVariants((prev) => [...prev, { id: `var_${Date.now()}_${variantSeq}`, name: '', price: '', ingredientId: '', quantity: '', unit: 'g' }]);
+  };
+
+  const updateVariant = (id: string, field: keyof Variant, value: string) => {
+    setVariants((prev) => prev.map((v) => v.id === id ? { ...v, [field]: value } : v));
+  };
+
+  const removeVariant = (id: string) => {
+    setVariants((prev) => prev.filter((v) => v.id !== id));
+  };
+
+  const handleSave = async () => {
+    const errs: ValidationErrors = {};
+    errs.name = required(name, 'Nome') ?? minLength(name, 2, 'Nome');
+    errs.price = variants.length === 0 ? required('1', 'Aggiungi almeno una variante') : undefined;
+    setErrors(errs);
+    if (Object.values(errs).some(Boolean)) return;
+    if (variants.length === 0) { setError('Aggiungi almeno una variante.'); return; }
+    for (const v of variants) {
+      if (!v.name.trim() || !v.price || !v.ingredientId || !v.quantity) {
+        setError('Compila tutti i campi delle varianti.'); return;
+      }
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const catName = categoryId ? (menuCategories.find((c) => c.id === categoryId)?.name ?? categoryName.trim()) : categoryName.trim();
+
+      const modifierGroup = {
+        name: 'Formato',
+        required: true,
+        minSelections: 1,
+        maxSelections: 1,
+        sortOrder: 0,
+        options: variants.map((v, idx) => ({
+          name: v.name.trim(),
+          priceDelta: Number(v.price),
+          isDefault: idx === 0,
+          isActive: true,
+          sortOrder: idx,
+          ingredientOverrides: [],
+        })),
+      };
+
+      const allModifierGroups = [modifierGroup, ...additionalModifierGroups];
+
+      if (isEdit && onUpdateMenuItem && editItem) {
+        await onUpdateMenuItem(editItem.id, {
+          name: name.trim(),
+          category: catName,
+          categoryId: categoryId || undefined,
+          defaultContainerId: editItem.defaultContainerId ?? null,
+          printAreas,
+          modifierGroups: allModifierGroups,
+        });
+      } else {
+        await onCreateMenuItem({
+          name: name.trim(),
+          category: catName,
+          categoryId: categoryId || undefined,
+          defaultContainerId: null,
+          printAreas,
+          price: 0,
+          recipe: [],
+          modifiers: [],
+          modifierGroups: allModifierGroups,
+        });
+      }
+      setSaving(false);
+      onSuccess();
+    } catch (e: any) {
+      setSaving(false);
+      setError(e?.message ?? 'Errore durante il salvataggio');
+    }
+  };
+
+  return (
+    <Modal
+      open={open} onClose={onClose}
+      title={isEdit ? `Modifica: ${editItem?.name}` : 'Prodotto variabile'}
+      size="lg" dirty={!!name || variants.length > 0}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Annulla</Button>
+          <Button variant="primary" onClick={() => void handleSave()} disabled={saving}>
+            {saving && <Loader2 size={14} className="animate-spin mr-1" />}
+            {saving ? 'Salvataggio...' : isEdit ? 'Salva' : 'Crea prodotto'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Nome</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome prodotto" className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.name)}`} />
+            {errors.name && <p className="text-[9px] text-danger mt-0.5">{errors.name.message}</p>}
+          </div>
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Categoria</label>
+            <InlineCategoryPicker
+              categories={menuCategories} selectedId={categoryId}
+              onSelect={(id) => { setCategoryId(id); const c = menuCategories.find((cat) => cat.id === id); if (c) setCategoryName(c.name); }}
+              onCreate={async (n) => { if (onCreateCategory) await onCreateCategory(n, 'menu'); }}
+              label=""
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
+            <button key={area} type="button"
+              onClick={() => setPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
+              className={`px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border ${printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'}`}>
+              stampa {PRINT_AREA_LABELS[area]}
+            </button>
+          ))}
+        </div>
+
+        <div className="border-t border-border pt-3">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Varianti</label>
+            <Button variant="secondary" onClick={addVariant}><Plus size={14} /> Aggiungi variante</Button>
+          </div>
+
+          {variants.map((v) => (
+            <div key={v.id} className="grid grid-cols-4 gap-2 items-center p-2 rounded border border-border bg-white mb-1.5">
+              <input value={v.name} onChange={(e) => updateVariant(v.id, 'name', e.target.value)} placeholder="Es. 33cl" className="px-2 py-1.5 rounded border border-border text-sm" />
+              <input value={v.price} onChange={(e) => updateVariant(v.id, 'price', e.target.value.replace(/[^0-9.-]/g, ''))} placeholder="Prezzo €" inputMode="decimal" className="px-2 py-1.5 rounded border border-border text-sm text-right" />
+              <SearchableSelect items={rawIngredients} getLabel={(i) => i.name} getValue={(i) => i.id} selectedValue={v.ingredientId} onSelect={(id) => { updateVariant(v.id, 'ingredientId', id); const ing = rawIngredients.find((i) => i.id === id); if (ing) updateVariant(v.id, 'unit', ing.unit); }} placeholder="Ingrediente" />
+              <div className="flex items-center gap-1">
+                <input type="number" value={v.quantity} onChange={(e) => updateVariant(v.id, 'quantity', e.target.value)} placeholder="Qtà" className="w-16 px-2 py-1.5 rounded border border-border text-sm text-right" min="0.001" />
+                <span className="text-[10px] text-text-muted">{v.unit}</span>
+                <button type="button" onClick={() => removeVariant(v.id)} className="p-1 text-text-muted hover:text-danger ml-auto"><Trash2 size={13} /></button>
+              </div>
+            </div>
+          ))}
+
+          {variants.length === 0 && <p className="text-xs text-text-muted text-center py-4">Aggiungi varianti per definire i formati</p>}
+          {errors.price && <p className="text-[9px] text-danger mt-1">{errors.price.message}</p>}
+        </div>
+
+        <div className="border-t border-border pt-3">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-2">Modificatori aggiuntivi</label>
+          <ModifierGroupsEditor
+            value={additionalModifierGroups}
+            inventory={inventory}
+            onChange={setAdditionalModifierGroups}
+            categoryPools={categoryId ? categoryModifierPools.filter((p) => p.categoryIds?.includes(categoryId) || p.categoryId === categoryId) : []}
+          />
+        </div>
+
+        {error && <p className="text-xs text-danger">{error}</p>}
+      </div>
+    </Modal>
+  );
+}

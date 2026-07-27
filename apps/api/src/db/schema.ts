@@ -210,8 +210,6 @@ export const bomItems = pgTable("bom_items", {
   categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
   isActive: integer("is_active").notNull().default(1),
   isContainer: integer("is_container").notNull().default(0),
-  stockQuantity: numeric("stock_quantity", { precision: 12, scale: 3 }).notNull().default("0"),
-  isPreBatched: integer("is_pre_batched").notNull().default(0),
 });
 
 export const bomComponents = pgTable("bom_components", {
@@ -419,10 +417,36 @@ export const printJobs = pgTable("print_jobs", {
   status: text("status").notNull(),
   payload: text("payload").notNull(),
   error: text("error"),
+  bridgeId: text("bridge_id").references(() => printBridges.id, { onDelete: "set null" }),
+  claimedByInstanceId: text("claimed_by_instance_id"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
 });
+
+export const printBridges = pgTable(
+  "print_bridges",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    name: text("name").notNull(),
+    host: text("host"),
+    version: text("version"),
+    status: text("status").notNull().default("active"),
+    areas: text("areas").notNull().default("[]"),
+    printers: text("printers").notNull().default("[]"),
+    mappings: text("mappings").notNull().default("[]"),
+    claimedAreas: text("claimed_areas").notNull().default("[]"),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("print_bridges_tenant_idx").on(table.tenantId),
+    index("print_bridges_status_idx").on(table.status),
+  ],
+);
 
 export const customers = pgTable("customers", {
   id: text("id").primaryKey(),
@@ -840,11 +864,12 @@ export const stockMovements = pgTable("stock_movements", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
   ingredientId: text("ingredient_id")
-    .notNull()
     .references(() => inventory.id, { onDelete: "cascade" }),
+  prepItemId: text("prep_item_id")
+    .references(() => prepItems.id, { onDelete: "cascade" }),
   orderId: text("order_id").references(() => orders.id, { onDelete: "set null" }),
-  movementType: text("movement_type").notNull(), // 'order_deduction', 'order_reversal', 'manual_adjustment', 'purchase_receipt'
-  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(), // negative = deduction, positive = addition
+  movementType: text("movement_type").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
   previousQuantity: numeric("previous_quantity", { precision: 12, scale: 3 }).notNull(),
   newQuantity: numeric("new_quantity", { precision: 12, scale: 3 }).notNull(),
   notes: text("notes"),
@@ -864,4 +889,65 @@ export const inventoryAudit = pgTable("inventory_audit", {
 }, (t) => [
   index("inventory_audit_tenant_idx").on(t.tenantId),
   index("inventory_audit_item_idx").on(t.inventoryId),
+]);
+
+export const prepItems = pgTable("prep_items", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  ingredientId: text("ingredient_id")
+    .notNull()
+    .references(() => inventory.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  quantityPerUnit: numeric("quantity_per_unit", { precision: 12, scale: 3 }).notNull(),
+  unit: text("unit").notNull(),
+  stockQuantity: numeric("stock_quantity", { precision: 12, scale: 3 }).notNull().default("0"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("prep_items_tenant_idx").on(t.tenantId),
+  index("prep_items_ingredient_idx").on(t.ingredientId),
+]);
+
+export const printBridgeOnboardingSecrets = pgTable("print_bridge_onboarding_secrets", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  secretHash: text("secret_hash").notNull(),
+  suggestedBridgeId: text("suggested_bridge_id").notNull(),
+  boundBridgeId: text("bound_bridge_id"),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdByStaffId: text("created_by_staff_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("print_bridge_onboarding_secrets_tenant_idx").on(t.tenantId, t.revokedAt),
+  uniqueIndex("print_bridge_onboarding_secrets_hash_unique_idx").on(t.secretHash),
+]);
+
+export const menuItemPrepRequirements = pgTable("menu_item_prep_requirements", {
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  menuItemId: text("menu_item_id")
+    .notNull()
+    .references(() => menuItems.id, { onDelete: "cascade" }),
+  prepItemId: text("prep_item_id")
+    .notNull()
+    .references(() => prepItems.id, { onDelete: "cascade" }),
+  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull().default("1"),
+}, (t) => [
+  primaryKey({ columns: [t.menuItemId, t.prepItemId] }),
+  index("menu_item_prep_requirements_tenant_idx").on(t.tenantId),
+]);
+
+export const inventoryUnitConversions = pgTable("inventory_unit_conversions", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  inventoryId: text("inventory_id")
+    .notNull()
+    .references(() => inventory.id, { onDelete: "cascade" }),
+  fromUnit: text("from_unit").notNull(),
+  toUnit: text("to_unit").notNull(),
+  factor: numeric("factor", { precision: 12, scale: 6 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("inventory_unit_conversions_tenant_idx").on(t.tenantId),
+  index("inventory_unit_conversions_inventory_idx").on(t.inventoryId),
+  uniqueIndex("inventory_unit_conversions_unique_idx").on(t.tenantId, t.inventoryId, t.fromUnit),
 ]);
