@@ -372,6 +372,13 @@
       "when": 1785112097741,
       "tag": "0052_red_magneto",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": 7,
+      "when": 1785143536883,
+      "tag": "0054_re_add_print_bridges",
+      "breakpoints": true
     }
   ]
 }
