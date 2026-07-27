@@ -41,6 +41,22 @@ import {
   dispatchPrintJobRequestSchema,
   printJobsQuerySchema,
   printJobsPollQuerySchema,
+  printBridgeHeartbeatRequestSchema,
+  printBridgeClaimRequestSchema,
+  printBridgeJobCompleteRequestSchema,
+  printBridgeJobFailRequestSchema,
+  printBridgeListResponseSchema,
+  printBridgeOnboardingSecretCreateRequestSchema,
+  printBridgeUpdateMappingsRequestSchema,
+  printBridgeUpdateClaimedAreasRequestSchema,
+  printBridgeTestPrintRequestSchema,
+  type PrintBridgeOnboardingSecret,
+  type PrintBridgeOnboardingSecretCreateRequest,
+  type PrintBridgeOnboardingSecretCreateResponse,
+  type PrintBridgeUpdateMappingsRequest,
+  type PrintBridgeUpdateClaimedAreasRequest,
+  type PrintBridgeTestPrintRequest,
+  type PrintBridgeTestPrintResponse,
   publicFunnelEventRequestSchema,
   publicFunnelEventResponseSchema,
   publicTakeawayCreateRequestSchema,
@@ -79,6 +95,8 @@ import {
   fiscalCloseRequestSchema,
   fiscalExportCreateRequestSchema,
   fiscalExportsQuerySchema,
+  prepItemUpdateRequestSchema,
+  unitConversionCreateRequestSchema,
   updateUiSettingsRequestSchema,
   updatePrintingSettingsRequestSchema,
   menuItemCreateRequestSchema,
@@ -160,6 +178,11 @@ import {
   type PrintArea,
   type PrintJob,
   type PrintJobsQuery,
+  type PrintBridge,
+  type PrintBridgeHeartbeatRequest,
+  type PrintBridgeClaimRequest,
+  type PrintBridgeJobCompleteRequest,
+  type PrintBridgeJobFailRequest,
   type PublicFunnelEventRequest,
   type PublicFunnelEventResponse,
   type PublicTakeawayCreateRequest,
@@ -1544,7 +1567,7 @@ export class AppController {
   @Post("menu/:id/recipe/add")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async addMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom'; componentId: string; quantity: number; unit: string }) {
+  async addMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) {
     let updated;
     try {
       updated = await this.appRepository.addMenuItemRecipeComponent(id, payload);
@@ -1561,7 +1584,7 @@ export class AppController {
   @Post("menu/:id/recipe/remove")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async removeMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom'; componentId: string }) {
+  async removeMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) {
     let updated;
     try {
       updated = await this.appRepository.removeMenuItemRecipeComponent(id, payload);
@@ -2310,35 +2333,80 @@ export class AppController {
     return signature;
   }
 
-  // ─── BOM Prepare & Stock ──────────────────────────────────────────────
+  // ─── Prep Items ────────────────────────────────────────────────────────
 
-  @Post("bom/:id/prepare")
+  @Get("prep-items")
+  @Roles("admin", "chef", "waiter")
+  @RequiresModule("inventory")
+  async getPrepItems() {
+    return this.appRepository.listPrepItems();
+  }
+
+  @Post("prep-items")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async prepareBom(@Param("id") id: string, @Body() payload: { quantity: number }) {
-    if (!payload.quantity || payload.quantity <= 0) {
-      throw new BadRequestException("Quantity must be positive");
+  async createPrepItem(@Body() payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) {
+    if (!payload.ingredientId || !payload.name?.trim() || !payload.quantityPerUnit || payload.quantityPerUnit <= 0 || !payload.unit) {
+      throw new BadRequestException("Invalid prep item data");
     }
     try {
-      return await this.appRepository.prepareBom(id, payload.quantity);
+      return await this.appRepository.createPrepItem(payload);
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
   }
 
-  @Get("bom/stock")
-  @Roles("admin", "chef", "waiter")
+  @Patch("prep-items/:id")
+  @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async getBomStock() {
-    return this.appRepository.getBomStock();
+  async updatePrepItem(@Param("id") id: string, @Body() payload: { name?: string; quantityPerUnit?: number; unit?: string }) {
+    const parsed = prepItemUpdateRequestSchema.parse(payload);
+    try {
+      return await this.appRepository.updatePrepItem(id, parsed);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
   }
 
-  @Patch("bom/:id/pre-batched")
-  @Roles("admin")
+  @Delete("prep-items/:id")
+  @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async updateBomPreBatched(@Param("id") id: string, @Body() payload: { isPreBatched: boolean }) {
-    await this.appRepository.updateBomPreBatched(id, payload.isPreBatched);
+  async deletePrepItem(@Param("id") id: string) {
+    await this.appRepository.deletePrepItem(id);
     return { success: true };
+  }
+
+  @Post("prep-items/:id/prepare")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async preparePrepItem(@Param("id") id: string, @Body() payload: { quantity: number }) {
+    if (!payload.quantity || payload.quantity <= 0) {
+      throw new BadRequestException("Quantity must be positive");
+    }
+    try {
+      return await this.appRepository.preparePrepItem(id, payload.quantity);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
+  }
+
+  @Get("inventory/:id/conversions")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async getUnitConversions(@Param("id") id: string) {
+    return this.appRepository.listUnitConversions(id);
+  }
+
+  @Post("inventory/:id/conversions")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async createUnitConversion(@Param("id") id: string, @Body() payload: { fromUnit: string; toUnit: string; factor: number }) {
+    const parsed = unitConversionCreateRequestSchema.parse(payload);
+    try {
+      return await this.appRepository.createUnitConversion(id, parsed);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
   }
 
   // ─── Food Cost Matrix ─────────────────────────────────────────────────
@@ -2397,5 +2465,242 @@ export class AppController {
     }
     const buffer = Buffer.from(body.xlsxBase64, 'base64');
     return this.appRepository.importFromXlsx(buffer);
+  }
+
+  // ─── Print Bridge (server-side) ─────────────────────────────────────────────
+
+  private get printBridgeSecret(): string | null {
+    const raw = process.env.PRINT_BRIDGE_SECRET?.trim();
+    return raw && raw.length > 0 ? raw : null;
+  }
+
+  private verifyBridgeSecret(req: { headers: Record<string, string | string[] | undefined> }): void {
+    const expected = this.printBridgeSecret;
+    if (!expected) {
+      throw new UnauthorizedException("Print bridge auth not configured (PRINT_BRIDGE_SECRET)");
+    }
+    const provided = req.headers["x-print-bridge-key"];
+    const providedStr = Array.isArray(provided) ? provided[0] : provided;
+    if (!providedStr || providedStr !== expected) {
+      throw new UnauthorizedException("Invalid or missing X-Print-Bridge-Key");
+    }
+  }
+
+  /**
+   * Dual auth: per-tenant onboarding secret (preferred) OR legacy env-var (fallback).
+   * Returns the resolved tenantId so the controller can upsert under the right tenant scope.
+   */
+  private async verifyBridgeOrOnboardingSecret(
+    req: { headers: Record<string, string | string[] | undefined> },
+  ): Promise<{
+    tenantId: string;
+    path: "onboarding" | "legacy";
+    plaintext?: string;
+    expectedBridgeId: string;
+  }> {
+    const provided = req.headers["x-print-bridge-key"];
+    const providedStr = Array.isArray(provided) ? provided[0] : provided;
+
+    if (providedStr) {
+      const resolved = await this.appRepository.resolveOnboardingSecret(providedStr);
+      if (resolved) {
+        if (resolved.revokedAt) {
+          throw new UnauthorizedException("Onboarding secret has been revoked");
+        }
+        return {
+          tenantId: resolved.tenantId,
+          path: "onboarding",
+          plaintext: providedStr,
+          expectedBridgeId: resolved.suggestedBridgeId,
+        };
+      }
+    }
+
+    this.verifyBridgeSecret(req);
+    return { tenantId: "tenant_legacy", path: "legacy", expectedBridgeId: "" };
+  }
+
+  @Post("print-bridge/heartbeat")
+  @Public()
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    const payload = printBridgeHeartbeatRequestSchema.parse(raw);
+    let bridge;
+    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+    try {
+      bridge = await this.appRepository.upsertPrintBridge(payload, instanceId, auth.tenantId);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("already used by another tenant")) {
+        throw new ConflictException(e.message);
+      }
+      throw e;
+    }
+
+    if (auth.path === "onboarding" && auth.plaintext) {
+      const { firstBind } = await this.appRepository.markOnboardingSecretUsed(auth.plaintext, bridge.id);
+      if (firstBind) {
+        try {
+          this.auditLogService.log("print_bridge.first_bind", {
+            targetId: bridge.id,
+            details: { tenantId: bridge.tenantId },
+          });
+        } catch {}
+      }
+    }
+
+    void this.realtimeGateway.emit(socketEvents.bridgeStatus, bridge, bridge.tenantId).catch((err) => console.warn('[realtime] bridge:status emit failed:', err));
+    return { bridge, serverTime: new Date().toISOString() };
+  }
+
+  @Post("print-bridge/claim")
+  @Public()
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  async bridgeClaim(@Body() raw: unknown, @Req() req: any): Promise<{ jobs: PrintJob[] }> {
+        const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    const payload = printBridgeClaimRequestSchema.parse(raw);
+    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+    const jobs = await this.appRepository.claimPrintJobsForBridge(payload.bridgeId, payload.limit, instanceId, auth.tenantId);
+    for (const job of jobs) {
+      if (job.bridgeId) {
+        void this.realtimeGateway.emit(socketEvents.jobClaimed, job).catch((err) => console.warn('[realtime] job:claimed emit failed:', err));
+      }
+    }
+    return { jobs };
+  }
+
+  @Post("print-bridge/jobs/:id/complete")
+  @Public()
+  async bridgeJobComplete(
+    @Param("id") id: string,
+    @Body() raw: unknown,
+    @Req() req: any,
+  ): Promise<{ job: PrintJob } | { success: false }> {
+        const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    const payload = printBridgeJobCompleteRequestSchema.parse(raw);
+    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+    const job = await this.appRepository.completeBridgeJob(payload.bridgeId, id, payload.notes, instanceId, auth.tenantId);
+    if (!job) {
+      return { success: false };
+    }
+    void this.realtimeGateway.emit(socketEvents.jobCompleted, job).catch((err) => console.warn('[realtime] job:completed emit failed:', err));
+    return { job };
+  }
+
+  @Post("print-bridge/jobs/:id/fail")
+  @Public()
+  async bridgeJobFail(
+    @Param("id") id: string,
+    @Body() raw: unknown,
+    @Req() req: any,
+  ): Promise<{ job: PrintJob } | { success: false }> {
+        const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    const payload = printBridgeJobFailRequestSchema.parse(raw);
+    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+    const job = await this.appRepository.failBridgeJob(payload.bridgeId, id, payload.error, instanceId, auth.tenantId);
+    if (!job) {
+      return { success: false };
+    }
+    void this.realtimeGateway.emit(socketEvents.jobFailed, job).catch((err) => console.warn('[realtime] job:failed emit failed:', err));
+    return { job };
+  }
+
+  @Get("print-bridge/onboarding-secret")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async listOnboardingSecrets(): Promise<PrintBridgeOnboardingSecret[]> {
+    const tenantId = (this.appRepository as any).currentTenantId?.() ?? "tenant_legacy";
+    return this.appRepository.listOnboardingSecrets(tenantId);
+  }
+
+  @Post("print-bridge/onboarding-secret")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async createOnboardingSecret(
+    @Body() raw: unknown,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<PrintBridgeOnboardingSecretCreateResponse> {
+    const parsed = printBridgeOnboardingSecretCreateRequestSchema.parse(raw ?? {});
+    const tenantId = (this.appRepository as any).currentTenantId?.() ?? "tenant_legacy";
+    const actorStaffId = request.user?.sub ?? null;
+    const created = await this.appRepository.createOnboardingSecret(tenantId, actorStaffId, parsed.bridgeIdHint);
+    try {
+      this.auditLogService.log("print_bridge.onboarding_secret.created", {
+        actorStaffId: actorStaffId ?? undefined,
+        targetId: created.secret.id,
+        details: { tenantId, suggestedBridgeId: created.suggestedBridgeId },
+      });
+    } catch {}
+    return created;
+  }
+
+  @Delete("print-bridge/onboarding-secret/:id")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async revokeOnboardingSecret(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<{ success: true; id: string }> {
+    const tenantId = (this.appRepository as any).currentTenantId?.() ?? "tenant_legacy";
+    await this.appRepository.revokeOnboardingSecret(tenantId, id);
+    try {
+      this.auditLogService.log("print_bridge.onboarding_secret.revoked", {
+        actorStaffId: request.user?.sub ?? undefined,
+        targetId: id,
+        details: { tenantId },
+      });
+    } catch {}
+    return { success: true, id };
+  }
+
+  @Get("print-bridge")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async listPrintBridges(): Promise<PrintBridge[]> {
+    return this.appRepository.listPrintBridges();
+  }
+
+  @Patch("print-bridge/:id/mappings")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async updateBridgeMappings(
+    @Param("id") id: string,
+    @Body() payload: PrintBridgeUpdateMappingsRequest,
+  ): Promise<{ bridge: PrintBridge }> {
+    const parsed = printBridgeUpdateMappingsRequestSchema.parse(payload);
+    const bridge = await this.appRepository.updateBridgeMappings(id, parsed.mappings);
+    this.realtimeGateway
+      .emit(socketEvents.bridgeStatus, bridge, bridge.tenantId)
+      .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
+    return { bridge };
+  }
+
+  @Patch("print-bridge/:id/claimed-areas")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async updateBridgeClaimedAreas(
+    @Param("id") id: string,
+    @Body() payload: PrintBridgeUpdateClaimedAreasRequest,
+  ): Promise<{ bridge: PrintBridge }> {
+    const parsed = printBridgeUpdateClaimedAreasRequestSchema.parse(payload);
+    const bridge = await this.appRepository.updateBridgeClaimedAreas(id, parsed.claimedAreas);
+    this.realtimeGateway
+      .emit(socketEvents.bridgeStatus, bridge, bridge.tenantId)
+      .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
+    return { bridge };
+  }
+
+  @Post("print-bridge/:id/test-print")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async testPrintFromBridge(
+    @Param("id") id: string,
+    @Body() payload: PrintBridgeTestPrintRequest,
+  ): Promise<PrintBridgeTestPrintResponse> {
+    const parsed = printBridgeTestPrintRequestSchema.parse(payload);
+    const result = await this.appRepository.testPrintFromBridge(id, parsed.area, parsed.message);
+    return result;
   }
 }

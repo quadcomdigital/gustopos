@@ -210,8 +210,6 @@ export const bomItems = pgTable("bom_items", {
   categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
   isActive: integer("is_active").notNull().default(1),
   isContainer: integer("is_container").notNull().default(0),
-  stockQuantity: numeric("stock_quantity", { precision: 12, scale: 3 }).notNull().default("0"),
-  isPreBatched: integer("is_pre_batched").notNull().default(0),
 });
 
 export const bomComponents = pgTable("bom_components", {
@@ -419,21 +417,14 @@ export const printJobs = pgTable("print_jobs", {
   status: text("status").notNull(),
   payload: text("payload").notNull(),
   error: text("error"),
+  bridgeId: text("bridge_id").references(() => printBridges.id, { onDelete: "set null" }),
+  claimedByInstanceId: text("claimed_by_instance_id"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
 });
 
-export const customers = pgTable("customers", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  fullName: text("full_name").notNull(),
-  fullNameNormalized: text("full_name_normalized").notNull(),
-  phone: text("phone"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
-});
 
 export const customerAddresses = pgTable("customer_addresses", {
   id: text("id").primaryKey(),
@@ -840,11 +831,12 @@ export const stockMovements = pgTable("stock_movements", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
   ingredientId: text("ingredient_id")
-    .notNull()
     .references(() => inventory.id, { onDelete: "cascade" }),
+  prepItemId: text("prep_item_id")
+    .references(() => prepItems.id, { onDelete: "cascade" }),
   orderId: text("order_id").references(() => orders.id, { onDelete: "set null" }),
-  movementType: text("movement_type").notNull(), // 'order_deduction', 'order_reversal', 'manual_adjustment', 'purchase_receipt'
-  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(), // negative = deduction, positive = addition
+  movementType: text("movement_type").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
   previousQuantity: numeric("previous_quantity", { precision: 12, scale: 3 }).notNull(),
   newQuantity: numeric("new_quantity", { precision: 12, scale: 3 }).notNull(),
   notes: text("notes"),
@@ -865,3 +857,20 @@ export const inventoryAudit = pgTable("inventory_audit", {
   index("inventory_audit_tenant_idx").on(t.tenantId),
   index("inventory_audit_item_idx").on(t.inventoryId),
 ]);
+
+export const prepItems = pgTable("prep_items", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  ingredientId: text("ingredient_id")
+    .notNull()
+    .references(() => inventory.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  quantityPerUnit: numeric("quantity_per_unit", { precision: 12, scale: 3 }).notNull(),
+  unit: text("unit").notNull(),
+  stockQuantity: numeric("stock_quantity", { precision: 12, scale: 3 }).notNull().default("0"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("prep_items_tenant_idx").on(t.tenantId),
+  index("prep_items_ingredient_idx").on(t.ingredientId),
+]);
+
