@@ -3,6 +3,8 @@ import { authorizedFetch, API_URL } from '../shared/api/client';
 import { persist } from 'zustand/middleware';
 import {
   socketEvents,
+  type OrdersUpdatePatch,
+  type Table,
   type AppData,
   type BomCreateRequest,
   type BomItem,
@@ -278,7 +280,9 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
 
   socket.off(socketEvents.orderNew);
   socket.off(socketEvents.orderUpdate);
+  socket.off(socketEvents.ordersUpdate);
   socket.off(socketEvents.inventoryUpdate);
+  socket.off(socketEvents.tablesUpdate);
   socket.off(socketEvents.dataUpdate);
   socket.off(socketEvents.settingsUpdate);
   socket.off(socketEvents.bridgeStatus);
@@ -317,17 +321,68 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     if (!hasModuleEnabled(get(), 'kitchen')) {
       return;
     }
+    set((state: AppState) => {
+      if (!state.data) return state;
+      // Mirror getPublicData: paid/cancelled orders are excluded from the list.
+      if (updatedOrder.status === 'paid' || updatedOrder.status === 'cancelled') {
+        return {
+          data: {
+            ...state.data,
+            orders: state.data.orders.filter((order) => order.id !== updatedOrder.id),
+          },
+        };
+      }
+      return {
+        data: {
+          ...state.data,
+          orders: state.data.orders.map((order) =>
+            order.id === updatedOrder.id ? updatedOrder : order,
+          ),
+        },
+      };
+    });
+  });
+
+  // Targeted order patches (set_paid / move) — sostituiscono il full data:update.
+  socket.on(socketEvents.ordersUpdate, (patch: OrdersUpdatePatch) => {
+    if (!hasModuleEnabled(get(), 'kitchen')) {
+      return;
+    }
+    set((state: AppState) => {
+      if (!state.data) return state;
+      if (patch.action === 'set_paid') {
+        return {
+          data: {
+            ...state.data,
+            // Mirror getPublicData: every order on a paid table is excluded.
+            // Invariant: the server emits set_paid ONLY when the whole table is
+            // paid (closeTable / allItemsPaid / allSharesPaid), never partial.
+            orders: state.data.orders.filter((order) => order.table !== patch.tableNumber),
+          },
+        };
+      }
+      if (patch.action === 'move') {
+        return {
+          data: {
+            ...state.data,
+            orders: state.data.orders.map((order) =>
+              order.table === patch.fromTableNumber
+                ? { ...order, table: patch.toTableNumber }
+                : order,
+            ),
+          },
+        };
+      }
+      return state;
+    });
+  });
+
+  socket.on(socketEvents.tablesUpdate, (tables: Table[]) => {
+    if (!hasModuleEnabled(get(), 'kitchen')) {
+      return;
+    }
     set((state: AppState) =>
-      state.data
-        ? {
-            data: {
-              ...state.data,
-              orders: state.data.orders.map((order) =>
-                order.id === updatedOrder.id ? updatedOrder : order,
-              ),
-            },
-          }
-        : state,
+      state.data ? { data: { ...state.data, tables } } : state,
     );
   });
 
@@ -340,6 +395,9 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     );
   });
 
+  // Compatibility fallback: the API no longer emits full data:update snapshots
+  // (mutations now send targeted orders:update/tables:update), but keep this
+  // handler so a mixed-version deployment never leaves a client stale.
   socket.on(socketEvents.dataUpdate, (payload: AppData) => {
     set({ data: payload, inventoryItems: payload.inventory });
   });
@@ -1205,11 +1263,16 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error(`Modulo ${requiredModule} disabilitato per questo tenant`);
       }
       const created = await createOrder(orderPayload);
-      const data = await fetchData();
+      // Socket-first: order:new + tables:update aggiornano lo store in realtime.
+      // Refetch completo solo come fallback quando il socket è disconnesso.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
       set((state) => {
         const newCartStore = { ...state.cartStore };
         delete newCartStore[state.cartContextKey];
-        return { data, posCart: [], cartStore: newCartStore };
+        return { posCart: [], cartStore: newCartStore };
       });
       return created;
     } catch (err) {
@@ -1415,8 +1478,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Permessi insufficienti per annullare ordini');
       }
       const result = await voidOrderRequest(id, payload);
-      const data = await fetchData();
-      set({ data });
+      // Socket-first: order:update (status cancelled) aggiorna lo store.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
       return result;
     } catch (err) {
       set({ error: handleActionError(err) });
@@ -1435,7 +1501,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Permessi insufficienti per chiudere il tavolo');
       }
       const result = await payTable(tableId);
-      if (result.success) {
+      if (result.success && !getSocket().connected) {
         const data = await fetchData();
         set({ data });
       }
@@ -1458,8 +1524,17 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const result = await closeTableRequest(tableId, payload);
       if (result.success) {
-        const [data, payments] = await Promise.all([fetchData(), fetchPayments()]);
-        set({ data, payments });
+        // Socket-first: orders:update + tables:update aggiornano ordini/tavoli.
+        // Payments: refresh mirato solo per admin con analytics (nessun evento socket dedicato).
+        const shouldRefreshPayments = state.currentUser?.role === 'admin' && hasModuleEnabled(state, 'analytics');
+        if (!getSocket().connected) {
+          const data = await fetchData();
+          set({ data });
+        }
+        if (shouldRefreshPayments) {
+          const payments = await fetchPayments({ limit: 200 });
+          set({ payments });
+        }
       }
       return result;
     } catch (err) {
@@ -1477,12 +1552,12 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const result = await splitBillRequest(tableId, payload);
       if (result.persisted) {
+        // Split non cambia ordini/tavoli: nessun refetch dati necessario.
         const shouldRefreshPayments = state.currentUser?.role === 'admin' && hasModuleEnabled(state, 'analytics');
-        const [data, payments] = await Promise.all([
-          fetchData(),
-          shouldRefreshPayments ? fetchPayments({ limit: 200 }) : Promise.resolve(state.payments),
-        ]);
-        set({ data, payments });
+        if (shouldRefreshPayments) {
+          const payments = await fetchPayments({ limit: 200 });
+          set({ payments });
+        }
       }
       return result;
     } catch (err) {
@@ -1502,12 +1577,16 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Permessi insufficienti per effettuare il pagamento');
       }
       const result = await paySelectedItemsRequest(tableId, payload);
+      // Socket-first: il server emette orders:update + tables:update quando allItemsPaid.
       const shouldRefreshPayments = state.currentUser?.role === 'admin' && hasModuleEnabled(state, 'analytics');
-      const [data, payments] = await Promise.all([
-        fetchData(),
-        shouldRefreshPayments ? fetchPayments({ limit: 200 }) : Promise.resolve(state.payments),
-      ]);
-      set({ data, payments });
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
+      if (shouldRefreshPayments) {
+        const payments = await fetchPayments({ limit: 200 });
+        set({ payments });
+      }
       return result;
     } catch (err) {
       set({ error: handleActionError(err) });
@@ -1526,12 +1605,16 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Permessi insufficienti per effettuare il pagamento');
       }
       const result = await markShareAsPaidRequest(tableId, shareIndex, payload);
+      // Socket-first: il server emette orders:update + tables:update quando allSharesPaid.
       const shouldRefreshPayments = state.currentUser?.role === 'admin' && hasModuleEnabled(state, 'analytics');
-      const [data, payments] = await Promise.all([
-        fetchData(),
-        shouldRefreshPayments ? fetchPayments({ limit: 200 }) : Promise.resolve(state.payments),
-      ]);
-      set({ data, payments });
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
+      if (shouldRefreshPayments) {
+        const payments = await fetchPayments({ limit: 200 });
+        set({ payments });
+      }
       return result;
     } catch (err) {
       set({ error: handleActionError(err) });
@@ -1557,8 +1640,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo kitchen disabilitato per questo tenant');
       }
       const result = await transferTableRequest(sourceTableId, payload);
-      const data = await fetchData();
-      set({ data });
+      // Socket-first: tables:update + orders:update (move) aggiornano lo store.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
       return result;
     } catch (err) {
       set({ error: handleActionError(err) });

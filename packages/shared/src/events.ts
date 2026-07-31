@@ -1,7 +1,9 @@
 export const socketEvents = {
   orderNew: "order:new",
   orderUpdate: "order:update",
+  ordersUpdate: "orders:update",
   inventoryUpdate: "inventory:update",
+  tablesUpdate: "tables:update",
   dataUpdate: "data:update",
   settingsUpdate: "settings:update",
   groupOrderJoined: "group_order_joined",
@@ -15,3 +17,12 @@ export const socketEvents = {
 } as const;
 
 export type SocketEventName = (typeof socketEvents)[keyof typeof socketEvents];
+
+/**
+ * Targeted order-patch payload for `orders:update`. Emitted by the API
+ * instead of the full `data:update` snapshot, so clients can reconcile
+ * their local order list with a tiny payload.
+ */
+export type OrdersUpdatePatch =
+  | { action: "set_paid"; tableNumber: string }
+  | { action: "move"; fromTableNumber: string; toTableNumber: string };

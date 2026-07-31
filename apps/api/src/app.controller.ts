@@ -220,6 +220,7 @@ import {
   type LoyaltyTransaction,
   type LoyaltyEarnRequest,
   type LoyaltyRedeemRequest,
+  type Table,
 } from "@gustopos/shared";
 import { RealtimeGateway } from "./realtime.gateway";
 import { AppRepository } from "./repository/app.repository";
@@ -277,6 +278,27 @@ export class AppController {
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
+
+  /**
+   * Post-commit realtime sync for tables. Runs listTables() AFTER the DB
+   * mutation has already committed; a failure here must never fail the
+   * request (the mutation is already persisted), so it is best-effort.
+   */
+  private async listTablesForRealtime(): Promise<Table[] | null> {
+    try {
+      return await this.tablesRepo.listTables();
+    } catch (err) {
+      console.warn("[realtime] listTables failed, skipping tables:update:", err);
+      return null;
+    }
+  }
+
+  private async emitTablesUpdateSafely(): Promise<void> {
+    const tables = await this.listTablesForRealtime();
+    if (tables) {
+      await this.realtimeGateway.emit(socketEvents.tablesUpdate, tables);
+    }
+  }
 
   private async resolveConsumerUserId(request: AuthenticatedRequest, tenantId: string): Promise<string | null> {
     const authHeader = request.headers.authorization;
@@ -1725,6 +1747,10 @@ export class AppController {
     }
     await this.realtimeGateway.emit(socketEvents.orderNew, created.order);
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, created.inventory);
+    // Tavolo occupato per ordini dine-in: evento targeted invece del full data:update.
+    if ((parsed.orderType ?? "dine_in") === "dine_in") {
+      await this.emitTablesUpdateSafely();
+    }
     return created.order;
   }
 
@@ -1794,8 +1820,6 @@ export class AppController {
     }
 
     await this.realtimeGateway.emit(socketEvents.orderUpdate, result.order);
-    const publicData = await this.appRepository.getPublicData();
-    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
     const inventory = await this.inventoryRepo.listInventoryItems();
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
     this.auditLogService.log("order.void", {
@@ -1842,8 +1866,9 @@ export class AppController {
       throw new NotFoundException("Table not found");
     }
 
-    const publicData = await this.appRepository.getPublicData();
-    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    // Eventi targeted: ordini pagati + tavolo libero. Niente full data:update.
+    await this.realtimeGateway.emit(socketEvents.ordersUpdate, { action: "set_paid", tableNumber: result.payment.tableNumber });
+    await this.emitTablesUpdateSafely();
     this.auditLogService.log("table.close", {
       actorStaffId,
       targetId: id,
@@ -1879,8 +1904,7 @@ export class AppController {
     }
 
     if (result.persisted) {
-      const publicData = await this.appRepository.getPublicData();
-      await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+      // Split non cambia ordini/tavoli: nessun evento necessario (solo payments).
       this.auditLogService.log("table.split.persisted", {
         actorStaffId,
         targetId: id,
@@ -1926,8 +1950,11 @@ export class AppController {
       throw new NotFoundException("Table not found");
     }
 
-    const publicData = await this.appRepository.getPublicData();
-    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    // Quando tutte le share sono pagate il tavolo si libera e gli ordini passano a paid.
+    if (result.allSharesPaid) {
+      await this.realtimeGateway.emit(socketEvents.ordersUpdate, { action: "set_paid", tableNumber: result.payment.tableNumber });
+      await this.emitTablesUpdateSafely();
+    }
     this.auditLogService.log("table.split.share_paid", {
       actorStaffId,
       targetId: id,
@@ -1974,8 +2001,11 @@ export class AppController {
       throw new NotFoundException("Table not found");
     }
 
-    const publicData = await this.appRepository.getPublicData();
-    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    // Quando tutti gli item sono pagati il tavolo si libera e gli ordini passano a paid.
+    if (result.allItemsPaid) {
+      await this.realtimeGateway.emit(socketEvents.ordersUpdate, { action: "set_paid", tableNumber: result.payment.tableNumber });
+      await this.emitTablesUpdateSafely();
+    }
     this.auditLogService.log("table.pay_items", {
       actorStaffId,
       targetId: id,
@@ -2006,8 +2036,23 @@ export class AppController {
       throw new NotFoundException("Source or target table not found");
     }
 
-    const publicData = await this.appRepository.getPublicData();
-    await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
+    // Eventi targeted: stato tavoli + ordini spostati. Niente full data:update.
+    // Degrado intenzionale: se listTables fallisce (post-commit best-effort) o
+    // source/target non sono nella lista fresca, l'evento move viene saltato e i
+    // client riallineano i numeri tavolo al prossimo refresh — mai un 500.
+    const tables = await this.listTablesForRealtime();
+    if (tables) {
+      await this.realtimeGateway.emit(socketEvents.tablesUpdate, tables);
+      const sourceTable = tables.find((t) => t.id === id);
+      const targetTable = tables.find((t) => t.id === result.targetTableId);
+      if (sourceTable && targetTable) {
+        await this.realtimeGateway.emit(socketEvents.ordersUpdate, {
+          action: "move",
+          fromTableNumber: sourceTable.number,
+          toTableNumber: targetTable.number,
+        });
+      }
+    }
     this.auditLogService.log("table.transfer", {
       targetId: id,
       details: {

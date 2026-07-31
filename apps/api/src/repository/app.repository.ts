@@ -3911,6 +3911,7 @@ export class AppRepository {
     }
 
     return this.mapCategoryRow(rows[0]);
+  }
 
   private async getOrderById(id: string): Promise<Order | null> {
     const tenantId = getTenantIdOrDefault();

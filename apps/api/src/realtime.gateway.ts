@@ -14,7 +14,9 @@ import type { ModuleKey } from "@gustopos/shared";
 const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
   "order:new": ["kitchen"],
   "order:update": ["kitchen"],
+  "orders:update": ["kitchen"],
   "inventory:update": ["inventory"],
+  "tables:update": ["kitchen"],
   "settings:update": [],
 };
 
