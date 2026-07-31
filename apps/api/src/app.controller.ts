@@ -232,6 +232,7 @@ import { LoyaltyRepository } from "./repository/loyalty.repository";
 import { ConsumerRepository } from "./repository/consumer.repository";
 import { FiscalRepository } from "./repository/fiscal.repository";
 import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
+import { CustomerRepository } from "./repository/customer.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
@@ -266,6 +267,7 @@ export class AppController {
     @Inject(ConsumerRepository) private readonly consumerRepo: ConsumerRepository,
     @Inject(FiscalRepository) private readonly fiscalRepo: FiscalRepository,
     @Inject(SimpleCatalogRepository) private readonly simpleCatalogRepo: SimpleCatalogRepository,
+    @Inject(CustomerRepository) private readonly customerRepo: CustomerRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
@@ -408,7 +410,7 @@ export class AppController {
       query: query.query,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as CustomersQuery;
-    return this.appRepository.listCustomers(parsed);
+    return this.customerRepo.listCustomers(parsed);
   }
 
   @Post("customers")
@@ -416,8 +418,8 @@ export class AppController {
   @RequiresModule("customers")
   async createOrReuseCustomer(@Body() payload: CustomerCreateRequest): Promise<Customer> {
     const parsed = customerCreateRequestSchema.parse(payload);
-    const row = await this.appRepository.createOrReuseCustomer(parsed);
-    const mapped = await this.appRepository.getCustomerById(row.id);
+    const row = await this.customerRepo.createOrReuseCustomer(parsed);
+    const mapped = await this.customerRepo.getCustomerById(row.id);
     if (!mapped) {
       throw new NotFoundException("Customer not found");
     }
@@ -432,7 +434,7 @@ export class AppController {
       from: query.from,
       to: query.to,
     }) as CustomerAnalyticsRequest;
-    return this.appRepository.getCustomerAnalytics(parsed);
+    return this.customerRepo.getCustomerAnalytics(parsed);
   }
 
   @Get("analytics/reservations-summary")
@@ -930,7 +932,7 @@ export class AppController {
   @Roles("admin")
   @RequiresModule("customers")
   async getCustomer(@Param("id") id: string): Promise<Customer> {
-    const customer = await this.appRepository.getCustomerById(id);
+    const customer = await this.customerRepo.getCustomerById(id);
     if (!customer) {
       throw new NotFoundException("Customer not found");
     }
@@ -942,7 +944,7 @@ export class AppController {
   @RequiresModule("customers")
   async updateCustomer(@Param("id") id: string, @Body() payload: CustomerUpdateRequest): Promise<Customer> {
     const parsed = customerUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateCustomerById(id, parsed);
+    const updated = await this.customerRepo.updateCustomerById(id, parsed);
     if (!updated) {
       throw new NotFoundException("Customer not found");
     }
@@ -953,7 +955,7 @@ export class AppController {
   @Roles("admin")
   @RequiresModule("customers")
   async deleteCustomer(@Param("id") id: string) {
-    const ok = await this.appRepository.deleteCustomerById(id);
+    const ok = await this.customerRepo.deleteCustomerById(id);
     if (!ok) {
       throw new NotFoundException("Customer not found");
     }
@@ -964,29 +966,29 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("customers")
   async listCustomerAddresses(@Param("id") id: string) {
-    const customer = await this.appRepository.getCustomerById(id);
+    const customer = await this.customerRepo.getCustomerById(id);
     if (!customer) {
       throw new NotFoundException("Customer not found");
     }
-    return this.appRepository.listCustomerAddresses(id);
+    return this.customerRepo.listCustomerAddresses(id);
   }
 
   @Post("customers/:id/addresses")
   @Roles("admin", "waiter")
   @RequiresModule("customers")
   async createCustomerAddress(@Param("id") id: string, @Body() payload: CustomerAddressCreateRequest) {
-    const customer = await this.appRepository.getCustomerById(id);
+    const customer = await this.customerRepo.getCustomerById(id);
     if (!customer) {
       throw new NotFoundException("Customer not found");
     }
-    return this.appRepository.createCustomerAddress(id, payload);
+    return this.customerRepo.createCustomerAddress(id, payload);
   }
 
   @Patch("customers/:id/addresses/:addressId")
   @Roles("admin", "waiter")
   @RequiresModule("customers")
   async updateCustomerAddress(@Param("id") id: string, @Param("addressId") addressId: string, @Body() payload: CustomerAddressUpdateRequest) {
-    const updated = await this.appRepository.updateCustomerAddress(addressId, payload);
+    const updated = await this.customerRepo.updateCustomerAddress(addressId, payload);
     if (!updated) {
       throw new NotFoundException("Address not found");
     }
@@ -997,7 +999,7 @@ export class AppController {
   @Roles("admin")
   @RequiresModule("customers")
   async deleteCustomerAddress(@Param("id") id: string, @Param("addressId") addressId: string) {
-    const ok = await this.appRepository.deleteCustomerAddress(addressId);
+    const ok = await this.customerRepo.deleteCustomerAddress(addressId);
     if (!ok) {
       throw new NotFoundException("Address not found");
     }
