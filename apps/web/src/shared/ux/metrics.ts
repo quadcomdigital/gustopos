@@ -23,6 +23,7 @@ export type UxMetricEvent =
   | 'pos.checkout.pay_items.confirm'
   | 'pos.checkout.close.confirm'
   | 'kitchen.filter.change'
+  | 'kitchen.zone.change'
   | 'kitchen.batch.open'
   | 'kitchen.batch.apply.success'
   | 'kitchen.batch.apply.error'

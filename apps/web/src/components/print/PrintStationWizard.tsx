@@ -161,10 +161,11 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
               id="psw-title"
               className="text-sm font-bold uppercase tracking-wider text-secondary"
             >
-              Associa postazione remota
+              Collega una stampante remota
             </h2>
             <p className="text-[11px] text-text-muted mt-0.5">
-              Genera un codice temporaneo di 90 secondi per il PC cucina.
+              Genera un codice a 6 cifre (valido 90 secondi) da inserire sul PC con la
+              stampante. Una volta confermato, la connessione è automatica e permanente.
             </p>
           </div>
           <button
@@ -185,11 +186,12 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
               aria-live="polite"
             >
               <div className="text-2xl font-bold uppercase tracking-wider text-center">
-                ✓ Associazione completata
+                ✓ Stampante collegata
               </div>
               <p className="text-xs text-center text-emerald-700">
-                Il bridge <span className="font-mono">{pairing?.suggestedBridgeId}</span> ha
-                inviato il primo heartbeat.
+                Il PC remoto <span className="font-mono">{pairing?.suggestedBridgeId}</span> ha
+                completato l'accoppiamento ed è ora connesso: riceve e stampa i job in modo
+                automatico, anche dopo un riavvio del PC (il print agent si riconnette da solo).
               </p>
               <div className="flex justify-center pt-1">
                 <button
@@ -286,9 +288,9 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
                 </div>
 
                 <div className="text-[11px] text-text-muted text-center max-w-[340px]">
-                  Sul PC cucina apri la pagina di accoppiamento e scansiona il QR oppure
-                  digita il codice a 6 cifre. Una volta completato, qui vedrai{" "}
-                  <em>Associazione completata</em>.
+                  Sul PC con la stampante apri il <strong>Print Agent</strong>, scansiona il QR
+                  oppure digita questo codice a 6 cifre e premi <em>Collega</em>. Da quel
+                  momento la connessione è automatica: nessun'altra configurazione necessaria.
                 </div>
 
                 <div className="text-[10px] text-text-muted font-mono text-center">

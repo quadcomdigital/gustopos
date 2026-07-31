@@ -1,5 +1,5 @@
 import React from 'react';
-import { Order, UpdateOrderRequest } from '@gustopos/shared';
+import { Order, PrintArea, UpdateOrderRequest } from '@gustopos/shared';
 import { CheckCircle2, PlayCircle, UtensilsCrossed, Layers3, X, Clock, Timer, ArrowLeft } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { it } from 'date-fns/locale';
@@ -17,6 +17,7 @@ interface KitchenViewProps {
 }
 
 type KitchenStatusFilter = 'all' | 'pending' | 'preparing' | 'ready';
+type KitchenZoneFilter = 'all' | 'kitchen' | 'bar';
 
 const PREP_BUFFER_MINUTES = 20;
 
@@ -124,6 +125,7 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
   const data = useAppStore((s) => s.data);
   const pendingOrders = orders.filter((o) => o.status !== 'served' && o.status !== 'paid' && o.status !== 'cancelled');
   const [statusFilter, setStatusFilter] = React.useState<KitchenStatusFilter>('all');
+  const [zoneFilter, setZoneFilter] = React.useState<KitchenZoneFilter>('all');
   const [updatingOrderId, setUpdatingOrderId] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState('');
   const [isBatchMode, setIsBatchMode] = React.useState(false);
@@ -145,6 +147,45 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
     return map;
   }, [data?.menu]);
 
+  // Resolve which print areas (kitchen/bar) each menu item belongs to. Order
+  // items expose their menuItemId as `id`, so we can classify every order row.
+  const menuItemAreasById = React.useMemo(() => {
+    const map = new Map<string, PrintArea[]>();
+    for (const mi of data?.menu ?? []) {
+      map.set(mi.id, mi.printAreas?.length ? mi.printAreas : ['kitchen']);
+    }
+    return map;
+  }, [data?.menu]);
+
+  // Per-order zone membership: an order is shown under a zone if at least one
+  // of its items belongs to it (mixed tables appear in both Cucina and Bar).
+  // Unmatched items fall back to kitchen, matching the print dispatch default.
+  const orderZoneInfo = React.useMemo(() => {
+    const info = new Map<string, { kitchen: boolean; bar: boolean }>();
+    for (const order of orders) {
+      let kitchen = false;
+      let bar = false;
+      for (const item of order.items) {
+        const areas = menuItemAreasById.get(item.id) ?? ['kitchen'];
+        if (areas.includes('kitchen')) kitchen = true;
+        if (areas.includes('bar')) bar = true;
+      }
+      info.set(order.id, { kitchen, bar });
+    }
+    return info;
+  }, [orders, menuItemAreasById]);
+
+  const zoneCounts = React.useMemo(() => {
+    let kitchen = 0;
+    let bar = 0;
+    for (const order of pendingOrders) {
+      const zones = orderZoneInfo.get(order.id);
+      if (zones?.kitchen) kitchen += 1;
+      if (zones?.bar) bar += 1;
+    }
+    return { kitchen, bar };
+  }, [pendingOrders, orderZoneInfo]);
+
   // Re-render every 30s to update countdowns and auto-advance
   React.useEffect(() => {
     const id = setInterval(() => forceUpdate((n) => n + 1), 30_000);
@@ -152,7 +193,13 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
   }, []);
 
   const filteredOrders = pendingOrders
-    .filter((order) => (statusFilter === 'all' ? true : order.status === statusFilter));
+    .filter((order) => (statusFilter === 'all' ? true : order.status === statusFilter))
+    .filter((order) => {
+      if (zoneFilter === 'all') return true;
+      const zones = orderZoneInfo.get(order.id);
+      if (zoneFilter === 'kitchen') return zones?.kitchen ?? true;
+      return zones?.bar ?? false;
+    });
 
   const activeOrders = filteredOrders.filter((o) => !isScheduled(o)).sort(sortOrders);
   const scheduledOrders = filteredOrders.filter((o) => isScheduled(o)).sort(sortOrders);
@@ -254,6 +301,17 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
     const ageMins = getOrderAgeMinutes(order.timestamp);
     const label = getOrderLabel(order);
 
+    // Option B: when a zone filter is active, show only the rows belonging to
+    // that zone (mixed tables show just their kitchen/bar lines respectively).
+    const visibleItems =
+      zoneFilter === 'all'
+        ? order.items
+        : order.items.filter((item) => {
+            const areas = menuItemAreasById.get(item.id) ?? ['kitchen'];
+            return areas.includes(zoneFilter);
+          });
+    const hiddenItemsCount = order.items.length - visibleItems.length;
+
     return (
       <div
         key={order.id}
@@ -332,9 +390,9 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
           <StatusPill label={order.status} tone={meta.pillTone} />
         </div>
 
-        {/* Items */}
+        {/* Items — with a zone filter active, only the matching rows are shown */}
         <div className="flex-1 px-3 py-2 sm:p-4 space-y-1.5">
-          {order.items.map((item) => {
+          {visibleItems.map((item) => {
             const overrides = item.ingredientOverrides ?? [];
             const modifiers = item.selectedModifiers ?? [];
             const hasComposition = overrides.length > 0 || modifiers.length > 0;
@@ -361,6 +419,11 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
               </div>
             );
           })}
+          {hiddenItemsCount > 0 && (
+            <p className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-muted bg-bg border border-border rounded-full px-2 py-0.5">
+              +{hiddenItemsCount} righe (altra zona)
+            </p>
+          )}
         </div>
 
         {/* Action Buttons — hidden for scheduled cards */}
@@ -431,6 +494,17 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
           ]}
         />
 
+        <SegmentedChips
+          ariaLabel="Filtro zona ordini cucina"
+          value={zoneFilter}
+          onChange={(value) => { setZoneFilter(value); trackUxMetric('kitchen.zone.change'); }}
+          options={[
+            { value: 'all', label: 'Tutte', badge: pendingOrders.length },
+            { value: 'kitchen', label: 'Cucina', badge: zoneCounts.kitchen },
+            { value: 'bar', label: 'Bar', badge: zoneCounts.bar },
+          ]}
+        />
+
         {isBatchMode && (
           <ContextToolbar
             title={`${selectedVisibleOrders.length} selezionati`}
@@ -480,6 +554,10 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
       {pendingOrders.length === 0 ? (
         <div className="bg-white border border-border rounded-xl p-4 sm:p-6 text-xs sm:text-sm text-text-muted shrink-0">
           Nessun ordine in preparazione.
+        </div>
+      ) : filteredOrders.length === 0 ? (
+        <div className="bg-white border border-border rounded-xl p-4 sm:p-6 text-xs sm:text-sm text-text-muted shrink-0">
+          Nessun ordine per questa zona/stato.
         </div>
       ) : null}
 
