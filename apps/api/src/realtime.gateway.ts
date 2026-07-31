@@ -7,6 +7,7 @@ import { parseCorsOrigins } from "./config/cors.config";
 import { RealtimePubSubService } from "./realtime/pubsub.service";
 import type { JwtPayload } from "./auth/jwt.types";
 import { AppRepository } from "./repository/app.repository";
+import { StaffRepository } from "./repository/staff.repository";
 import { getJwtSecret } from "./auth/jwt-secret";
 import type { ModuleKey } from "@gustopos/shared";
 
@@ -40,6 +41,7 @@ export class RealtimeGateway implements OnModuleInit {
   constructor(
     @Inject(RealtimePubSubService) private readonly pubSubService: RealtimePubSubService,
     @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(StaffRepository) private readonly staffRepo: StaffRepository,
   ) {}
 
   @WebSocketServer()
@@ -65,7 +67,7 @@ export class RealtimeGateway implements OnModuleInit {
           return;
         }
 
-        const activeSession = await this.appRepository.findActiveSessionById(payload.sessionId, payload.sub, payload.tenantId);
+        const activeSession = await this.staffRepo.findActiveSessionById(payload.sessionId, payload.sub, payload.tenantId);
         if (!activeSession) {
           console.log(`[realtime] middleware: session expired or revoked`);
           next(new Error("Socket session expired or revoked"));
@@ -79,7 +81,7 @@ export class RealtimeGateway implements OnModuleInit {
         }
 
         socket.data.tenantId = payload.tenantId;
-        const latestEnabledModules = await this.appRepository.getEnabledModulesForTenant(payload.tenantId);
+        const latestEnabledModules = await this.staffRepo.getEnabledModulesForTenant(payload.tenantId);
         socket.data.enabledModules = latestEnabledModules;
         console.log(`[realtime] middleware: socket ${socket.id} connected tenant=${payload.tenantId} modules=${JSON.stringify(latestEnabledModules)}`);
 

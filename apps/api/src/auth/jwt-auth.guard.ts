@@ -9,14 +9,14 @@ import jwt from "jsonwebtoken";
 import type { AuthenticatedRequest } from "./auth-request.type";
 import type { JwtPayload } from "./jwt.types";
 import { IS_PUBLIC_KEY } from "./public.decorator";
-import { AppRepository } from "../repository/app.repository";
+import { StaffRepository } from "../repository/staff.repository";
 import { getJwtSecret } from "./jwt-secret";
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   private readonly jwtSecret = getJwtSecret();
 
-  constructor(@Inject(AppRepository) private readonly appRepository: AppRepository) {}
+  constructor(@Inject(StaffRepository) private readonly staffRepo: StaffRepository) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic =
@@ -50,7 +50,7 @@ export class JwtAuthGuard implements CanActivate {
         throw new UnauthorizedException("Tenant mismatch");
       }
 
-      const activeSession = await this.appRepository.findActiveSessionById(payload.sessionId, payload.sub);
+      const activeSession = await this.staffRepo.findActiveSessionById(payload.sessionId, payload.sub);
       if (!activeSession) {
         throw new UnauthorizedException("Session expired or revoked");
       }

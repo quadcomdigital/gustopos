@@ -22,6 +22,7 @@ import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { RolesGuard } from "./auth/roles.guard";
 import { Roles } from "./auth/roles.decorator";
 import { AppRepository } from "./repository/app.repository";
+import { InventoryRepository } from "./repository/inventory.repository";
 import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
 import { RequiresModule } from "./tenant/requires-module.decorator";
 
@@ -30,21 +31,24 @@ import { RequiresModule } from "./tenant/requires-module.decorator";
 @Roles("admin", "chef")
 @RequiresModule("inventory")
 export class BomController {
-  constructor(@Inject(AppRepository) private readonly appRepository: AppRepository) {}
+  constructor(
+    @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(InventoryRepository) private readonly inventoryRepo: InventoryRepository,
+  ) {}
 
   @Get()
   list(): Promise<BomItem[]> {
-    return this.appRepository.listBomItems();
+    return this.inventoryRepo.listBomItems();
   }
 
   @Post()
   create(@Body() payload: BomCreateRequest): Promise<BomItem> {
-    return this.appRepository.createBomItem(payload);
+    return this.inventoryRepo.createBomItem(payload);
   }
 
   @Patch(":id")
   async update(@Param("id") id: string, @Body() payload: BomUpdateRequest): Promise<BomItem> {
-    const updated = await this.appRepository.updateBomItem(id, payload);
+    const updated = await this.inventoryRepo.updateBomItem(id, payload);
     if (!updated) {
       throw new NotFoundException("BoM item not found");
     }
@@ -64,7 +68,7 @@ export class BomController {
 
   @Post(":id/components/add")
   async addComponent(@Param("id") id: string, @Body() payload: BomAddComponentRequest): Promise<BomItem> {
-    const updated = await this.appRepository.addBomComponent(id, payload);
+    const updated = await this.inventoryRepo.addBomComponent(id, payload);
     if (!updated) {
       throw new NotFoundException("BoM item not found");
     }
@@ -74,7 +78,7 @@ export class BomController {
 
   @Post(":id/components/remove")
   async removeComponent(@Param("id") id: string, @Body() payload: BomRemoveComponentRequest): Promise<BomItem> {
-    const updated = await this.appRepository.removeBomComponent(id, payload);
+    const updated = await this.inventoryRepo.removeBomComponent(id, payload);
     if (!updated) {
       throw new NotFoundException("BoM item not found");
     }
@@ -84,7 +88,7 @@ export class BomController {
 
   @Delete(":id")
   async remove(@Param("id") id: string): Promise<{ success: true }> {
-    const removed = await this.appRepository.deleteBomItem(id);
+    const removed = await this.inventoryRepo.deleteBomItem(id);
     if (!removed) {
       throw new NotFoundException("BoM item not found");
     }

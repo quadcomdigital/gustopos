@@ -21,7 +21,7 @@ import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
 import { RolesGuard } from "./auth/roles.guard";
 import { Roles } from "./auth/roles.decorator";
-import { AppRepository } from "./repository/app.repository";
+import { TablesRepository } from "./repository/tables.repository";
 import { AuditLogService } from "./audit-log.service";
 import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
 import { RequiresModule } from "./tenant/requires-module.decorator";
@@ -33,28 +33,28 @@ import { RequiresModule } from "./tenant/requires-module.decorator";
 @RequiresModule("kitchen")
 export class TablesController {
   constructor(
-    @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(TablesRepository) private readonly tablesRepo: TablesRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
   ) {}
 
   @Get()
   list(): Promise<Table[]> {
-    return this.appRepository.listTables();
+    return this.tablesRepo.listTables();
   }
 
   @Post()
   create(@Body() payload: TableCreateRequest): Promise<Table> {
-    return this.appRepository.createTable(payload);
+    return this.tablesRepo.createTable(payload);
   }
 
   @Post("bulk")
   bulkCreate(@Body() payload: TableBulkCreateRequest): Promise<Table[]> {
-    return this.appRepository.bulkCreateTables(payload);
+    return this.tablesRepo.bulkCreateTables(payload);
   }
 
   @Patch(":id")
   async update(@Param("id") id: string, @Body() payload: TableUpdateRequest): Promise<Table> {
-    const updated = await this.appRepository.updateTable(id, payload);
+    const updated = await this.tablesRepo.updateTable(id, payload);
     if (!updated) {
       throw new NotFoundException("Table not found");
     }
@@ -65,7 +65,7 @@ export class TablesController {
 
   @Delete(":id")
   async delete(@Param("id") id: string): Promise<{ success: true }> {
-    const deleted = await this.appRepository.deleteTable(id);
+    const deleted = await this.tablesRepo.deleteTable(id);
     if (!deleted) {
       throw new NotFoundException("Table not found");
     }

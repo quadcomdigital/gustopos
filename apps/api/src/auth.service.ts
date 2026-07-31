@@ -19,7 +19,7 @@ import {
   type RefreshResponse,
   type StaffListResponse,
 } from "@gustopos/shared";
-import { AppRepository } from "./repository/app.repository";
+import { StaffRepository } from "./repository/staff.repository";
 import { getJwtSecret } from "./auth/jwt-secret";
 import { AuditLogService } from "./audit-log.service";
 import { resolveRolePermissions } from "./auth/role-permissions";
@@ -31,12 +31,12 @@ export class AuthService {
   private readonly refreshTokenTtlSeconds = Number(process.env.REFRESH_TOKEN_TTL_SECONDS ?? 60 * 60 * 24 * 7);
 
   constructor(
-    @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(StaffRepository) private readonly staffRepo: StaffRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
   ) {}
 
   async listStaff(): Promise<StaffListResponse> {
-    const rows = await this.appRepository.listStaffPublic();
+    const rows = await this.staffRepo.listStaffPublic();
     return staffListResponseSchema.parse(rows);
   }
 
@@ -46,7 +46,7 @@ export class AuthService {
       throw new UnauthorizedException("Invalid credentials payload");
     }
 
-    const staff = await this.appRepository.findStaffByCredentials(parsed.data.staffId, parsed.data.pin);
+    const staff = await this.staffRepo.findStaffByCredentials(parsed.data.staffId, parsed.data.pin);
     if (!staff) {
       this.auditLogService.log("auth.login.failed", {
         targetId: parsed.data.staffId,
@@ -55,12 +55,12 @@ export class AuthService {
     }
 
     const sessionId = crypto.randomUUID();
-    const enabledModules = await this.appRepository.getEnabledModulesForTenant(staff.tenantId);
+    const enabledModules = await this.staffRepo.getEnabledModulesForTenant(staff.tenantId);
     const permissions = resolveRolePermissions(staff.role, staff.customPermissions);
     const refreshToken = crypto.randomBytes(48).toString("hex");
     const refreshTokenHash = this.hashToken(refreshToken);
 
-    await this.appRepository.createAuthSession({
+    await this.staffRepo.createAuthSession({
       id: sessionId,
       tenantId: staff.tenantId,
       staffId: staff.id,
@@ -92,30 +92,30 @@ export class AuthService {
     }
 
     const refreshTokenHash = this.hashToken(parsed.data.refreshToken);
-    const session = await this.appRepository.findActiveSessionByRefreshHash(refreshTokenHash);
+    const session = await this.staffRepo.findActiveSessionByRefreshHash(refreshTokenHash);
     if (!session) {
       throw new UnauthorizedException("Session expired or invalid");
     }
 
-    const user = await this.appRepository.findStaffById(session.staffId);
+    const user = await this.staffRepo.findStaffById(session.staffId, session.tenantId);
     if (!user) {
       throw new UnauthorizedException("User not found");
     }
 
-    const enabledModules = await this.appRepository.getEnabledModulesForTenant(user.tenantId);
+    const enabledModules = await this.staffRepo.getEnabledModulesForTenant(user.tenantId);
     const permissions = resolveRolePermissions(user.role, user.customPermissions);
 
     const newSessionId = crypto.randomUUID();
     const newRefreshToken = crypto.randomBytes(48).toString("hex");
     const newRefreshTokenHash = this.hashToken(newRefreshToken);
 
-    await this.appRepository.rotateSession(session.id, {
+    await this.staffRepo.rotateSession(session.id, {
       id: newSessionId,
       tenantId: user.tenantId,
       staffId: user.id,
       refreshTokenHash: newRefreshTokenHash,
       expiresAt: new Date(Date.now() + this.refreshTokenTtlSeconds * 1000),
-    });
+    }, session.tenantId);
 
     const token = this.signAccessToken({
       sub: user.id,
@@ -139,7 +139,7 @@ export class AuthService {
       throw new UnauthorizedException("Missing session id");
     }
 
-    await this.appRepository.revokeSessionByIdIfActive(sessionId);
+    await this.staffRepo.revokeSessionByIdIfActive(sessionId);
     this.auditLogService.log("auth.logout", {
       actorStaffId,
       details: { sessionId },

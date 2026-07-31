@@ -234,6 +234,7 @@ import { FiscalRepository } from "./repository/fiscal.repository";
 import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { CustomerRepository } from "./repository/customer.repository";
 import { PaymentsRepository } from "./repository/payments.repository";
+import { PrintJobsRepository } from "./repository/print-jobs.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
@@ -270,6 +271,7 @@ export class AppController {
     @Inject(SimpleCatalogRepository) private readonly simpleCatalogRepo: SimpleCatalogRepository,
     @Inject(CustomerRepository) private readonly customerRepo: CustomerRepository,
     @Inject(PaymentsRepository) private readonly paymentsRepo: PaymentsRepository,
+    @Inject(PrintJobsRepository) private readonly printJobsRepo: PrintJobsRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
@@ -1031,7 +1033,7 @@ export class AppController {
       area: query.area,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as PrintJobsQuery;
-    return this.appRepository.listPrintJobs(parsed);
+    return this.printJobsRepo.listPrintJobs(parsed);
   }
 
   @Post("print-jobs/:id/dispatch")
@@ -1043,7 +1045,7 @@ export class AppController {
     @Body() payload: DispatchPrintJobRequest = {},
   ): Promise<PrintJob> {
     const parsed = dispatchPrintJobRequestSchema.parse(payload ?? {});
-    const job = await this.appRepository.getPrintJobById(id);
+    const job = await this.printJobsRepo.getPrintJobById(id);
     if (!job) {
       throw new NotFoundException("Print job not found");
     }
@@ -1084,16 +1086,16 @@ export class AppController {
       if (!response.ok) {
         const raw = await response.text();
         console.error(`[print-bridge] Bridge error ${response.status}: ${raw}`);
-        await this.appRepository.failPrintJob(id, `Bridge error ${response.status}`);
+        await this.printJobsRepo.failPrintJob(id, `Bridge error ${response.status}`);
         throw new BadRequestException(`Print bridge rejected job: ${response.status}`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown print bridge error";
-      await this.appRepository.failPrintJob(id, message);
+      await this.printJobsRepo.failPrintJob(id, message);
       throw new BadRequestException(message);
     }
 
-    const result = await this.appRepository.dispatchPrintJob(id);
+    const result = await this.printJobsRepo.dispatchPrintJob(id);
     if (!result) {
       throw new NotFoundException("Print job not found");
     }
@@ -1115,7 +1117,7 @@ export class AppController {
     if (areas.length === 0) {
       throw new BadRequestException("No valid areas provided");
     }
-    return this.appRepository.pollPrintJobs(areas);
+    return this.printJobsRepo.pollPrintJobs(areas);
   }
 
   @Post("print-jobs/:id/fail")
@@ -1125,7 +1127,7 @@ export class AppController {
     @Param("id") id: string,
     @Body() payload: { error?: string },
   ): Promise<PrintJob> {
-    const result = await this.appRepository.failPrintJob(id, payload.error ?? "Print failed");
+    const result = await this.printJobsRepo.failPrintJob(id, payload.error ?? "Print failed");
     if (!result) {
       throw new NotFoundException("Print job not found");
     }
@@ -1136,7 +1138,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("printing")
   async confirmPrintJob(@Param("id") id: string): Promise<PrintJob> {
-    const result = await this.appRepository.confirmPrintJob(id);
+    const result = await this.printJobsRepo.confirmPrintJob(id);
     if (!result) {
       throw new NotFoundException("Print job not found or already completed");
     }
@@ -1147,7 +1149,7 @@ export class AppController {
   @Public()
   @RequiresModule("printing")
   async completePrintJob(@Param("id") id: string): Promise<PrintJob> {
-    const result = await this.appRepository.completePrintJob(id);
+    const result = await this.printJobsRepo.completePrintJob(id);
     if (!result) {
       throw new NotFoundException("Print job not found or already completed");
     }
@@ -1158,7 +1160,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("printing")
   async retryPrintJob(@Param("id") id: string): Promise<PrintJob> {
-    const result = await this.appRepository.retryPrintJob(id);
+    const result = await this.printJobsRepo.retryPrintJob(id);
     if (!result) {
       throw new NotFoundException("Print job not found or cannot be retried");
     }
@@ -2471,7 +2473,7 @@ export class AppController {
   async updateFoodCostMatrixCell(
     @Body() body: { menuItemId: string; ingredientId: string; quantity: number; unit: string },
   ) {
-    await this.appRepository.updateFoodCostMatrixCell(
+    await this.inventoryRepo.updateFoodCostMatrixCell(
       body.menuItemId,
       body.ingredientId,
       body.quantity,
@@ -2486,7 +2488,7 @@ export class AppController {
   async importFoodCostMatrix(
     @Body() body: { rows: Array<{ ingredientName: string; menuItemName: string; quantity: number; unit: string }> },
   ) {
-    return this.appRepository.importFoodCostMatrix(body.rows);
+    return this.inventoryRepo.importFoodCostMatrix(body.rows);
   }
 
   @Post("food-cost-matrix/import-full")
@@ -2498,7 +2500,7 @@ export class AppController {
       recipeRows: Array<{ ingredientName: string; menuItemName: string; quantity: number; unit: string }>;
     },
   ) {
-    return this.appRepository.importFoodCostFull(body.ingredientCosts, body.recipeRows);
+    return this.inventoryRepo.importFoodCostFull(body.ingredientCosts, body.recipeRows);
   }
 
   @Post("food-cost-matrix/import-xlsx")
@@ -2511,7 +2513,7 @@ export class AppController {
       throw new BadRequestException("xlsxBase64 is required");
     }
     const buffer = Buffer.from(body.xlsxBase64, 'base64');
-    return this.appRepository.importFromXlsx(buffer);
+    return this.inventoryRepo.importFromXlsx(buffer);
   }
 
   // ─── Print Bridge (server-side) ─────────────────────────────────────────────

@@ -23,7 +23,7 @@ import { RequiresPermissions } from "./auth/permissions.decorator";
 import { RolesGuard } from "./auth/roles.guard";
 import { Roles } from "./auth/roles.decorator";
 import { logoutResponseSchema } from "@gustopos/shared";
-import { AppRepository } from "./repository/app.repository";
+import { StaffRepository } from "./repository/staff.repository";
 import { AuditLogService } from "./audit-log.service";
 import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
 import { RequiresModule } from "./tenant/requires-module.decorator";
@@ -35,23 +35,23 @@ import { RequiresModule } from "./tenant/requires-module.decorator";
 @RequiresModule("kitchen")
 export class StaffController {
   constructor(
-    @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(StaffRepository) private readonly staffRepo: StaffRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
   ) {}
 
   @Get()
   list(): Promise<StaffAdminListResponse> {
-    return this.appRepository.listStaffAdmin();
+    return this.staffRepo.listStaffAdmin();
   }
 
   @Post()
   create(@Body() payload: StaffCreateRequest): Promise<StaffAdmin> {
-    return this.appRepository.createStaff(payload);
+    return this.staffRepo.createStaff(payload);
   }
 
   @Patch(":id")
   async update(@Param("id") id: string, @Body() payload: StaffUpdateRequest): Promise<StaffAdmin> {
-    const updated = await this.appRepository.updateStaff(id, payload);
+    const updated = await this.staffRepo.updateStaff(id, payload);
     if (!updated) {
       throw new NotFoundException("Staff not found");
     }
@@ -61,7 +61,7 @@ export class StaffController {
 
   @Post(":id/reset-pin")
   async resetPin(@Param("id") id: string, @Body() payload: StaffResetPinRequest): Promise<LogoutResponse> {
-    const updated = await this.appRepository.resetStaffPin(id, payload);
+    const updated = await this.staffRepo.resetStaffPin(id, payload);
     if (!updated) {
       throw new NotFoundException("Staff not found");
     }
@@ -72,7 +72,7 @@ export class StaffController {
 
   @Post(":id/disable")
   async disable(@Param("id") id: string): Promise<LogoutResponse> {
-    const updated = await this.appRepository.setStaffActiveState(id, false);
+    const updated = await this.staffRepo.setStaffActiveState(id, false);
     if (!updated) {
       throw new NotFoundException("Staff not found");
     }
@@ -83,7 +83,7 @@ export class StaffController {
 
   @Post(":id/enable")
   async enable(@Param("id") id: string): Promise<LogoutResponse> {
-    const updated = await this.appRepository.setStaffActiveState(id, true);
+    const updated = await this.staffRepo.setStaffActiveState(id, true);
     if (!updated) {
       throw new NotFoundException("Staff not found");
     }
