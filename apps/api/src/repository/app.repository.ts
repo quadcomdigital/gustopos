@@ -40,10 +40,6 @@ import {
   selfOrderCreateResponseSchema,
   selfOrderResolveResponseSchema,
   selfOrderSessionRotateResponseSchema,
-  supplierIngredientSchema,
-  purchaseOrderSchema,
-  purchaseOrderStatusSchema,
-  purchaseOrdersQuerySchema,
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   updateOrderRequestSchema,
@@ -59,8 +55,6 @@ import {
   type Ingredient,
   type Category,
   type CategoryModifierPool,
-  type PurchaseOrderItem,
-  type PurchaseOrdersQuery,
   type Customer,
   type OrderHistoryFilters,
   type CustomerAnalytics,
@@ -100,16 +94,6 @@ import {
   type SelfOrderCreateResponse,
   type SelfOrderResolveResponse,
   type SelfOrderSessionRotateResponse,
-  type Reservation,
-  type ReservationStatus,
-  type DeliveryOrder,
-  type DeliveryStatus,
-  type Supplier,
-  type PurchaseOrder,
-  type PurchaseOrderStatus,
-  type GoodsReceipt,
-  type Shift,
-  type TimeEntry,
   type VoidOrderRequest,
   type VoidOrderResponse,
   type UpdateOrderRequest,
@@ -143,9 +127,6 @@ import {
   deliveryOrders,
   suppliers,
   supplierIngredients,
-  purchaseOrders,
-  purchaseOrderItems,
-  goodsReceiptItems,
   staff,
   tenants,
   tenantAuditLogs,
@@ -217,31 +198,6 @@ function contrastRatio(fgHex: string, bgHex: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-
-const reservationTransitions: Record<ReservationStatus, ReservationStatus[]> = {
-  pending: ["confirmed", "cancelled", "no_show", "seated"],
-  confirmed: ["seated", "cancelled", "no_show"],
-  seated: ["cancelled"],
-  cancelled: [],
-  no_show: [],
-};
-
-const deliveryTransitions: Record<DeliveryStatus, DeliveryStatus[]> = {
-  new: ["preparing", "cancelled"],
-  preparing: ["ready", "cancelled"],
-  ready: ["out_for_delivery", "cancelled"],
-  out_for_delivery: ["delivered", "cancelled"],
-  delivered: [],
-  cancelled: [],
-};
-
-const purchaseOrderTransitions: Record<PurchaseOrderStatus, PurchaseOrderStatus[]> = {
-  draft: ["sent", "cancelled"],
-  sent: ["partial_received", "received", "cancelled"],
-  partial_received: ["received", "cancelled"],
-  received: [],
-  cancelled: [],
-};
 
 export function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
   if (!raw) {
@@ -1744,7 +1700,7 @@ export class AppRepository {
       throw new Error("Tenant not found for public menu");
     }
 
-    const enabledModules = await this.getEnabledModulesForTenant(tenant.id);
+    const enabledModules = await this.staffRepo.getEnabledModulesForTenant(tenant.id);
     if (!enabledModules.includes("public_menu")) {
       throw new Error("Public menu module is disabled for this tenant");
     }
@@ -2897,24 +2853,6 @@ export class AppRepository {
     return (await this.mapBomItems()).find((item) => item.id === id) ?? null;
   }
 
-  async listStaffPublic(): Promise<Staff[]> {
-    const tenantId = getTenantIdOrDefault();
-    const rows = await db
-      .select()
-      .from(staff)
-      .where(and(eq(staff.tenantId, tenantId), eq(staff.isActive, 1)));
-    return rows.map((row) => ({
-      id: row.id,
-      tenantId: row.tenantId,
-      name: row.name,
-      role: row.role as Staff["role"],
-    }));
-  }
-
-  async getEnabledModulesForTenant(tenantId: string): Promise<ModuleKey[]> {
-    return this.getEnabledModulesRows(tenantId);
-  }
-
   async createOrder(payload: CreateOrderRequest): Promise<{ order: Order; inventory: Ingredient[] }> {
     const parsed = createOrderRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
@@ -3973,121 +3911,6 @@ export class AppRepository {
     }
 
     return this.mapCategoryRow(rows[0]);
-
-  // ── Supplier-Ingredient links ──────────────────────────────────────
-
-  async listSupplierIngredients(supplierId?: string, ingredientId?: string): Promise<Array<{
-    supplierId: string; supplierName: string;
-    ingredientId: string; ingredientName: string;
-    brandName: string | null;
-    unitCost: number | null; isPreferred: boolean;
-  }>> {
-    const tenantId = getTenantIdOrDefault();
-    const conditions: SQL[] = [eq(supplierIngredients.tenantId, tenantId)];
-    if (supplierId) conditions.push(eq(supplierIngredients.supplierId, supplierId));
-    if (ingredientId) conditions.push(eq(supplierIngredients.ingredientId, ingredientId));
-
-    const rows = await db
-      .select({
-        supplierId: supplierIngredients.supplierId,
-        supplierName: suppliers.name,
-        ingredientId: supplierIngredients.ingredientId,
-        ingredientName: inventory.name,
-        brandName: supplierIngredients.brandName,
-        unitCost: supplierIngredients.unitCost,
-        isPreferred: supplierIngredients.isPreferred,
-      })
-      .from(supplierIngredients)
-      .innerJoin(suppliers, eq(supplierIngredients.supplierId, suppliers.id))
-      .innerJoin(inventory, eq(supplierIngredients.ingredientId, inventory.id))
-      .where(and(...conditions));
-
-    return rows.map((r) => supplierIngredientSchema.parse({
-      supplierId: r.supplierId,
-      supplierName: r.supplierName,
-      ingredientId: r.ingredientId,
-      ingredientName: r.ingredientName,
-      brandName: r.brandName ?? null,
-      unitCost: r.unitCost ? Number(r.unitCost) : null,
-      isPreferred: r.isPreferred === 1,
-    }));
-  }
-
-  async listPurchaseOrders(query: PurchaseOrdersQuery): Promise<PurchaseOrder[]> {
-    const parsed = purchaseOrdersQuerySchema.parse(query);
-    const tenantId = getTenantIdOrDefault();
-    const conditions: SQL[] = [eq(purchaseOrders.tenantId, tenantId)];
-
-    if (parsed.supplierId) {
-      conditions.push(eq(purchaseOrders.supplierId, parsed.supplierId));
-    }
-    if (parsed.status) {
-      conditions.push(eq(purchaseOrders.status, parsed.status));
-    }
-    if (parsed.from) {
-      conditions.push(gte(purchaseOrders.createdAt, new Date(parsed.from)));
-    }
-    if (parsed.to) {
-      conditions.push(lte(purchaseOrders.createdAt, new Date(parsed.to)));
-    }
-
-    const rows = await db
-      .select()
-      .from(purchaseOrders)
-      .where(and(...conditions))
-      .orderBy(desc(purchaseOrders.createdAt))
-      .limit(parsed.limit ?? 200);
-
-    const ids = rows.map((row) => row.id);
-    const poItems =
-      ids.length > 0
-        ? await db
-            .select()
-            .from(purchaseOrderItems)
-            .where(and(eq(purchaseOrderItems.tenantId, tenantId), inArray(purchaseOrderItems.purchaseOrderId, ids)))
-        : [];
-    const poItemIds = poItems.map((item) => item.id);
-    const receiptItems =
-      poItemIds.length > 0
-        ? await db
-            .select()
-            .from(goodsReceiptItems)
-            .where(and(eq(goodsReceiptItems.tenantId, tenantId), inArray(goodsReceiptItems.purchaseOrderItemId, poItemIds)))
-        : [];
-
-    const receivedByItem = new Map<string, number>();
-    for (const item of receiptItems) {
-      receivedByItem.set(item.purchaseOrderItemId, (receivedByItem.get(item.purchaseOrderItemId) ?? 0) + Number(item.receivedQty));
-    }
-
-    const itemsByPo = new Map<string, PurchaseOrderItem[]>();
-    for (const item of poItems) {
-      const existing = itemsByPo.get(item.purchaseOrderId) ?? [];
-      existing.push({
-        id: item.id,
-        inventoryId: item.inventoryId ?? undefined,
-        itemName: item.itemName,
-        unit: item.unit,
-        orderedQty: Number(item.orderedQty),
-        unitCost: Number(item.unitCost),
-        receivedQty: Number((receivedByItem.get(item.id) ?? 0).toFixed(3)),
-      });
-      itemsByPo.set(item.purchaseOrderId, existing);
-    }
-
-    return rows.map((row) =>
-      purchaseOrderSchema.parse({
-        id: row.id,
-        supplierId: row.supplierId,
-        status: purchaseOrderStatusSchema.parse(row.status),
-        expectedAt: row.expectedAt ? row.expectedAt.toISOString() : undefined,
-        notes: row.notes ?? undefined,
-        items: itemsByPo.get(row.id) ?? [],
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString(),
-      }),
-    );
-  }
 
   private async getOrderById(id: string): Promise<Order | null> {
     const tenantId = getTenantIdOrDefault();
