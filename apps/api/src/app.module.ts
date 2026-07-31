@@ -16,6 +16,7 @@ import { ConsumerRepository } from "./repository/consumer.repository";
 import { FiscalRepository } from "./repository/fiscal.repository";
 import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { CustomerRepository } from "./repository/customer.repository";
+import { PaymentsRepository } from "./repository/payments.repository";
 import { RealtimePubSubService } from "./realtime/pubsub.service";
 import { RealtimeGateway } from "./realtime.gateway";
 import { StaffController } from "./staff.controller";
@@ -67,6 +68,7 @@ import { PublicMenuController } from "./public/public-menu.controller";
     FiscalRepository,
     SimpleCatalogRepository,
     CustomerRepository,
+    PaymentsRepository,
     DbInitService,
     DbShutdownService,
     RealtimePubSubService,

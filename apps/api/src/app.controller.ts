@@ -233,6 +233,7 @@ import { ConsumerRepository } from "./repository/consumer.repository";
 import { FiscalRepository } from "./repository/fiscal.repository";
 import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { CustomerRepository } from "./repository/customer.repository";
+import { PaymentsRepository } from "./repository/payments.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
@@ -268,6 +269,7 @@ export class AppController {
     @Inject(FiscalRepository) private readonly fiscalRepo: FiscalRepository,
     @Inject(SimpleCatalogRepository) private readonly simpleCatalogRepo: SimpleCatalogRepository,
     @Inject(CustomerRepository) private readonly customerRepo: CustomerRepository,
+    @Inject(PaymentsRepository) private readonly paymentsRepo: PaymentsRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
@@ -330,7 +332,7 @@ export class AppController {
       limit: query.limit ? Number(query.limit) : undefined,
     };
 
-    return this.appRepository.listPayments(filters);
+    return this.paymentsRepo.listPayments(filters);
   }
 
   @Post("payments/:id/refund")
@@ -350,7 +352,7 @@ export class AppController {
     const parsed = refundPaymentRequestSchema.parse(payload);
     let result;
     try {
-      result = await this.appRepository.refundPayment(id, parsed, actorStaffId);
+      result = await this.paymentsRepo.refundPayment(id, parsed, actorStaffId);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Refund failed");
     }
@@ -907,7 +909,7 @@ export class AppController {
 
     const dayStart = new Date(`${entry.businessDate}T00:00:00.000Z`);
     const dayEnd = new Date(`${entry.businessDate}T23:59:59.999Z`);
-    const payments = await this.appRepository.listPayments({ from: dayStart.toISOString(), to: dayEnd.toISOString(), limit: 500 });
+    const payments = await this.paymentsRepo.listPayments({ from: dayStart.toISOString(), to: dayEnd.toISOString(), limit: 500 });
 
     const sales = payments.filter((payment) => payment.kind === "sale");
     const refunds = payments.filter((payment) => payment.kind === "refund");
