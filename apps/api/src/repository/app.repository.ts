@@ -1400,7 +1400,31 @@ export class AppRepository {
         db.select().from(menuItemIngredients).where(eq(menuItemIngredients.tenantId, tenantId)),
         db.select().from(menuItemBomRequirements).where(eq(menuItemBomRequirements.tenantId, tenantId)),
         db.select().from(orders).where(and(eq(orders.tenantId, tenantId), ne(orders.status, "paid"), ne(orders.status, "cancelled"))),
-        db.select().from(orderItems).where(eq(orderItems.tenantId, tenantId)),
+        // Solo item degli ordini aperti (specchia il filtro su orders): gli item
+        // degli ordini paid/cancelled non servono mai a getPublicData e, senza
+        // questo filtro, si scaricavano TUTTI gli item storici del tenant.
+        db.select({
+          id: orderItems.id,
+          orderId: orderItems.orderId,
+          menuItemId: orderItems.menuItemId,
+          name: orderItems.name,
+          price: orderItems.price,
+          quantity: orderItems.quantity,
+          ingredientOverrides: orderItems.ingredientOverrides,
+          selectedModifiers: orderItems.selectedModifiers,
+        })
+          .from(orderItems)
+          .where(and(
+            eq(orderItems.tenantId, tenantId),
+            inArray(
+              orderItems.orderId,
+              db.select({ id: orders.id }).from(orders).where(and(
+                eq(orders.tenantId, tenantId),
+                ne(orders.status, "paid"),
+                ne(orders.status, "cancelled"),
+              )),
+            ),
+          )),
         this.mapBomItems(),
         db.select().from(menuModifierGroups).where(eq(menuModifierGroups.tenantId, tenantId)),
         db.select().from(menuModifierOptions).where(eq(menuModifierOptions.tenantId, tenantId)),
