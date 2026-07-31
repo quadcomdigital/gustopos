@@ -8,14 +8,14 @@ import {
 import jwt from "jsonwebtoken";
 import type { AuthenticatedRequest } from "./auth-request.type";
 import type { JwtPayload } from "./jwt.types";
-import { AppRepository } from "../repository/app.repository";
+import { ConsumerRepository } from "../repository/consumer.repository";
 import { getJwtSecret } from "./jwt-secret";
 
 @Injectable()
 export class ConsumerJwtAuthGuard implements CanActivate {
   private readonly jwtSecret = getJwtSecret();
 
-  constructor(@Inject(AppRepository) private readonly appRepository: AppRepository) {}
+  constructor(@Inject(ConsumerRepository) private readonly consumerRepo: ConsumerRepository) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -37,7 +37,7 @@ export class ConsumerJwtAuthGuard implements CanActivate {
         throw new UnauthorizedException("Tenant mismatch");
       }
 
-      const activeSession = await this.appRepository.findActiveConsumerSessionById(payload.sessionId, payload.sub);
+      const activeSession = await this.consumerRepo.findActiveConsumerSessionById(payload.sessionId, payload.sub);
       if (!activeSession) {
         throw new UnauthorizedException("Session expired or revoked");
       }

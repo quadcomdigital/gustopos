@@ -6,6 +6,15 @@ import { BomController } from "./bom.controller";
 import { DbInitService } from "./db/db-init.service";
 import { DbShutdownService } from "./db/db-shutdown.service";
 import { AppRepository } from "./repository/app.repository";
+import { StaffRepository } from "./repository/staff.repository";
+import { ShiftsRepository } from "./repository/shifts.repository";
+import { SuppliersRepository } from "./repository/suppliers.repository";
+import { InventoryRepository } from "./repository/inventory.repository";
+import { TablesRepository } from "./repository/tables.repository";
+import { LoyaltyRepository } from "./repository/loyalty.repository";
+import { ConsumerRepository } from "./repository/consumer.repository";
+import { FiscalRepository } from "./repository/fiscal.repository";
+import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { RealtimePubSubService } from "./realtime/pubsub.service";
 import { RealtimeGateway } from "./realtime.gateway";
 import { StaffController } from "./staff.controller";
@@ -47,6 +56,15 @@ import { PublicMenuController } from "./public/public-menu.controller";
   ],
   providers: [
     AppRepository,
+    StaffRepository,
+    ShiftsRepository,
+    SuppliersRepository,
+    InventoryRepository,
+    TablesRepository,
+    LoyaltyRepository,
+    ConsumerRepository,
+    FiscalRepository,
+    SimpleCatalogRepository,
     DbInitService,
     DbShutdownService,
     RealtimePubSubService,

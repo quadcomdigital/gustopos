@@ -213,6 +213,8 @@ import {
   type PaySelectedItemsRequest,
   type MarkShareAsPaidRequest,
   type TransferTableRequest,
+  updateOrderItemQuantityRequestSchema,
+  type UpdateOrderItemQuantityRequest,
   type UpdateOrderRequest,
   type LoyaltyBalance,
   type LoyaltyTransaction,
@@ -221,6 +223,15 @@ import {
 } from "@gustopos/shared";
 import { RealtimeGateway } from "./realtime.gateway";
 import { AppRepository } from "./repository/app.repository";
+import { StaffRepository } from "./repository/staff.repository";
+import { ShiftsRepository } from "./repository/shifts.repository";
+import { SuppliersRepository } from "./repository/suppliers.repository";
+import { InventoryRepository } from "./repository/inventory.repository";
+import { TablesRepository } from "./repository/tables.repository";
+import { LoyaltyRepository } from "./repository/loyalty.repository";
+import { ConsumerRepository } from "./repository/consumer.repository";
+import { FiscalRepository } from "./repository/fiscal.repository";
+import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
@@ -246,6 +257,15 @@ export class AppController {
   constructor(
     @Inject(RealtimeGateway) private readonly realtimeGateway: RealtimeGateway,
     @Inject(AppRepository) private readonly appRepository: AppRepository,
+    @Inject(StaffRepository) private readonly staffRepo: StaffRepository,
+    @Inject(ShiftsRepository) private readonly shiftsRepo: ShiftsRepository,
+    @Inject(SuppliersRepository) private readonly suppliersRepo: SuppliersRepository,
+    @Inject(InventoryRepository) private readonly inventoryRepo: InventoryRepository,
+    @Inject(TablesRepository) private readonly tablesRepo: TablesRepository,
+    @Inject(LoyaltyRepository) private readonly loyaltyRepo: LoyaltyRepository,
+    @Inject(ConsumerRepository) private readonly consumerRepo: ConsumerRepository,
+    @Inject(FiscalRepository) private readonly fiscalRepo: FiscalRepository,
+    @Inject(SimpleCatalogRepository) private readonly simpleCatalogRepo: SimpleCatalogRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
@@ -267,7 +287,7 @@ export class AppController {
         throw new UnauthorizedException("Consumer tenant mismatch");
       }
 
-      const activeSession = await this.appRepository.findActiveConsumerSessionById(payload.sessionId, payload.sub);
+      const activeSession = await this.consumerRepo.findActiveConsumerSessionById(payload.sessionId, payload.sub);
       if (!activeSession || activeSession.tenantId !== tenantId) {
         throw new UnauthorizedException("Consumer session expired or revoked");
       }
@@ -423,7 +443,7 @@ export class AppController {
       from: query.from,
       to: query.to,
     }) as OperationalSummaryQuery;
-    return this.appRepository.getReservationsSummary(parsed);
+    return this.tablesRepo.getReservationsSummary(parsed);
   }
 
   @Get("analytics/delivery-summary")
@@ -434,7 +454,7 @@ export class AppController {
       from: query.from,
       to: query.to,
     }) as OperationalSummaryQuery;
-    return this.appRepository.getDeliverySummary(parsed);
+    return this.tablesRepo.getDeliverySummary(parsed);
   }
 
   @Get("reservations")
@@ -447,7 +467,7 @@ export class AppController {
       status: query.status,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as ReservationsQuery;
-    return this.appRepository.listReservations(parsed);
+    return this.tablesRepo.listReservations(parsed);
   }
 
   @Post("reservations")
@@ -455,7 +475,7 @@ export class AppController {
   @RequiresModule("reservations")
   createReservation(@Body() payload: ReservationCreateRequest): Promise<Reservation> {
     const parsed = reservationCreateRequestSchema.parse(payload);
-    return this.appRepository.createReservation(parsed).then((reservation) => {
+    return this.tablesRepo.createReservation(parsed).then((reservation) => {
       this.auditLogService.log("reservation.created", {
         targetId: reservation.id,
         details: { status: reservation.status, reservedFor: reservation.reservedFor, partySize: reservation.partySize },
@@ -469,7 +489,7 @@ export class AppController {
   @RequiresModule("reservations")
   async updateReservation(@Param("id") id: string, @Body() payload: ReservationUpdateRequest): Promise<Reservation> {
     const parsed = reservationUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateReservation(id, parsed);
+    const updated = await this.tablesRepo.updateReservation(id, parsed);
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
@@ -484,7 +504,7 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("reservations")
   async confirmReservation(@Param("id") id: string): Promise<Reservation> {
-    const updated = await this.appRepository.updateReservation(id, { status: "confirmed" });
+    const updated = await this.tablesRepo.updateReservation(id, { status: "confirmed" });
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
@@ -499,7 +519,7 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("reservations")
   async cancelReservation(@Param("id") id: string): Promise<Reservation> {
-    const updated = await this.appRepository.updateReservation(id, { status: "cancelled" });
+    const updated = await this.tablesRepo.updateReservation(id, { status: "cancelled" });
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
@@ -518,7 +538,7 @@ export class AppController {
     @Body() payload: ReservationNoShowRequest,
   ): Promise<Reservation> {
     const parsed = reservationNoShowRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateReservation(id, { status: "no_show", noShowReason: parsed.reason });
+    const updated = await this.tablesRepo.updateReservation(id, { status: "no_show", noShowReason: parsed.reason });
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
@@ -539,7 +559,7 @@ export class AppController {
       to: query.to,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as DeliveryOrdersQuery;
-    return this.appRepository.listDeliveryOrders(parsed);
+    return this.tablesRepo.listDeliveryOrders(parsed);
   }
 
   @Post("delivery/orders/:orderId/upsert")
@@ -547,7 +567,7 @@ export class AppController {
   @RequiresModule("delivery")
   upsertDeliveryOrder(@Param("orderId") orderId: string, @Body() payload: DeliveryUpsertRequest): Promise<DeliveryOrder> {
     const parsed = deliveryUpsertRequestSchema.parse(payload);
-    return this.appRepository.upsertDeliveryOrder(orderId, parsed).then((deliveryOrder) => {
+    return this.tablesRepo.upsertDeliveryOrder(orderId, parsed).then((deliveryOrder) => {
       this.auditLogService.log("delivery.upserted", {
         targetId: orderId,
         details: { status: deliveryOrder.status, deliveryFee: deliveryOrder.deliveryFee },
@@ -564,7 +584,7 @@ export class AppController {
     @Body() payload: DeliveryStatusUpdateRequest,
   ): Promise<DeliveryOrder> {
     const parsed = deliveryStatusUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateDeliveryStatus(orderId, parsed);
+    const updated = await this.tablesRepo.updateDeliveryStatus(orderId, parsed);
     if (!updated) {
       throw new NotFoundException("Delivery order not found");
     }
@@ -579,7 +599,7 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("delivery")
   async dispatchDeliveryOrder(@Param("orderId") orderId: string): Promise<DeliveryOrder> {
-    const updated = await this.appRepository.updateDeliveryStatus(orderId, { status: "out_for_delivery" });
+    const updated = await this.tablesRepo.updateDeliveryStatus(orderId, { status: "out_for_delivery" });
     if (!updated) {
       throw new NotFoundException("Delivery order not found");
     }
@@ -599,7 +619,7 @@ export class AppController {
       query: query.query,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as SuppliersQuery;
-    return this.appRepository.listSuppliers(parsed);
+    return this.suppliersRepo.listSuppliers(parsed);
   }
 
   @Post("purchasing/suppliers")
@@ -607,7 +627,7 @@ export class AppController {
   @RequiresModule("purchasing_suppliers")
   createSupplier(@Body() payload: SupplierCreateRequest): Promise<Supplier> {
     const parsed = supplierCreateRequestSchema.parse(payload);
-    return this.appRepository.createSupplier(parsed);
+    return this.suppliersRepo.createSupplier(parsed);
   }
 
   @Patch("purchasing/suppliers/:id")
@@ -615,7 +635,7 @@ export class AppController {
   @RequiresModule("purchasing_suppliers")
   async updateSupplier(@Param("id") id: string, @Body() payload: SupplierUpdateRequest): Promise<Supplier> {
     const parsed = supplierUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateSupplier(id, parsed);
+    const updated = await this.suppliersRepo.updateSupplier(id, parsed);
     if (!updated) {
       throw new NotFoundException("Supplier not found");
     }
@@ -626,21 +646,21 @@ export class AppController {
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   listSupplierIngredients(@Param("supplierId") supplierId: string): Promise<SupplierIngredient[]> {
-    return this.appRepository.listSupplierIngredients(supplierId);
+    return this.suppliersRepo.listSupplierIngredients(supplierId);
   }
 
   @Get("purchasing/ingredients/:ingredientId/suppliers")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   listIngredientSuppliers(@Param("ingredientId") ingredientId: string): Promise<SupplierIngredient[]> {
-    return this.appRepository.listSupplierIngredients(undefined, ingredientId);
+    return this.suppliersRepo.listSupplierIngredients(undefined, ingredientId);
   }
 
   @Post("purchasing/supplier-ingredients")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async createSupplierIngredient(@Body() payload: { supplierId: string; ingredientId: string; brandName?: string; unitCost?: number; isPreferred?: boolean }): Promise<void> {
-    await this.appRepository.createSupplierIngredient(payload);
+    await this.suppliersRepo.createSupplierIngredient(payload);
   }
 
   @Patch("purchasing/supplier-ingredients/:supplierId/:ingredientId")
@@ -651,7 +671,7 @@ export class AppController {
     @Param("ingredientId") ingredientId: string,
     @Body() payload: { brandName?: string; unitCost?: number; isPreferred?: boolean },
   ): Promise<void> {
-    await this.appRepository.updateSupplierIngredient(supplierId, ingredientId, payload);
+    await this.suppliersRepo.updateSupplierIngredient(supplierId, ingredientId, payload);
   }
 
   @Delete("purchasing/supplier-ingredients/:supplierId/:ingredientId")
@@ -661,14 +681,14 @@ export class AppController {
     @Param("supplierId") supplierId: string,
     @Param("ingredientId") ingredientId: string,
   ): Promise<void> {
-    await this.appRepository.deleteSupplierIngredient(supplierId, ingredientId);
+    await this.suppliersRepo.deleteSupplierIngredient(supplierId, ingredientId);
   }
 
   @Get("purchasing/suppliers/:id/po-items")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   getSupplierPoItems(@Param("id") id: string) {
-    return this.appRepository.getSupplierIngredientsForPo(id);
+    return this.suppliersRepo.getSupplierIngredientsForPo(id);
   }
 
   @Get("purchasing/orders")
@@ -682,7 +702,7 @@ export class AppController {
       to: query.to,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as PurchaseOrdersQuery;
-    return this.appRepository.listPurchaseOrders(parsed);
+    return this.suppliersRepo.listPurchaseOrders(parsed);
   }
 
   @Post("purchasing/orders")
@@ -690,7 +710,7 @@ export class AppController {
   @RequiresModule("purchasing_suppliers")
   createPurchaseOrder(@Body() payload: PurchaseOrderCreateRequest): Promise<PurchaseOrder> {
     const parsed = purchaseOrderCreateRequestSchema.parse(payload);
-    return this.appRepository.createPurchaseOrder(parsed);
+    return this.suppliersRepo.createPurchaseOrder(parsed);
   }
 
   @Patch("purchasing/orders/:id/status")
@@ -703,7 +723,7 @@ export class AppController {
     const parsed = purchaseOrderStatusUpdateRequestSchema.parse(payload);
     let updated: PurchaseOrder | null = null;
     try {
-      updated = await this.appRepository.updatePurchaseOrderStatus(id, parsed);
+      updated = await this.suppliersRepo.updatePurchaseOrderStatus(id, parsed);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid purchase order transition";
       throw new BadRequestException(message);
@@ -725,7 +745,7 @@ export class AppController {
     const parsed = goodsReceiptCreateRequestSchema.parse(payload);
     const actorStaffId = request.user?.sub;
     try {
-      return await this.appRepository.createGoodsReceipt(id, parsed, actorStaffId);
+      return await this.suppliersRepo.createGoodsReceipt(id, parsed, actorStaffId);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid goods receipt");
     }
@@ -742,7 +762,7 @@ export class AppController {
       status: query.status,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as ShiftsQuery;
-    return this.appRepository.listShifts(parsed);
+    return this.shiftsRepo.listShifts(parsed);
   }
 
   @Post("shifts")
@@ -750,7 +770,7 @@ export class AppController {
   @RequiresModule("staff_shifts_timeclock")
   createShift(@Body() payload: ShiftCreateRequest): Promise<Shift> {
     const parsed = shiftCreateRequestSchema.parse(payload);
-    return this.appRepository.createShift(parsed);
+    return this.shiftsRepo.createShift(parsed);
   }
 
   @Patch("shifts/:id")
@@ -758,7 +778,7 @@ export class AppController {
   @RequiresModule("staff_shifts_timeclock")
   async updateShift(@Param("id") id: string, @Body() payload: ShiftUpdateRequest): Promise<Shift> {
     const parsed = shiftUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateShift(id, parsed);
+    const updated = await this.shiftsRepo.updateShift(id, parsed);
     if (!updated) {
       throw new NotFoundException("Shift not found");
     }
@@ -778,7 +798,7 @@ export class AppController {
 
     const resolved = role === "admin" ? parsed : { ...parsed, staffId: actorStaffId };
     try {
-      return await this.appRepository.clockIn(resolved);
+      return await this.shiftsRepo.clockIn(resolved);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Clock-in failed";
       if (message.includes("already exists")) {
@@ -801,7 +821,7 @@ export class AppController {
 
     const resolved = role === "admin" ? parsed : { ...parsed, staffId: actorStaffId };
     try {
-      return await this.appRepository.clockOut(resolved);
+      return await this.shiftsRepo.clockOut(resolved);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Clock-out failed";
       if (message.includes("No open time entry")) {
@@ -820,7 +840,7 @@ export class AppController {
       to: query.to,
       staffId: query.staffId,
     }) as TimeReportQuery;
-    return this.appRepository.timeReport(parsed);
+    return this.fiscalRepo.timeReport(parsed);
   }
 
   @Post("fiscal/close-day")
@@ -834,7 +854,7 @@ export class AppController {
       throw new UnauthorizedException("Missing authenticated user");
     }
     try {
-      return await this.appRepository.closeFiscalDay(parsed, actorStaffId);
+      return await this.fiscalRepo.closeFiscalDay(parsed, actorStaffId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Fiscal close failed";
       if (message.includes("already closed")) {
@@ -854,7 +874,7 @@ export class AppController {
     if (!actorStaffId) {
       throw new UnauthorizedException("Missing authenticated user");
     }
-    return this.appRepository.createFiscalExport(parsed, actorStaffId);
+    return this.fiscalRepo.createFiscalExport(parsed, actorStaffId);
   }
 
   @Get("fiscal/exports")
@@ -867,7 +887,7 @@ export class AppController {
       status: query.status,
       limit: query.limit ? Number(query.limit) : undefined,
     }) as FiscalExportsQuery;
-    return this.appRepository.listFiscalExports(parsed);
+    return this.fiscalRepo.listFiscalExports(parsed);
   }
 
   @Get("fiscal/exports/:id/download")
@@ -878,7 +898,7 @@ export class AppController {
     @Req() request: AuthenticatedRequest,
     @Res() response: Response,
   ): Promise<void> {
-    const entry = await this.appRepository.getFiscalExportById(id);
+    const entry = await this.fiscalRepo.getFiscalExportById(id);
     if (!entry) {
       throw new NotFoundException("Fiscal export not found");
     }
@@ -988,14 +1008,14 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   listCategories(@Query("scope") scope?: Category["scope"]) {
-    return this.appRepository.listCategories(scope);
+    return this.inventoryRepo.listCategories(scope);
   }
 
   @Get("simple-catalog/categories")
   @Roles("admin", "chef")
   @RequiresModule("simple_catalog")
   listSimpleCatalogCategories() {
-    return this.appRepository.listCategories("menu");
+    return this.inventoryRepo.listCategories("menu");
   }
 
   @Get("print-jobs")
@@ -1146,7 +1166,7 @@ export class AppController {
   @RequiresModule("inventory")
   createCategory(@Body() payload: CategoryCreateRequest) {
     const parsed = categoryCreateRequestSchema.parse(payload);
-    return this.appRepository.createCategory(parsed);
+    return this.inventoryRepo.createCategory(parsed);
   }
 
   @Post("simple-catalog/categories")
@@ -1154,7 +1174,7 @@ export class AppController {
   @RequiresModule("simple_catalog")
   createSimpleCatalogCategory(@Body() payload: CategoryCreateRequest) {
     const parsed = categoryCreateRequestSchema.parse({ ...payload, scope: "menu" });
-    return this.appRepository.createCategory(parsed);
+    return this.inventoryRepo.createCategory(parsed);
   }
 
   @Patch("categories/:id")
@@ -1162,7 +1182,7 @@ export class AppController {
   @RequiresModule("inventory")
   async updateCategory(@Param("id") id: string, @Body() payload: CategoryUpdateRequest) {
     const parsed = categoryUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateCategory(id, parsed);
+    const updated = await this.inventoryRepo.updateCategory(id, parsed);
     if (!updated) {
       throw new NotFoundException("Category not found");
     }
@@ -1179,7 +1199,7 @@ export class AppController {
     }
 
     const parsed = categoryUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateCategory(id, parsed);
+    const updated = await this.inventoryRepo.updateCategory(id, parsed);
     if (!updated) {
       throw new NotFoundException("Category not found");
     }
@@ -1191,7 +1211,7 @@ export class AppController {
   @RequiresModule("inventory")
   async deleteCategory(@Param("id") id: string) {
     try {
-      const ok = await this.appRepository.deleteCategory(id);
+      const ok = await this.inventoryRepo.deleteCategory(id);
       if (!ok) {
         throw new NotFoundException("Category not found");
       }
@@ -1208,7 +1228,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   listCategoryModifierPools(@Query("categoryId") categoryId?: string) {
-    return this.appRepository.listCategoryModifierPools(categoryId);
+    return this.inventoryRepo.listCategoryModifierPools(categoryId);
   }
 
   @Post("category-modifier-pools")
@@ -1216,7 +1236,7 @@ export class AppController {
   @RequiresModule("inventory")
   createCategoryModifierPool(@Body() payload: CategoryModifierPoolCreateRequest) {
     const parsed = categoryModifierPoolCreateRequestSchema.parse(payload);
-    return this.appRepository.createCategoryModifierPool(parsed);
+    return this.inventoryRepo.createCategoryModifierPool(parsed);
   }
 
   @Patch("category-modifier-pools/:id")
@@ -1224,7 +1244,7 @@ export class AppController {
   @RequiresModule("inventory")
   async updateCategoryModifierPool(@Param("id") id: string, @Body() payload: CategoryModifierPoolUpdateRequest) {
     const parsed = categoryModifierPoolUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateCategoryModifierPool(id, parsed);
+    const updated = await this.inventoryRepo.updateCategoryModifierPool(id, parsed);
     if (!updated) {
       throw new NotFoundException("Category modifier pool not found");
     }
@@ -1235,7 +1255,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteCategoryModifierPool(@Param("id") id: string) {
-    const ok = await this.appRepository.deleteCategoryModifierPool(id);
+    const ok = await this.inventoryRepo.deleteCategoryModifierPool(id);
     if (!ok) {
       throw new NotFoundException("Category modifier pool not found");
     }
@@ -1246,7 +1266,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   listInventory() {
-    return this.appRepository.listInventoryItems();
+    return this.inventoryRepo.listInventoryItems();
   }
 
   @Get("inventory/reorder-suggestions")
@@ -1365,8 +1385,8 @@ export class AppController {
   @RequiresModule("inventory")
   async createInventoryItem(@Body() payload: IngredientCreateRequest) {
     const parsed = ingredientCreateRequestSchema.parse(payload);
-    const created = await this.appRepository.createInventoryItem(parsed);
-    const inventory = await this.appRepository.listInventoryItems();
+    const created = await this.inventoryRepo.createInventoryItem(parsed);
+    const inventory = await this.inventoryRepo.listInventoryItems();
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
     return created;
   }
@@ -1376,11 +1396,11 @@ export class AppController {
   @RequiresModule("inventory")
   async updateInventoryItem(@Param("id") id: string, @Body() payload: IngredientUpdateRequest) {
     const parsed = ingredientUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateInventoryItem(id, parsed);
+    const updated = await this.inventoryRepo.updateInventoryItem(id, parsed);
     if (!updated) {
       throw new NotFoundException("Ingredient not found");
     }
-    const inventory = await this.appRepository.listInventoryItems();
+    const inventory = await this.inventoryRepo.listInventoryItems();
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
     return updated;
   }
@@ -1390,11 +1410,11 @@ export class AppController {
   @RequiresModule("inventory")
   async deleteInventoryItem(@Param("id") id: string) {
     try {
-      const ok = await this.appRepository.deleteInventoryItem(id);
+      const ok = await this.inventoryRepo.deleteInventoryItem(id);
       if (!ok) {
         throw new NotFoundException("Ingredient not found");
       }
-      const inventory = await this.appRepository.listInventoryItems();
+      const inventory = await this.inventoryRepo.listInventoryItems();
       await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
       return { success: true };
     } catch (error) {
@@ -1415,13 +1435,13 @@ export class AppController {
   ) {
     const parsed = ingredientAdjustRequestSchema.parse(payload);
     try {
-      const updated = await this.appRepository.adjustInventoryItem(
+      const updated = await this.inventoryRepo.adjustInventoryItem(
         id,
         parsed.quantity,
         parsed.notes,
         request.user?.sub,
       );
-      const inventory = await this.appRepository.listInventoryItems();
+      const inventory = await this.inventoryRepo.listInventoryItems();
       await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
       return updated;
     } catch (error) {
@@ -1446,21 +1466,21 @@ export class AppController {
       limit: limit ? Number(limit) : 50,
       offset: offset ? Number(offset) : 0,
     });
-    return this.appRepository.listStockMovements(parsed);
+    return this.inventoryRepo.listStockMovements(parsed);
   }
 
   @Get("menu")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   listMenuAdmin() {
-    return this.appRepository.listMenuItemsAdmin();
+    return this.inventoryRepo.listMenuItemsAdmin();
   }
 
   @Get("simple-catalog/items")
   @Roles("admin", "chef")
   @RequiresModule("simple_catalog")
   listSimpleCatalogItems() {
-    return this.appRepository.listSimpleCatalogItems();
+    return this.simpleCatalogRepo.listSimpleCatalogItems();
   }
 
   @Post("simple-catalog/items")
@@ -1471,7 +1491,7 @@ export class AppController {
       .omit({ recipe: true })
       .extend({ recipe: menuItemCreateRequestSchema.shape.recipe.optional() })
       .parse(payload);
-    return this.appRepository.createSimpleCatalogItem(parsed).catch((error) => {
+    return this.simpleCatalogRepo.createSimpleCatalogItem(parsed).catch((error) => {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid simple catalog payload");
     });
   }
@@ -1481,7 +1501,7 @@ export class AppController {
   @RequiresModule("simple_catalog")
   async updateSimpleCatalogItem(@Param("id") id: string, @Body() payload: MenuItemUpdateRequest) {
     const parsed = menuItemUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateSimpleCatalogItem(id, parsed);
+    const updated = await this.simpleCatalogRepo.updateSimpleCatalogItem(id, parsed);
     if (!updated) {
       throw new NotFoundException("Simple catalog item not found");
     }
@@ -1492,7 +1512,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("simple_catalog")
   async enableSimpleCatalogItem(@Param("id") id: string) {
-    const ok = await this.appRepository.setMenuItemActiveState(id, true);
+    const ok = await this.simpleCatalogRepo.setMenuItemActiveState(id, true);
     if (!ok) {
       throw new NotFoundException("Simple catalog item not found");
     }
@@ -1503,7 +1523,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("simple_catalog")
   async disableSimpleCatalogItem(@Param("id") id: string) {
-    const ok = await this.appRepository.setMenuItemActiveState(id, false);
+    const ok = await this.simpleCatalogRepo.setMenuItemActiveState(id, false);
     if (!ok) {
       throw new NotFoundException("Simple catalog item not found");
     }
@@ -1515,7 +1535,7 @@ export class AppController {
   @RequiresModule("inventory")
   createMenuItem(@Body() payload: MenuItemCreateRequest) {
     const parsed = menuItemCreateRequestSchema.parse(payload);
-    return this.appRepository.createMenuItem(parsed).catch((error) => {
+    return this.inventoryRepo.createMenuItem(parsed).catch((error) => {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu payload");
     });
   }
@@ -1525,7 +1545,7 @@ export class AppController {
   @RequiresModule("inventory")
   async updateMenuItem(@Param("id") id: string, @Body() payload: MenuItemUpdateRequest) {
     const parsed = menuItemUpdateRequestSchema.parse(payload);
-    const updated = await this.appRepository.updateMenuItem(id, parsed);
+    const updated = await this.inventoryRepo.updateMenuItem(id, parsed);
     if (!updated) {
       throw new NotFoundException("Menu item not found");
     }
@@ -1540,7 +1560,7 @@ export class AppController {
     @Param("id") id: string,
     @Body() body: { defaultContainerId: string | null },
   ) {
-    const updated = await this.appRepository.updateMenuItem(id, { defaultContainerId: body.defaultContainerId });
+    const updated = await this.inventoryRepo.updateMenuItem(id, { defaultContainerId: body.defaultContainerId });
     if (!updated) {
       throw new NotFoundException("Menu item not found");
     }
@@ -1554,7 +1574,7 @@ export class AppController {
     const parsed = menuItemReplaceRecipeRequestSchema.parse(payload);
     let updated;
     try {
-      updated = await this.appRepository.replaceMenuItemRecipe(id, parsed);
+      updated = await this.inventoryRepo.replaceMenuItemRecipe(id, parsed);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu recipe payload");
     }
@@ -1571,7 +1591,7 @@ export class AppController {
   async addMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) {
     let updated;
     try {
-      updated = await this.appRepository.addMenuItemRecipeComponent(id, payload);
+      updated = await this.inventoryRepo.addMenuItemRecipeComponent(id, payload);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid recipe component");
     }
@@ -1588,7 +1608,7 @@ export class AppController {
   async removeMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) {
     let updated;
     try {
-      updated = await this.appRepository.removeMenuItemRecipeComponent(id, payload);
+      updated = await this.inventoryRepo.removeMenuItemRecipeComponent(id, payload);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid recipe component");
     }
@@ -1603,7 +1623,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async enableMenuItem(@Param("id") id: string) {
-    const ok = await this.appRepository.setMenuItemActiveState(id, true);
+    const ok = await this.simpleCatalogRepo.setMenuItemActiveState(id, true);
     if (!ok) {
       throw new NotFoundException("Menu item not found");
     }
@@ -1615,7 +1635,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async disableMenuItem(@Param("id") id: string) {
-    const ok = await this.appRepository.setMenuItemActiveState(id, false);
+    const ok = await this.simpleCatalogRepo.setMenuItemActiveState(id, false);
     if (!ok) {
       throw new NotFoundException("Menu item not found");
     }
@@ -1627,7 +1647,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteMenuItem(@Param("id") id: string) {
-    const ok = await this.appRepository.deleteMenuItem(id);
+    const ok = await this.inventoryRepo.deleteMenuItem(id);
     if (!ok) {
       throw new NotFoundException("Menu item not found");
     }
@@ -1648,6 +1668,27 @@ export class AppController {
     await this.realtimeGateway.emit(socketEvents.orderNew, created.order);
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, created.inventory);
     return created.order;
+  }
+
+  @Patch("orders/:id/items/:orderItemId")
+  @Roles("admin", "chef", "waiter")
+  @RequiresPermissions("orders:update")
+  @RequiresModule("kitchen")
+  async updateOrderItemQuantity(
+    @Param("id") id: string,
+    @Param("orderItemId") orderItemId: string,
+    @Body() payload: UpdateOrderItemQuantityRequest,
+  ): Promise<Order> {
+    const parsed = updateOrderItemQuantityRequestSchema.parse(payload);
+    let updated;
+    try {
+      updated = await this.appRepository.updateOrderItemQuantity(id, Number(orderItemId), parsed.quantity);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Order item update failed");
+    }
+    if (!updated) throw new NotFoundException("Order not found");
+    await this.realtimeGateway.emit(socketEvents.orderUpdate, updated);
+    return updated;
   }
 
   @Patch("orders/:id")
@@ -1697,7 +1738,7 @@ export class AppController {
     await this.realtimeGateway.emit(socketEvents.orderUpdate, result.order);
     const publicData = await this.appRepository.getPublicData();
     await this.realtimeGateway.emit(socketEvents.dataUpdate, publicData);
-    const inventory = await this.appRepository.listInventoryItems();
+    const inventory = await this.inventoryRepo.listInventoryItems();
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
     this.auditLogService.log("order.void", {
       actorStaffId,
@@ -1734,7 +1775,7 @@ export class AppController {
 
     let result;
     try {
-      result = await this.appRepository.closeTable(id, closePayload, actorStaffId);
+      result = await this.tablesRepo.closeTable(id, closePayload, actorStaffId);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Close table failed");
     }
@@ -1770,7 +1811,7 @@ export class AppController {
     const splitPayload = splitBillRequestSchema.parse(payload);
     let result;
     try {
-      result = await this.appRepository.splitBill(id, splitPayload, actorStaffId);
+      result = await this.tablesRepo.splitBill(id, splitPayload, actorStaffId);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid split bill request");
     }
@@ -1818,7 +1859,7 @@ export class AppController {
 
     let result;
     try {
-      result = await this.appRepository.markShareAsPaid(id, shareIndexNum, payload, actorStaffId);
+      result = await this.tablesRepo.markShareAsPaid(id, shareIndexNum, payload, actorStaffId);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid mark share as paid request");
     }
@@ -1846,7 +1887,7 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("kitchen")
   async getTablePaymentStatus(@Param("id") id: string) {
-    const result = await this.appRepository.getTablePaymentStatus(id);
+    const result = await this.tablesRepo.getTablePaymentStatus(id);
     if (!result) {
       throw new NotFoundException("Table not found");
     }
@@ -1866,7 +1907,7 @@ export class AppController {
     const payPayload = paySelectedItemsRequestSchema.parse(payload);
     let result;
     try {
-      result = await this.appRepository.paySelectedItems(id, payPayload, actorStaffId);
+      result = await this.tablesRepo.paySelectedItems(id, payPayload, actorStaffId);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid pay items request");
     }
@@ -1898,7 +1939,7 @@ export class AppController {
 
     let result;
     try {
-      result = await this.appRepository.transferTable(id, transferPayload);
+      result = await this.tablesRepo.transferTable(id, transferPayload);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Transfer failed");
     }
@@ -1949,7 +1990,7 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("loyalty_points")
   async getLoyaltyBalance(@Param("customerId") customerId: string): Promise<LoyaltyBalance> {
-    return this.appRepository.getLoyaltyBalance(customerId);
+    return this.loyaltyRepo.getLoyaltyBalance(customerId);
   }
 
   @Post("loyalty/earn")
@@ -1957,7 +1998,7 @@ export class AppController {
   @RequiresModule("loyalty_points")
   async earnLoyaltyPoints(@Body() payload: LoyaltyEarnRequest): Promise<LoyaltyTransaction> {
     const parsed = loyaltyEarnRequestSchema.parse(payload);
-    return this.appRepository.earnLoyaltyPoints(parsed.customerId, parsed.points, parsed.orderId, parsed.notes);
+    return this.loyaltyRepo.earnLoyaltyPoints(parsed.customerId, parsed.points, parsed.orderId, parsed.notes);
   }
 
   @Post("loyalty/redeem")
@@ -1965,7 +2006,7 @@ export class AppController {
   @RequiresModule("loyalty_points")
   async redeemLoyaltyPoints(@Body() payload: LoyaltyRedeemRequest): Promise<LoyaltyTransaction> {
     const parsed = loyaltyRedeemRequestSchema.parse(payload);
-    return this.appRepository.redeemLoyaltyPoints(parsed.customerId, parsed.points, parsed.orderId);
+    return this.loyaltyRepo.redeemLoyaltyPoints(parsed.customerId, parsed.points, parsed.orderId);
   }
 
   @Get("loyalty/:customerId/transactions")
@@ -1975,7 +2016,7 @@ export class AppController {
     @Param("customerId") customerId: string,
     @Query("limit") limit?: string,
   ): Promise<LoyaltyTransaction[]> {
-    return this.appRepository.listLoyaltyTransactions(customerId, limit ? Number(limit) : 50);
+    return this.loyaltyRepo.listLoyaltyTransactions(customerId, limit ? Number(limit) : 50);
   }
 
   // ─── Coupons ──────────────────────────────────────────────────────────
@@ -2033,13 +2074,13 @@ export class AppController {
   ): Promise<SelfOrderCreateResponse> {
     const parsed = selfOrderCreateRequestSchema.parse(payload);
     try {
-      const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+      const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
       if (!tenant) {
         throw new NotFoundException("Tenant not found");
       }
 
       const consumerUserId = await this.resolveConsumerUserId(request, tenant.id);
-      const config = await this.appRepository.getConsumerAccountsConfig(tenant.id);
+      const config = await this.consumerRepo.getConsumerAccountsConfig(tenant.id);
       if (config.requireAccountForSelfOrder && !consumerUserId) {
         throw new ForbiddenException("Consumer account required for self order");
       }
@@ -2071,7 +2112,7 @@ export class AppController {
     @Param("tenantSlug") tenantSlug: string,
     @Body() payload: ReservationCreateRequest,
   ): Promise<Reservation> {
-    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
     }
@@ -2082,7 +2123,7 @@ export class AppController {
     });
 
     try {
-      return await this.appRepository.createReservation(parsed);
+      return await this.tablesRepo.createReservation(parsed);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Reservation create failed");
     }
@@ -2099,13 +2140,13 @@ export class AppController {
     const parsed = publicTakeawayCreateRequestSchema.parse(payload);
 
     try {
-      const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+      const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
       if (!tenant) {
         throw new NotFoundException("Tenant not found");
       }
 
       const consumerUserId = await this.resolveConsumerUserId(request, tenant.id);
-      const config = await this.appRepository.getConsumerAccountsConfig(tenant.id);
+      const config = await this.consumerRepo.getConsumerAccountsConfig(tenant.id);
       if (config.requireAccountForTakeaway && !consumerUserId) {
         throw new ForbiddenException("Consumer account required for takeaway");
       }
@@ -2293,6 +2334,7 @@ export class AppController {
 
   @Post("public/:tenantSlug/funnel/events")
   @Public()
+  @RequiresModule("public_menu")
   async trackPublicFunnelEvent(
     @Param("tenantSlug") tenantSlug: string,
     @Body() payload: PublicFunnelEventRequest,
@@ -2340,7 +2382,7 @@ export class AppController {
   @Roles("admin", "chef", "waiter")
   @RequiresModule("inventory")
   async getPrepItems() {
-    return this.appRepository.listPrepItems();
+    return this.inventoryRepo.listPrepItems();
   }
 
   @Post("prep-items")
@@ -2351,7 +2393,7 @@ export class AppController {
       throw new BadRequestException("Invalid prep item data");
     }
     try {
-      return await this.appRepository.createPrepItem(payload);
+      return await this.inventoryRepo.createPrepItem(payload);
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
@@ -2363,7 +2405,7 @@ export class AppController {
   async updatePrepItem(@Param("id") id: string, @Body() payload: { name?: string; quantityPerUnit?: number; unit?: string }) {
     const parsed = prepItemUpdateRequestSchema.parse(payload);
     try {
-      return await this.appRepository.updatePrepItem(id, parsed);
+      return await this.inventoryRepo.updatePrepItem(id, parsed);
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
@@ -2373,7 +2415,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deletePrepItem(@Param("id") id: string) {
-    await this.appRepository.deletePrepItem(id);
+    await this.inventoryRepo.deletePrepItem(id);
     return { success: true };
   }
 
@@ -2385,7 +2427,7 @@ export class AppController {
       throw new BadRequestException("Quantity must be positive");
     }
     try {
-      return await this.appRepository.preparePrepItem(id, payload.quantity);
+      return await this.inventoryRepo.preparePrepItem(id, payload.quantity);
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
@@ -2395,7 +2437,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async getUnitConversions(@Param("id") id: string) {
-    return this.appRepository.listUnitConversions(id);
+    return this.inventoryRepo.listUnitConversions(id);
   }
 
   @Post("inventory/:id/conversions")
@@ -2404,7 +2446,7 @@ export class AppController {
   async createUnitConversion(@Param("id") id: string, @Body() payload: { fromUnit: string; toUnit: string; factor: number }) {
     const parsed = unitConversionCreateRequestSchema.parse(payload);
     try {
-      return await this.appRepository.createUnitConversion(id, parsed);
+      return await this.inventoryRepo.createUnitConversion(id, parsed);
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
@@ -2416,7 +2458,7 @@ export class AppController {
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async getFoodCostMatrix() {
-    return this.appRepository.getFoodCostMatrix();
+    return this.inventoryRepo.getFoodCostMatrix();
   }
 
   @Patch("food-cost-matrix/cell")
@@ -2543,7 +2585,14 @@ export class AppController {
     }
 
     this.verifyBridgeSecret(req);
-    return { tenantId: "tenant_legacy", path: "legacy", expectedBridgeId: "" };
+    // Legacy env-var auth: use X-Bridge-Tenant-Id header if provided (multi-tenant support).
+    // Fall back to DEFAULT_TENANT_ID / "tenant_legacy" for backward compatibility.
+    const bridgeTenantId =
+      (Array.isArray(req.headers['x-bridge-tenant-id'])
+        ? req.headers['x-bridge-tenant-id'][0]
+        : req.headers['x-bridge-tenant-id'])?.trim() || '';
+    const fallbackTenantId = process.env.DEFAULT_TENANT_ID?.trim() || 'tenant_legacy';
+    return { tenantId: bridgeTenantId || fallbackTenantId, path: "legacy", expectedBridgeId: "" };
   }
 
   @Post("print-bridge/heartbeat")

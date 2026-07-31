@@ -22,6 +22,8 @@ import {
   type LogoutResponse,
 } from "@gustopos/shared";
 import { AppRepository } from "../repository/app.repository";
+import { ConsumerRepository } from "../repository/consumer.repository";
+import { StaffRepository } from "../repository/staff.repository";
 import { getJwtSecret } from "../auth/jwt-secret";
 
 @Injectable()
@@ -30,28 +32,32 @@ export class ConsumerAuthService {
   private readonly accessTokenTtlSeconds = Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 60 * 15);
   private readonly refreshTokenTtlSeconds = Number(process.env.REFRESH_TOKEN_TTL_SECONDS ?? 60 * 60 * 24 * 7);
 
-  constructor(private readonly appRepository: AppRepository) {}
+  constructor(
+    private readonly appRepository: AppRepository,
+    private readonly consumerRepo: ConsumerRepository,
+    private readonly staffRepo: StaffRepository,
+  ) {}
 
   async register(tenantSlug: string, payload: ConsumerRegisterRequest): Promise<ConsumerAuthResponse> {
-    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
     }
 
     await this.assertConsumerAccountsEnabled(tenant.id);
 
-    const config = await this.appRepository.getConsumerAccountsConfig(tenant.id);
+    const config = await this.consumerRepo.getConsumerAccountsConfig(tenant.id);
     if (!config.registrationEnabled) {
       throw new ForbiddenException("Consumer registration is disabled for this tenant");
     }
 
     const parsed = consumerRegisterRequestSchema.parse(payload);
-    const user = await this.appRepository.createConsumerUser(tenant.id, parsed);
+    const user = await this.consumerRepo.createConsumerUser(tenant.id, parsed);
     return this.createConsumerAuthResponse(user, tenant.id);
   }
 
   async login(tenantSlug: string, payload: ConsumerLoginRequest): Promise<ConsumerAuthResponse> {
-    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
     }
@@ -59,7 +65,7 @@ export class ConsumerAuthService {
     await this.assertConsumerAccountsEnabled(tenant.id);
 
     const parsed = consumerLoginRequestSchema.parse(payload);
-    const user = await this.appRepository.findConsumerUserByCredentials(tenant.id, parsed);
+    const user = await this.consumerRepo.findConsumerUserByCredentials(tenant.id, parsed);
     if (!user) {
       throw new UnauthorizedException("Invalid consumer credentials");
     }
@@ -68,7 +74,7 @@ export class ConsumerAuthService {
   }
 
   async refresh(tenantSlug: string, payload: ConsumerRefreshRequest): Promise<ConsumerAuthResponse> {
-    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
     }
@@ -77,31 +83,31 @@ export class ConsumerAuthService {
 
     const parsed = consumerRefreshRequestSchema.parse(payload);
     const refreshTokenHash = this.hashToken(parsed.refreshToken);
-    const session = await this.appRepository.findActiveConsumerSessionByRefreshHash(refreshTokenHash);
+    const session = await this.consumerRepo.findActiveConsumerSessionByRefreshHash(refreshTokenHash);
     if (!session || session.tenantId !== tenant.id) {
       throw new UnauthorizedException("Consumer session expired or invalid");
     }
 
-    const user = await this.appRepository.findConsumerUserById(tenant.id, session.consumerUserId);
+    const user = await this.consumerRepo.findConsumerUserById(tenant.id, session.consumerUserId);
     if (!user) {
       throw new UnauthorizedException("Consumer user not found");
     }
 
-    await this.appRepository.revokeConsumerSessionById(session.id);
+    await this.consumerRepo.revokeConsumerSessionById(session.id);
     return this.createConsumerAuthResponse(user, tenant.id);
   }
 
   async logout(sessionId: string): Promise<LogoutResponse> {
-    await this.appRepository.revokeConsumerSessionByIdIfActive(sessionId);
+    await this.consumerRepo.revokeConsumerSessionByIdIfActive(sessionId);
     return logoutResponseSchema.parse({ success: true });
   }
 
   async me(tenantSlug: string, consumerUserId: string): Promise<ConsumerUser> {
-    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
     }
-    const user = await this.appRepository.findConsumerUserById(tenant.id, consumerUserId);
+    const user = await this.consumerRepo.findConsumerUserById(tenant.id, consumerUserId);
     if (!user) {
       throw new UnauthorizedException("Consumer user not found");
     }
@@ -109,15 +115,15 @@ export class ConsumerAuthService {
   }
 
   async orders(tenantSlug: string, consumerUserId: string): Promise<ConsumerOrderHistoryResponse> {
-    const tenant = await this.appRepository.getTenantBySlug(tenantSlug);
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
     }
-    return this.appRepository.listConsumerOrderHistory(tenant.id, consumerUserId);
+    return this.consumerRepo.listConsumerOrderHistory(tenant.id, consumerUserId);
   }
 
   private async assertConsumerAccountsEnabled(tenantId: string): Promise<void> {
-    const enabledModules = await this.appRepository.getEnabledModulesForTenant(tenantId);
+    const enabledModules = await this.staffRepo.getEnabledModulesForTenant(tenantId);
     if (!enabledModules.includes("consumer_accounts")) {
       throw new ForbiddenException("Consumer accounts disabled for tenant");
     }
@@ -125,11 +131,11 @@ export class ConsumerAuthService {
 
   private async createConsumerAuthResponse(user: ConsumerUser, tenantId: string): Promise<ConsumerAuthResponse> {
     const sessionId = crypto.randomUUID();
-    const enabledModules = await this.appRepository.getEnabledModulesForTenant(tenantId);
+    const enabledModules = await this.staffRepo.getEnabledModulesForTenant(tenantId);
     const refreshToken = crypto.randomBytes(48).toString("hex");
     const refreshTokenHash = this.hashToken(refreshToken);
 
-    await this.appRepository.createConsumerSession({
+    await this.consumerRepo.createConsumerSession({
       id: sessionId,
       tenantId,
       consumerUserId: user.id,
