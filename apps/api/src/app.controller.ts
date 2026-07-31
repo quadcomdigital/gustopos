@@ -235,6 +235,7 @@ import { SimpleCatalogRepository } from "./repository/simple-catalog.repository"
 import { CustomerRepository } from "./repository/customer.repository";
 import { PaymentsRepository } from "./repository/payments.repository";
 import { PrintJobsRepository } from "./repository/print-jobs.repository";
+import { PrintBridgeRepository } from "./repository/print-bridge.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
@@ -272,6 +273,7 @@ export class AppController {
     @Inject(CustomerRepository) private readonly customerRepo: CustomerRepository,
     @Inject(PaymentsRepository) private readonly paymentsRepo: PaymentsRepository,
     @Inject(PrintJobsRepository) private readonly printJobsRepo: PrintJobsRepository,
+    @Inject(PrintBridgeRepository) private readonly printBridgeRepo: PrintBridgeRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
@@ -2562,7 +2564,7 @@ export class AppController {
 
     if (providedStr) {
       if (this.isShortCode(providedStr)) {
-        const resolved = await this.appRepository.resolveOnboardingSecretByShortCode(providedStr);
+        const resolved = await this.printBridgeRepo.resolveOnboardingSecretByShortCode(providedStr);
         if (resolved) {
           if (resolved.revokedAt) {
             throw new UnauthorizedException("Onboarding secret has been revoked");
@@ -2575,7 +2577,7 @@ export class AppController {
           };
         }
       } else {
-        const resolved = await this.appRepository.resolveOnboardingSecret(providedStr);
+        const resolved = await this.printBridgeRepo.resolveOnboardingSecret(providedStr);
         if (resolved) {
           if (resolved.revokedAt) {
             throw new UnauthorizedException("Onboarding secret has been revoked");
@@ -2610,7 +2612,7 @@ export class AppController {
     let bridge;
     const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
     try {
-      bridge = await this.appRepository.upsertPrintBridge(payload as any, instanceId, auth.tenantId);
+      bridge = await this.printBridgeRepo.upsertPrintBridge(payload as any, instanceId, auth.tenantId);
     } catch (e) {
       if (e instanceof Error && e.message.includes("already used by another tenant")) {
         throw new ConflictException(e.message);
@@ -2619,7 +2621,7 @@ export class AppController {
     }
 
     if (auth.path === "onboarding" && auth.plaintext) {
-      const { firstBind } = await this.appRepository.markOnboardingSecretUsed(auth.plaintext, bridge.id);
+      const { firstBind } = await this.printBridgeRepo.markOnboardingSecretUsed(auth.plaintext, bridge.id);
       if (firstBind) {
         try {
           this.auditLogService.log("print_bridge.first_bind", {
@@ -2629,7 +2631,7 @@ export class AppController {
         } catch {}
       }
     } else if (auth.path === "onboarding-short-code" && auth.plaintext) {
-      const bindResult = await this.appRepository.markShortCodeFirstBind(auth.plaintext, bridge.id);
+      const bindResult = await this.printBridgeRepo.markShortCodeFirstBind(auth.plaintext, bridge.id);
       if (bindResult?.firstBind) {
         try {
           this.auditLogService.log("print_bridge.first_bind", {
@@ -2651,7 +2653,7 @@ export class AppController {
         const auth = await this.verifyBridgeOrOnboardingSecret(req);
     const payload = printBridgeClaimRequestSchema.parse(raw);
     const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    const jobs: PrintJob[] = await this.appRepository.claimPrintJobsForBridge(payload.bridgeId, payload.limit ?? 50, instanceId, auth.tenantId);
+    const jobs: PrintJob[] = await this.printBridgeRepo.claimPrintJobsForBridge(payload.bridgeId, payload.limit ?? 50, instanceId, auth.tenantId);
     for (const job of jobs) {
       if (job.bridgeId) {
         void this.realtimeGateway.emit(socketEvents.jobClaimed, job).catch((err) => console.warn('[realtime] job:claimed emit failed:', err));
@@ -2670,7 +2672,7 @@ export class AppController {
         const auth = await this.verifyBridgeOrOnboardingSecret(req);
     const payload = printBridgeJobCompleteRequestSchema.parse(raw);
     const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    const job = await this.appRepository.completeBridgeJob(payload.bridgeId, id, payload.notes, instanceId, auth.tenantId);
+    const job = await this.printBridgeRepo.completeBridgeJob(payload.bridgeId, id, payload.notes, instanceId, auth.tenantId);
     if (!job) {
       return { success: false };
     }
@@ -2688,7 +2690,7 @@ export class AppController {
         const auth = await this.verifyBridgeOrOnboardingSecret(req);
     const payload = printBridgeJobFailRequestSchema.parse(raw);
     const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    const job = await this.appRepository.failBridgeJob(payload.bridgeId, id, payload.error, instanceId, auth.tenantId);
+    const job = await this.printBridgeRepo.failBridgeJob(payload.bridgeId, id, payload.error, instanceId, auth.tenantId);
     if (!job) {
       return { success: false };
     }
@@ -2699,9 +2701,9 @@ export class AppController {
   @Get("print-bridge/onboarding-secret")
   @Roles("admin")
   @RequiresModule("printing")
-  async listOnboardingSecrets(): Promise<PrintBridgeOnboardingSecret[]> {
-    const tenantId = (this.appRepository as any).currentTenantId?.() ?? "tenant_legacy";
-    return this.appRepository.listOnboardingSecrets(tenantId);
+  async listOnboardingSecrets(@Req() request: AuthenticatedRequest): Promise<PrintBridgeOnboardingSecret[]> {
+    const tenantId = request.user?.tenantId ?? "tenant_legacy";
+    return this.printBridgeRepo.listOnboardingSecrets(tenantId);
   }
 
   @Post("print-bridge/onboarding-secret")
@@ -2717,7 +2719,7 @@ export class AppController {
     const actorStaffId = request.user?.sub ?? null;
     let created;
     try {
-      created = await this.appRepository.createOnboardingSecret(
+      created = await this.printBridgeRepo.createOnboardingSecret(
         tenantId,
         actorStaffId,
         parsed.bridgeIdHint,
@@ -2754,8 +2756,8 @@ export class AppController {
     @Param("id") id: string,
     @Req() request: AuthenticatedRequest,
   ): Promise<{ success: true; id: string }> {
-    const tenantId = (this.appRepository as any).currentTenantId?.() ?? "tenant_legacy";
-    await this.appRepository.revokeOnboardingSecret(tenantId, id);
+    const tenantId = request.user?.tenantId ?? "tenant_legacy";
+    await this.printBridgeRepo.revokeOnboardingSecret(tenantId, id);
     try {
       this.auditLogService.log("print_bridge.onboarding_secret.revoked", {
         actorStaffId: request.user?.sub ?? undefined,
@@ -2770,7 +2772,7 @@ export class AppController {
   @Roles("admin")
   @RequiresModule("printing")
   async listPrintBridges(): Promise<PrintBridge[]> {
-    return this.appRepository.listPrintBridges();
+    return this.printBridgeRepo.listPrintBridges();
   }
 
   @Patch("print-bridge/:id/mappings")
@@ -2781,7 +2783,7 @@ export class AppController {
     @Body() payload: PrintBridgeUpdateMappingsRequest,
   ): Promise<{ bridge: PrintBridge }> {
     const parsed = printBridgeUpdateMappingsRequestSchema.parse(payload);
-    const bridge = await this.appRepository.updateBridgeMappings(id, parsed.mappings as any);
+    const bridge = await this.printBridgeRepo.updateBridgeMappings(id, parsed.mappings as any);
     this.realtimeGateway
       .emit(socketEvents.bridgeStatus, bridge, bridge.tenantId ?? "tenant_legacy")
       .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
@@ -2796,7 +2798,7 @@ export class AppController {
     @Body() payload: PrintBridgeUpdateClaimedAreasRequest,
   ): Promise<{ bridge: PrintBridge }> {
     const parsed = printBridgeUpdateClaimedAreasRequestSchema.parse(payload);
-    const bridge = await this.appRepository.updateBridgeClaimedAreas(id, parsed.claimedAreas as any);
+    const bridge = await this.printBridgeRepo.updateBridgeClaimedAreas(id, parsed.claimedAreas as any);
     this.realtimeGateway
       .emit(socketEvents.bridgeStatus, bridge, bridge.tenantId ?? "tenant_legacy")
       .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
