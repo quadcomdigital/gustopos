@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react';
 import UnitSelect from '../../shared/ui/molecules/UnitSelect';
 import { useMemo, useState, useRef, useEffect } from 'react';
+import type { UnitConversion } from '@gustopos/shared';
 
 interface ComponentCandidate {
   id: string;
@@ -23,6 +24,8 @@ interface ComponentPickerProps {
   onAdd: () => void;
   searchPlaceholder?: string;
   disabled?: boolean;
+  /** Map of ingredientId → unit conversions for the unit dropdown */
+  conversionsMap?: Record<string, UnitConversion[]>;
 }
 
 export default function ComponentPicker({
@@ -38,6 +41,7 @@ export default function ComponentPicker({
   onAdd,
   searchPlaceholder = 'Cerca componente...',
   disabled = false,
+  conversionsMap = {},
 }: ComponentPickerProps) {
   const [search, setSearch] = useState('');
   const [isOpen, setIsOpen] = useState(false);
@@ -51,6 +55,7 @@ export default function ComponentPicker({
   }, [candidates, search]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [controlled-reset] resets highlight on search change; safe because setter receives a constant primitive
     setHighlightIndex(-1);
   }, [search]);
 
@@ -66,6 +71,16 @@ export default function ComponentPicker({
   }, [isOpen]);
 
   const selectedCandidate = candidates.find((c) => c.id === selectedId);
+
+  // Build extra unit options for the UnitSelect when an ingredient is selected
+  const unitExtraOptions = useMemo(() => {
+    const convs = type === 'ingredient' && selectedId ? conversionsMap[selectedId] ?? [] : [];
+    return convs.map((c) => ({
+      value: c.fromUnit,
+      label: c.fromUnit,
+      category: 'Conversioni',
+    }));
+  }, [type, selectedId, conversionsMap]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
@@ -156,6 +171,7 @@ export default function ComponentPicker({
         <UnitSelect
           value={unit}
           onChange={onUnitChange}
+          extraUnits={unitExtraOptions}
           placeholder="Unità"
           className="flex-1"
         />

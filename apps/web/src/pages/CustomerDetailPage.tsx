@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { fetchCustomerById, fetchLoyaltyBalance, fetchLoyaltyTransactions, earnLoyaltyPoints, redeemLoyaltyPoints, fetchCustomerAddresses, createCustomerAddress, updateCustomerAddress, deleteCustomerAddress } from '../shared/api/client';
-import type { Customer, LoyaltyBalance, LoyaltyTransaction, CustomerAddressCreateRequest, CustomerAddressUpdateRequest } from '@gustopos/shared';
+import type { Customer, LoyaltyBalance, LoyaltyTransaction } from '@gustopos/shared';
 import { useAppStore } from '../store/app-store';
 import { Star, MapPin, Plus, Pencil, Trash2, X, Check } from 'lucide-react';
 
@@ -41,12 +41,13 @@ export default function CustomerDetailPage() {
   const [loyaltyError, setLoyaltyError] = useState('');
 
   useEffect(() => {
-    if (!customerId) { setLoading(false); return; }
+    if (!customerId) { setLoading(false); return; } // eslint-disable-line react-hooks/set-state-in-effect -- [async-fetch] loading state reset on invalid ID; setter receives constant primitive
+     
     setLoading(true);
     fetchCustomerById(customerId)
-      .then((c) => setCustomer(c))
-      .catch((e) => setError(e instanceof Error ? e.message : 'Cliente non trovato'))
-      .finally(() => setLoading(false));
+      .then((c) => setCustomer(c))  
+      .catch((e) => setError(e instanceof Error ? e.message : 'Cliente non trovato'))  
+      .finally(() => setLoading(false));  
   }, [customerId]);
 
   const loadLoyalty = useCallback(async () => {
@@ -67,6 +68,7 @@ export default function CustomerDetailPage() {
   }, [customerId, hasLoyalty]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] loadLoyalty() calls setState() inside async callback; effect deps correctly guard against stale closures
     if (customer && hasLoyalty) loadLoyalty();
   }, [customer, hasLoyalty, loadLoyalty]);
 
@@ -79,6 +81,7 @@ export default function CustomerDetailPage() {
   }, [customerId, hasDelivery]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] loadAddresses() calls setState() inside async callback; effect deps correctly guard
     if (customer && hasDelivery) loadAddresses();
   }, [customer, hasDelivery, loadAddresses]);
 

@@ -47,8 +47,10 @@ export default function PublicGroupOrderPage() {
     const raw = localStorage.getItem(keyFor(tenantSlug, joinCode));
     if (!raw) return;
     try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] restores identity from localStorage on mount; safe because setter receives derived data, not state
       setIdentity(JSON.parse(raw) as LocalIdentity);
     } catch {
+       
       setIdentity(null);
     }
   }, [tenantSlug, joinCode]);
@@ -72,6 +74,7 @@ export default function PublicGroupOrderPage() {
       socket.emit('group_order_leave_room', { sessionId: identity.sessionId });
       socket.disconnect();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity object identity churns on every parent re-render; we only care about sessionId which is already in deps
   }, [identity?.sessionId]);
 
   const isMaster = useMemo(() => {

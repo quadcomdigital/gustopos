@@ -1,4 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
+
+const MOBILE_LIST_LIMIT = 50;
 import type {
   AppData,
   Customer,
@@ -189,7 +191,7 @@ export default function DashboardView({
           {filteredHistory.length === 0 ? (
             <p className="text-center text-text-muted text-xs py-6">Nessun ordine</p>
           ) : (
-            filteredHistory.slice(0, 50).map((order) => (
+            filteredHistory.slice(0, MOBILE_LIST_LIMIT).map((order) => (
               <button
                 key={order.id}
                 onClick={() => setSelectedOrder(order)}
@@ -267,7 +269,7 @@ export default function DashboardView({
           {customers.length === 0 ? (
             <p className="text-center text-text-muted text-xs py-4">Nessun cliente</p>
           ) : (
-            customers.slice(0, 30).map((customer) => (
+            customers.slice(0, MOBILE_LIST_LIMIT).map((customer) => (
               <div key={customer.id} className="bg-bg/50 rounded-xl p-3 flex items-center justify-between">
                 <div className="min-w-0 flex-1">
                   {onViewCustomer ? (

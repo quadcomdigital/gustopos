@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react';
 import type { OrderItem } from '@gustopos/shared';
 
 export default function CheckoutMainView() {
-  const { tableId, tableNumber, paymentStatus, setStep, discountAmount, surchargeAmount, setDiscountAmount, setSurchargeAmount, closeCheckout } = useCheckoutStore();
+  const { tableId: _tableId, tableNumber, paymentStatus, setStep, discountAmount, surchargeAmount, setDiscountAmount, setSurchargeAmount, closeCheckout } = useCheckoutStore();
   const [showAdjustments, setShowAdjustments] = useState(false);
   const data = useAppStore((s) => s.data);
 

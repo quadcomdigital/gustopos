@@ -44,6 +44,22 @@
   .badge-info { @apply bg-blue-100 text-blue-800; }
 }
 
+/* Dark Mode — system preference */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-primary: #e2e8f0;
+    --color-secondary: #cbd5e0;
+    --color-accent: #63b3ed;
+    --color-success: #68d391;
+    --color-warning: #f6ad55;
+    --color-danger: #fc8181;
+    --color-bg: #1a202c;
+    --color-border: #2d3748;
+    --color-text-main: #e2e8f0;
+    --color-text-muted: #a0aec0;
+  }
+}
+
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; transform: scale(0.95); }

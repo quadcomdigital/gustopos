@@ -7,7 +7,6 @@ import {
 import type { ModuleKey } from "@gustopos/shared";
 import { REQUIRED_MODULE_KEY } from "./requires-module.decorator";
 import type { TenantAwareRequest } from "./tenant-request.type";
-import type { AuthenticatedRequest } from "../auth/auth-request.type";
 
 @Injectable()
 export class FeatureFlagGuard implements CanActivate {
@@ -20,19 +19,10 @@ export class FeatureFlagGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest<TenantAwareRequest & AuthenticatedRequest>();
+    const request = context.switchToHttp().getRequest<TenantAwareRequest>();
     const tenant = request.tenant;
     if (!tenant) {
       throw new ForbiddenException("Tenant context not resolved");
-    }
-
-    // Admin bypasses feature flag checks
-    const userRole = request.user?.role;
-    if (userRole === 'admin') {
-      if (!tenant.enabledModules.includes(requiredModule)) {
-        console.warn(`[feature-flag] Admin bypass: module "${requiredModule}" is disabled for tenant ${tenant.tenantId}`);
-      }
-      return true;
     }
 
     if (!tenant.enabledModules.includes(requiredModule)) {

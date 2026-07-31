@@ -2,7 +2,6 @@ import React, { useState, useMemo } from 'react';
 import {
   AppData,
   SelfOrderSessionRotateResponse,
-  Table,
 } from '@gustopos/shared';
 import { cn } from '../lib/utils';
 import { X, QrCode, Link as LinkIcon } from 'lucide-react';

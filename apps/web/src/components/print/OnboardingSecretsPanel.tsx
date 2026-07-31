@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { PrintBridgeOnboardingSecret } from '@gustopos/shared';
 import { useAppStore } from '../../store/app-store';
 
 function formatTimestamp(iso: string | null | undefined): string {

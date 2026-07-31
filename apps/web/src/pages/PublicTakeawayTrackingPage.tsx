@@ -60,7 +60,9 @@ export default function PublicTakeawayTrackingPage() {
     const orderIdFromUrl = searchParams.get('orderId');
     const tokenFromUrl = searchParams.get('token');
     if (orderIdFromUrl && tokenFromUrl) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] initializes order tracking from URL params on mount; setters receive primitives from URL, not state
       setOrderId(orderIdFromUrl);
+       
       setTrackingToken(tokenFromUrl);
       return;
     }

@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useId } from 'react';
 import type { PrepItem, Ingredient, UnitConversion } from '@gustopos/shared';
 import { ChefHat, Loader2, Plus, Search, Pencil, Trash2 } from 'lucide-react';
 import Button from '../../shared/ui/atoms/Button';
+import Field from '../../shared/ui/atoms/Field';
 import Modal from '../../shared/ui/molecules/Modal';
+import SaveFooter from '../../shared/ui/molecules/SaveFooter';
 import ToastContainer from '../../shared/ui/molecules/Toast';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 import SectionHeader from '../../shared/ui/molecules/SectionHeader';
@@ -30,6 +32,8 @@ interface PrepViewProps {
 
 export default function PrepView({ inventory, prepItems, onRefresh, initialIngredientId, onClearInitial }: PrepViewProps) {
   const { toasts, show: showToast, dismiss: dismissToast } = useToast();
+  const searchId = useId();
+  const prepareQtyId = (id: string) => `prep-qty-${id}`;
   const [searchTerm, setSearchTerm] = useState('');
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [preparingId, setPreparingId] = useState<string | null>(null);
@@ -55,13 +59,16 @@ export default function PrepView({ inventory, prepItems, onRefresh, initialIngre
   const { confirm, requestConfirm, handleConfirm, handleCancel } = useConfirm();
 
   // Handle navigation from Ingredients tab (Crea Variante)
+  /* eslint-disable react-hooks/exhaustive-deps -- [prop-callback] handleCreateIngredientSelect + onClearInitial are prop callbacks recreated each render by parent; intentionally omitted to avoid retrigger loop on identity churn */
   useEffect(() => {
     if (initialIngredientId && inventory.find((i) => i.id === initialIngredientId)) {
       void handleCreateIngredientSelect(initialIngredientId);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] showCreateModal set in effect triggered by initialIngredientId prop; safe because setter receives constant primitive
       setShowCreateModal(true);
       onClearInitial?.();
     }
   }, [initialIngredientId, inventory]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Group items by ingredient
   const groupedItems = useMemo(() => {
@@ -235,11 +242,14 @@ export default function PrepView({ inventory, prepItems, onRefresh, initialIngre
       {/* Search */}
       <div className="relative">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+        <label htmlFor={searchId} className="sr-only">Cerca ingrediente</label>
         <input
+          id={searchId}
           type="text"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           placeholder="Cerca ingrediente..."
+          aria-label="Cerca ingrediente"
           className="w-full pl-9 pr-3 py-2 rounded border border-border text-sm"
         />
       </div>
@@ -321,11 +331,16 @@ export default function PrepView({ inventory, prepItems, onRefresh, initialIngre
                             Prepara
                           </p>
                           <div className="flex items-center gap-2">
+                            <label htmlFor={prepareQtyId(item.id)} className="sr-only">
+                              Quantità da preparare per {item.name}
+                            </label>
                             <input
+                              id={prepareQtyId(item.id)}
                               type="number"
                               value={quantities[item.id] || ''}
                               onChange={(e) => setQuantities((prev) => ({ ...prev, [item.id]: e.target.value }))}
                               placeholder="Qtà"
+                              aria-label={`Quantità da preparare per ${item.name}`}
                               className="flex-1 px-3 py-2 rounded border border-border text-sm"
                               min="1"
                               step="1"
@@ -363,7 +378,7 @@ export default function PrepView({ inventory, prepItems, onRefresh, initialIngre
         title="Nuova Variante"
         size="md"
         footer={
-          <div className="flex justify-end gap-2">
+          <div className="flex gap-2">
             <Button variant="secondary" onClick={closeCreateModal}>
               Annulla
             </Button>
@@ -401,60 +416,62 @@ export default function PrepView({ inventory, prepItems, onRefresh, initialIngre
           })()}
 
           {/* Ingredient select */}
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-              Ingrediente
-            </label>
-            <SearchableSelect
-              items={inventory.filter((i) => i.isActive)}
-              getLabel={(i) => `${i.name} — Stock: ${i.quantity} ${i.unit}`}
-              getValue={(i) => i.id}
-              selectedValue={createIngredientId}
-              onSelect={(v) => void handleCreateIngredientSelect(v)}
-              placeholder="Cerca ingrediente..."
-            />
-          </div>
+          <Field label="Ingrediente">
+            {({ id }) => (
+              <SearchableSelect
+                id={id}
+                ariaLabel="Ingrediente"
+                items={inventory.filter((i) => i.isActive)}
+                getLabel={(i) => `${i.name} — Stock: ${i.quantity} ${i.unit}`}
+                getValue={(i) => i.id}
+                selectedValue={createIngredientId}
+                onSelect={(v) => void handleCreateIngredientSelect(v)}
+                placeholder="Cerca ingrediente..."
+              />
+            )}
+          </Field>
 
           {/* Name */}
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-              Nome variante
-            </label>
-            <input
-              type="text"
-              value={createName}
-              onChange={(e) => setCreateName(e.target.value)}
-              placeholder="es. Burger 150g"
-              className="w-full px-3 py-2 rounded border border-border text-sm"
-            />
-          </div>
+          <Field label="Nome variante">
+            {({ id }) => (
+              <input
+                id={id}
+                type="text"
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                placeholder="es. Burger 150g"
+                className="w-full px-3 py-2 rounded border border-border text-sm"
+              />
+            )}
+          </Field>
 
           {/* Quantity per unit + Unit */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-                Quantità per unità
-              </label>
-              <input
-                type="number"
-                value={createQtyPerUnit}
-                onChange={(e) => setCreateQtyPerUnit(e.target.value)}
-                placeholder="es. 150"
-                className="w-full px-3 py-2 rounded border border-border text-sm"
-                step="0.001"
-                min="0.001"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-                Unità
-              </label>
-              <UnitSelect
-                value={createUnit}
-                onChange={setCreateUnit}
-                placeholder="Seleziona unità..."
-              />
-            </div>
+            <Field label="Quantità per unità">
+              {({ id }) => (
+                <input
+                  id={id}
+                  type="number"
+                  value={createQtyPerUnit}
+                  onChange={(e) => setCreateQtyPerUnit(e.target.value)}
+                  placeholder="es. 150"
+                  className="w-full px-3 py-2 rounded border border-border text-sm"
+                  step="0.001"
+                  min="0.001"
+                />
+              )}
+            </Field>
+            <Field label="Unità">
+              {({ id }) => (
+                <UnitSelect
+                  id={id}
+                  ariaLabel="Unità"
+                  value={createUnit}
+                  onChange={setCreateUnit}
+                  placeholder="Seleziona unità..."
+                />
+              )}
+            </Field>
           </div>
 
           {/* Conversion preview + management */}
@@ -478,56 +495,50 @@ export default function PrepView({ inventory, prepItems, onRefresh, initialIngre
         title="Modifica Variante"
         size="sm"
         footer={
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={closeEditModal}>
-              Annulla
-            </Button>
-            <Button
-              variant="primary"
-              onClick={() => void handleSaveEdit()}
-              disabled={saving || !editName.trim() || !editQtyPerUnit || !editUnit}
-            >
-              {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-              Salva
-            </Button>
-          </div>
+          <SaveFooter
+            onCancel={closeEditModal}
+            onSave={() => void handleSaveEdit()}
+            saving={saving}
+            disabled={!editName.trim() || !editQtyPerUnit || !editUnit}
+          />
         }
       >
         <div className="space-y-4">
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-              Nome variante
-            </label>
-            <input
-              type="text"
-              value={editName}
-              onChange={(e) => setEditName(e.target.value)}
-              className="w-full px-3 py-2 rounded border border-border text-sm"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-                Quantità per unità
-              </label>
+          <Field label="Nome variante">
+            {({ id }) => (
               <input
-                type="number"
-                value={editQtyPerUnit}
-                onChange={(e) => setEditQtyPerUnit(e.target.value)}
+                id={id}
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
                 className="w-full px-3 py-2 rounded border border-border text-sm"
-                step="0.001"
-                min="0.001"
               />
-            </div>
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">
-                Unità
-              </label>
-              <UnitSelect
-                value={editUnit}
-                onChange={setEditUnit}
-              />
-            </div>
+            )}
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantità per unità">
+              {({ id }) => (
+                <input
+                  id={id}
+                  type="number"
+                  value={editQtyPerUnit}
+                  onChange={(e) => setEditQtyPerUnit(e.target.value)}
+                  className="w-full px-3 py-2 rounded border border-border text-sm"
+                  step="0.001"
+                  min="0.001"
+                />
+              )}
+            </Field>
+            <Field label="Unità">
+              {({ id }) => (
+                <UnitSelect
+                  id={id}
+                  ariaLabel="Unità"
+                  value={editUnit}
+                  onChange={setEditUnit}
+                />
+              )}
+            </Field>
           </div>
         </div>
       </Modal>

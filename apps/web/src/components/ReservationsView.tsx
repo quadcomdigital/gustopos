@@ -42,12 +42,15 @@ export default function ReservationsView() {
     }
   };
 
+  /* eslint-disable react-hooks/exhaustive-deps -- [load-recursion] load is recreated each render; effect only refreshes on selectedDate / statusFilter changes */
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] load() calls store set() asynchronously
     void load();
   }, [selectedDate, statusFilter]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
-    setStatusDraftById((prev) => {
+    setStatusDraftById((prev) => { // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] sync draft status map to items; uses prev => callback form which is safe
       const next = { ...prev };
       for (const item of items) {
         next[item.id] = next[item.id] ?? item.status;

@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { X, GlassWater, UtensilsCrossed, Sandwich } from 'lucide-react';
+import { X, GlassWater, Sandwich } from 'lucide-react';
 
 interface NewProductSelectionModalProps {
   open: boolean;

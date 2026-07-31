@@ -1,0 +1,25 @@
+[Unit]
+Description=GustoPOS Print Agent (POS print bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# API origin of the GustoPOS backend (change me).
+Environment=GUSTOPOS_API_URL=https://pos.example.com
+EnvironmentFile=-/etc/gustopos-print-agent/env
+ExecStart=/usr/local/bin/gustopos-print-agent
+Restart=always
+RestartSec=5
+# State dir for the config file (/etc/gustopos-print-agent/config.json).
+StateDirectory=gustopos-print-agent
+# The agent writes config.json during pairing, so /etc/gustopos-print-agent
+# must stay writable despite ProtectSystem=full.
+ReadWritePaths=/etc/gustopos-print-agent
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -46,7 +46,7 @@ export default function POSProductModal({
   onClose,
   onAddToCart,
   inventory,
-  orderMode,
+  orderMode: _orderMode,
   existingCartItem,
   menuItems,
   onOpenModifierModal,
@@ -87,10 +87,10 @@ export default function POSProductModal({
 
   React.useEffect(() => {
     if (isOpen) {
-      setQuantity(existingCartItem?.quantity ?? 1);
-      setIngredientOverrides(existingCartItem?.ingredientOverrides ?? []);
-      setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);
-      setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);
+      setQuantity(existingCartItem?.quantity ?? 1); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize POS product modal from existing cart item
+      setIngredientOverrides(existingCartItem?.ingredientOverrides ?? []);  
+      setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);  
+      setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);  
 
       const rawNotes = existingCartItem?.notes ?? '';
       if (toppingPoolOptions.length > 0) {
@@ -160,12 +160,12 @@ export default function POSProductModal({
           }
         }
       }
-      setGroupSelections((prev) => {
+      setGroupSelections((prev) => { // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize group selections from modifier config; uses prev => updater form which is safe
         if (JSON.stringify(prev) === JSON.stringify(initialSelections)) return prev;
         return initialSelections;
       });
     }
-  }, [isOpen, isSimpleModifier, modifierGroupIds]);
+  }, [isOpen, isSimpleModifier, modifierGroupIds, modifierGroups, selectedModifiers]);
 
   const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
 

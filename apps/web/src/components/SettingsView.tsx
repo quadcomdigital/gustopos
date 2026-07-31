@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   defaultUiSettings,
   type DispatchPrintJobRequest,
@@ -21,7 +21,6 @@ import PrintBridgesPanel from './print/PrintBridgesPanel';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';
 import { fetchQzTrayConfig, updateQzTrayConfig, type QzTrayConfig } from '../shared/api/client';
-import { useQzTrayStatus } from './QzTrayWorker';
 
 interface SettingsViewProps {
   settings: UiSettings;
@@ -98,7 +97,7 @@ export default function SettingsView({
   onRefreshPrintJobs,
   onDispatchPrintJob,
   tables,
-  onRefreshTables,
+  onRefreshTables: _onRefreshTables,
   onCreateTable,
   onBulkCreateTables,
   onUpdateTable,
@@ -123,6 +122,8 @@ export default function SettingsView({
   const [qzConfigSaving, setQzConfigSaving] = useState(false);
   const [qzConfigError, setQzConfigError] = useState('');
   const [qzConfigSuccess, setQzConfigSuccess] = useState('');
+  const idPrefix = useId();
+  const fieldId = (key: string) => `${idPrefix}-${key}`;
 
   useEffect(() => {
     if (!isDirtyRef.current) {
@@ -139,11 +140,12 @@ export default function SettingsView({
 
   useEffect(() => {
     if (activeTab === 'printing' && printingEnabled && !qzConfig) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] loading flag set synchronously to show spinner; setter receives constant primitive, no stale-closure risk
       setQzConfigLoading(true);
       fetchQzTrayConfig()
-        .then((res) => setQzConfig(res.qzTray))
-        .catch(() => setQzConfigError('Impossibile caricare la configurazione QZ Tray'))
-        .finally(() => setQzConfigLoading(false));
+        .then((res) => setQzConfig(res.qzTray))  
+        .catch(() => setQzConfigError('Impossibile caricare la configurazione QZ Tray'))  
+        .finally(() => setQzConfigLoading(false));  
     }
   }, [activeTab, printingEnabled, qzConfig]);
 
@@ -379,8 +381,9 @@ export default function SettingsView({
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-2">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Nome Header Globale</label>
+                <label htmlFor={fieldId('brandName')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Nome Header Globale</label>
                 <input
+                  id={fieldId('brandName')}
                   value={draft.brandName}
                   onChange={(event) => setDraft((prev) => ({ ...prev, brandName: event.target.value.slice(0, 40) }))}
                   placeholder="Nome brand"
@@ -398,9 +401,10 @@ export default function SettingsView({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {(Object.keys(draft.theme) as Array<keyof UiSettings['theme']>).map((token) => (
                 <div key={token} className="rounded-lg border border-border p-3 space-y-2">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted">{token}</p>
+                  <label htmlFor={fieldId(`theme-color-${token}`)} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">{token}</label>
                   <div className="flex items-center gap-2">
                     <input
+                      id={fieldId(`theme-color-${token}`)}
                       type="color"
                       value={draft.theme[token]}
                       onChange={(event) =>
@@ -415,6 +419,7 @@ export default function SettingsView({
                       className="h-9 w-14 rounded border border-border bg-white"
                     />
                     <input
+                      id={fieldId(`theme-hex-${token}`)}
                       value={draft.theme[token]}
                       onChange={(event) =>
                         setDraft((prev) => ({
@@ -466,8 +471,9 @@ export default function SettingsView({
             <PrintBridgesPanel />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Protocollo Stampa</label>
+                <label htmlFor={fieldId('printProtocol')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Protocollo Stampa</label>
                 <select
+                  id={fieldId('printProtocol')}
                   value={draft.printing.protocol}
                   onChange={(event) =>
                     setDraft((prev) => ({
@@ -482,8 +488,9 @@ export default function SettingsView({
                 </select>
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Modalità Logo</label>
+                <label htmlFor={fieldId('printLogoMode')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Modalità Logo</label>
                 <select
+                  id={fieldId('printLogoMode')}
                   value={draft.printing.logoMode}
                   onChange={(event) =>
                     setDraft((prev) => ({
@@ -501,8 +508,9 @@ export default function SettingsView({
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Larghezza Bitmap</label>
+                <label htmlFor={fieldId('printLogoWidth')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Larghezza Bitmap</label>
                 <input
+                  id={fieldId('printLogoWidth')}
                   value={String(draft.printing.logoWidth)}
                   onChange={(event) => {
                     const next = Number(event.target.value.replace(/[^0-9]/g, ''));
@@ -515,8 +523,9 @@ export default function SettingsView({
                 />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Threshold Bitmap</label>
+                <label htmlFor={fieldId('printLogoThreshold')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Threshold Bitmap</label>
                 <input
+                  id={fieldId('printLogoThreshold')}
                   value={String(draft.printing.logoThreshold)}
                   onChange={(event) => {
                     const next = Number(event.target.value.replace(/[^0-9]/g, ''));
@@ -529,8 +538,9 @@ export default function SettingsView({
                 />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Bitmap Logo (base64)</label>
+                <label htmlFor={fieldId('printLogoBitmap')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Bitmap Logo (base64)</label>
                 <input
+                  id={fieldId('printLogoBitmap')}
                   value={draft.printing.logoBitmap ?? ''}
                   onChange={(event) =>
                     setDraft((prev) => ({
@@ -545,7 +555,7 @@ export default function SettingsView({
             </div>
 
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Aree stampa attive</label>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Aree stampa attive</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
                   <button
@@ -604,7 +614,9 @@ export default function SettingsView({
                     <div className="mt-1 space-y-1">
                       {qzConfig.hosts.map((host, i) => (
                         <div key={i} className="flex gap-2 items-center">
+                          <label htmlFor={fieldId(`qzHost-${i}`)} className="sr-only">Host QZ Tray {i + 1}</label>
                           <input
+                            id={fieldId(`qzHost-${i}`)}
                             value={host}
                             onChange={(e) => updateQzHost(i, e.target.value)}
                             placeholder="192.168.1.100"
@@ -633,7 +645,9 @@ export default function SettingsView({
                     <div className="mt-1 space-y-1">
                       {qzConfig.securePorts.map((port, i) => (
                         <div key={i} className="flex gap-2 items-center">
+                          <label htmlFor={fieldId(`qzSecurePort-${i}`)} className="sr-only">Porta sicura {i + 1}</label>
                           <input
+                            id={fieldId(`qzSecurePort-${i}`)}
                             type="number"
                             value={port}
                             onChange={(e) => updateQzPort('securePorts', i, Number(e.target.value))}
@@ -663,7 +677,9 @@ export default function SettingsView({
                     <div className="mt-1 space-y-1">
                       {qzConfig.insecurePorts.map((port, i) => (
                         <div key={i} className="flex gap-2 items-center">
+                          <label htmlFor={fieldId(`qzInsecurePort-${i}`)} className="sr-only">Porta non sicura {i + 1}</label>
                           <input
+                            id={fieldId(`qzInsecurePort-${i}`)}
                             type="number"
                             value={port}
                             onChange={(e) => updateQzPort('insecurePorts', i, Number(e.target.value))}
@@ -708,9 +724,6 @@ export default function SettingsView({
               )}
             </div>
 
-            {/* ─── QZ Tray Debug Panel ─────────────────────────────────── */}
-            <QzTrayDebugPanel />
-
             <div className="rounded-lg border border-border bg-gray-50 px-4 py-3 space-y-1">
               <p className="text-[12px] font-bold uppercase tracking-wider text-text-muted">Stampanti fisiche</p>
               <p className="text-xs text-text-muted">
@@ -751,8 +764,9 @@ export default function SettingsView({
             </div>
 
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Footer Scontrino</label>
+              <label htmlFor={fieldId('printReceiptFooter')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Footer Scontrino</label>
               <textarea
+                id={fieldId('printReceiptFooter')}
                 value={draft.printing.receiptFooter}
                 onChange={(event) =>
                   setDraft((prev) => ({
@@ -820,7 +834,9 @@ export default function SettingsView({
                 })}
                 {printJobs.length === 0 && <p className="text-xs text-text-muted">Nessun job in coda.</p>}
               </div>
+              <label htmlFor={fieldId('printBridgeEndpoint')} className="sr-only">Override endpoint bridge (opzionale)</label>
               <input
+                id={fieldId('printBridgeEndpoint')}
                 value={printBridgeEndpoint}
                 onChange={(event) => setPrintBridgeEndpoint(event.target.value)}
                 placeholder="Override endpoint bridge (opzionale)"
@@ -871,76 +887,3 @@ export default function SettingsView({
   );
 }
 
-// ─── QZ Tray Debug Panel ────────────────────────────────────────────────
-
-function QzTrayDebugPanel() {
-  const qzStatus = useQzTrayStatus();
-
-  if (qzStatus.status === 'disconnected') return null;
-
-  const statusColor = {
-    connecting: 'text-yellow-600',
-    connected: 'text-green-600',
-    error: 'text-red-600',
-    not_installed: 'text-gray-600',
-  }[qzStatus.status] || 'text-gray-600';
-
-  const statusDot = {
-    connecting: 'bg-yellow-400 animate-pulse',
-    connected: 'bg-green-400',
-    error: 'bg-red-400',
-    not_installed: 'bg-gray-400',
-  }[qzStatus.status] || 'bg-gray-400';
-
-  return (
-    <div className="rounded-lg border border-border p-4 space-y-3 bg-gray-900 text-green-400 font-mono text-xs">
-      <div className="flex items-center gap-2">
-        <div className={`w-2 h-2 rounded-full ${statusDot}`} />
-        <span className="font-bold text-white">QZ TRAY DIAGNOSTIC</span>
-        <span className={statusColor}>[{qzStatus.status.toUpperCase()}]</span>
-      </div>
-
-      {qzStatus.browserInfo && (
-        <div className="space-y-1 text-gray-300">
-          <div>Browser: <span className="text-white">{qzStatus.browserInfo.hostname}</span> ({qzStatus.browserInfo.protocol})</div>
-          <div>Localhost: <span className={qzStatus.browserInfo.isLocalhost ? 'text-green-400' : 'text-red-400'}>{qzStatus.browserInfo.isLocalhost ? 'YES ✅' : 'NO ❌'}</span></div>
-          {!qzStatus.browserInfo.isLocalhost && (
-            <div className="text-red-400 font-bold">
-              ⚠️ QZ Tray requires localhost! Open this page from the PC where QZ Tray is installed.
-            </div>
-          )}
-        </div>
-      )}
-
-      {qzStatus.version && (
-        <div>Version: <span className="text-white">{qzStatus.version}</span></div>
-      )}
-
-      {qzStatus.printers.length > 0 && (
-        <div>Printers: <span className="text-white">{qzStatus.printers.join(', ')}</span></div>
-      )}
-
-      {qzStatus.error && (
-        <div className="text-red-400">Error: {qzStatus.error}</div>
-      )}
-
-      {qzStatus.debugLogs.length > 0 && (
-        <div className="mt-2">
-          <div className="text-gray-500 mb-1">── Debug Log ──</div>
-          <div className="max-h-48 overflow-y-auto space-y-0.5 bg-black rounded p-2">
-            {qzStatus.debugLogs.map((log, i) => (
-              <div key={i} className={
-                log.includes('❌') ? 'text-red-400' :
-                log.includes('✅') ? 'text-green-400' :
-                log.includes('⚠️') ? 'text-yellow-400' :
-                'text-gray-400'
-              }>
-                {log}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}

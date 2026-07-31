@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { LocalBridgeArea, LocalBridgeConfig } from "@gustopos/shared";
 import { useAppStore } from "../../store/app-store";
+import { loadQzScript, getQzConfig, connectAndDiscover } from "../../shared/qz-tray";
 
 interface Props {
   onClose: () => void;
@@ -18,7 +19,6 @@ const AREAS: LocalBridgeArea[] = ["kitchen", "bar", "cashier"];
 export default function RegisterLocalBridgeModal({ onClose }: Props) {
   const setLocalBridgeConfig = useAppStore((s) => (s as any).setLocalBridgeConfig);
   const refreshPrintBridges = useAppStore((s) => (s as any).refreshPrintBridges);
-  const authToken = useAppStore((s) => (s as any).authToken) as string | undefined;
 
   const [qzStatus, setQzStatus] = useState<"disconnected" | "connecting" | "connected" | "error">("disconnected");
   const [qzError, setQzError] = useState<string | null>(null);
@@ -26,6 +26,18 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [areas, setAreas] = useState<LocalBridgeArea[]>(["cashier"]);
   const [printersPerArea, setPrintersPerArea] = useState<Record<LocalBridgeArea, string>>({
+    kitchen: "",
+    bar: "",
+    cashier: "",
+  });
+  // Optional network-printer target: when an IP is set for an area it takes
+  // precedence over the locally-discovered printer name (raw ESC/POS over IP:port).
+  const [printersIp, setPrintersIp] = useState<Record<LocalBridgeArea, string>>({
+    kitchen: "",
+    bar: "",
+    cashier: "",
+  });
+  const [printersPort, setPrintersPort] = useState<Record<LocalBridgeArea, string>>({
     kitchen: "",
     bar: "",
     cashier: "",
@@ -39,34 +51,15 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
     (async () => {
       setQzStatus("connecting");
       try {
-        // Fetch tenant-specific QZ config first.
-        const cfgRes = await fetch("/api/printing/qz-config", {
-          headers: { ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
-        });
-        let host = "localhost";
-        let port = 8182;
-        let secure = false;
-        if (cfgRes.ok) {
-          const body = (await cfgRes.json()) as {
-            qzTray: { hosts: string[]; securePorts: number[]; insecurePorts: number[]; useSecure: boolean };
-          };
-          host = (body.qzTray?.hosts ?? ["localhost", "127.0.0.1"])[0] ?? "localhost";
-          const ports = body.qzTray?.useSecure ? body.qzTray?.securePorts ?? [8181] : body.qzTray?.insecurePorts ?? [8182];
-          port = ports[0] ?? 8182;
-          secure = Boolean(body.qzTray?.useSecure);
-          setQzHostLabel(`${host}:${port}${secure ? " (TLS)" : ""}`);
-        } else {
-          setQzHostLabel(`localhost:8182`);
-        }
+        // Fetch tenant-specific QZ config + connect + discover printers.
+        const qzConfig = await getQzConfig();
+        const port = (qzConfig.port.insecure ?? qzConfig.port.secure ?? [8182])[0];
+        setQzHostLabel(`${qzConfig.host}:${port}${qzConfig.usingSecure ? " (TLS)" : ""}`);
         if (cancelled) return;
 
         await loadQzScript();
         if (cancelled) return;
-        const qz = (window as any).qz;
-        if (!qz.websocket.isConnected()) {
-          await qz.websocket.connect({ host, port, secure });
-        }
-        const list: string[] = await qz.printers.find();
+        const { printers: list } = await connectAndDiscover(qzConfig);
         if (!cancelled) {
           setAvailablePrinters(list);
           setQzStatus("connected");
@@ -81,10 +74,13 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [authToken]);
+  }, []);
 
   // Validation: every active area must have a printer mapped before saving.
-  const allMapped = areas.length > 0 && areas.every((a) => Boolean(printersPerArea[a]));
+  // An area is considered mapped if a local printer name OR an IP:port is set.
+  const allMapped =
+    areas.length > 0 &&
+    areas.every((a) => Boolean(printersPerArea[a]) || Boolean(printersIp[a].trim()));
   const canSave = qzStatus === "connected" && allMapped;
 
   const onSave = useCallback(() => {
@@ -94,7 +90,18 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
       bridgeId: bridgeId.trim(),
       deviceName: deviceName.trim() || defaultDeviceName(),
       areas,
-      printersPerArea: areas.map((area) => ({ area, printerName: printersPerArea[area] })),
+      printersPerArea: areas.map((area) => {
+        const ip = printersIp[area].trim();
+        // Treat empty/0 as "unset" so QZ falls back to the default raw port 9100.
+        const rawPort = Number(printersPort[area]);
+        const port = rawPort >= 1 && rawPort <= 65535 ? Math.round(rawPort) : NaN;
+        return {
+          area,
+          printerName: printersPerArea[area],
+          ...(ip ? { ip } : {}),
+          ...(ip && Number.isFinite(port) ? { port } : {}),
+        };
+      }),
       enableWakeLock: true,
       enableKeepaliveWorker: true,
       heartbeatIntervalMs: 15000,
@@ -104,7 +111,7 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
     setLocalBridgeConfig(config);
     void refreshPrintBridges();
     onClose();
-  }, [canSave, areas, bridgeId, deviceName, printersPerArea, setLocalBridgeConfig, refreshPrintBridges, onClose]);
+  }, [canSave, areas, bridgeId, deviceName, printersPerArea, printersIp, printersPort, setLocalBridgeConfig, refreshPrintBridges, onClose]);
 
   const toggleArea = (a: LocalBridgeArea) => {
     setAreas((prev) => (prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]));
@@ -200,26 +207,48 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
             <div className="space-y-2">
               <div className="text-[11px] text-text-muted">Mappa stampante per ogni area attiva</div>
               {areas.map((area) => {
-                const mapped = Boolean(printersPerArea[area]);
+                const mapped = Boolean(printersPerArea[area]) || Boolean(printersIp[area].trim());
                 return (
-                  <label key={area} className="block text-[11px]">
-                    <span className="inline-block min-w-20 uppercase font-bold">{area}</span>
-                    <select
-                      className={`ml-2 border rounded px-2 py-1 text-xs font-mono ${mapped ? "" : "border-red-300 bg-red-50"}`}
-                      value={printersPerArea[area]}
-                      onChange={(ev) =>
-                        setPrintersPerArea((prev) => ({ ...prev, [area]: ev.target.value }))
-                      }
-                    >
-                      <option value="">— non mappata —</option>
-                      {availablePrinters.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                    {!mapped && <span className="ml-2 text-red-600 text-[10px]">richiesto</span>}
-                  </label>
+                  <div key={area} className="block text-[11px] border border-border rounded p-2 space-y-1.5">
+                    <label className="flex items-center">
+                      <span className="inline-block min-w-20 uppercase font-bold">{area}</span>
+                      <select
+                        className={`ml-2 flex-1 border rounded px-2 py-1 text-xs font-mono ${mapped ? "" : "border-red-300 bg-red-50"}`}
+                        value={printersPerArea[area]}
+                        onChange={(ev) =>
+                          setPrintersPerArea((prev) => ({ ...prev, [area]: ev.target.value }))
+                        }
+                      >
+                        <option value="">— stampante locale —</option>
+                        {availablePrinters.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                      {!mapped && <span className="ml-2 text-red-600 text-[10px]">richiesto</span>}
+                    </label>
+                    <div className="flex items-center gap-1 pl-20">
+                      <span className="text-text-muted">oppure IP:</span>
+                      <input
+                        className="flex-1 border rounded px-2 py-1 text-xs font-mono"
+                        placeholder="192.168.1.50"
+                        value={printersIp[area]}
+                        onChange={(ev) =>
+                          setPrintersIp((prev) => ({ ...prev, [area]: ev.target.value }))
+                        }
+                      />
+                      <span className="text-text-muted">port:</span>
+                      <input
+                        className="w-20 border rounded px-2 py-1 text-xs font-mono"
+                        placeholder="9100"
+                        value={printersPort[area]}
+                        onChange={(ev) =>
+                          setPrintersPort((prev) => ({ ...prev, [area]: ev.target.value.replace(/[^0-9]/g, "") }))
+                        }
+                      />
+                    </div>
+                  </div>
                 );
               })}
             </div>
@@ -252,32 +281,6 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
       </div>
     </div>
   );
-}
-
-function loadQzScript(): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const w = window as any;
-    if (w.qz) {
-      resolve();
-      return;
-    }
-    const existing = document.querySelector<HTMLScriptElement>("script[data-qz]");
-    if (existing) {
-      if (w.qz) {
-        resolve();
-        return;
-      }
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error("qz script load error")));
-      return;
-    }
-    const s = document.createElement("script");
-    s.src = "/qz-tray.js";
-    s.dataset.qz = "1";
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("qz script load error"));
-    document.head.appendChild(s);
-  });
 }
 
 function defaultBridgeId(): string {

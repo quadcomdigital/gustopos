@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';

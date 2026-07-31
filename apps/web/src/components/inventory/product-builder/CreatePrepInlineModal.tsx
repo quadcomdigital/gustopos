@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import type { Ingredient, PrepItem, UnitConversion } from '@gustopos/shared';
-import { Plus, Trash2, Loader2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
+import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import Button from '../../../shared/ui/atoms/Button';
 import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
 import UnitSelect from '../../../shared/ui/molecules/UnitSelect';
@@ -37,10 +38,10 @@ export default function CreatePrepInlineModal({
   const selectedIngredient = useMemo(() => inventory.find((i) => i.id === ingredientId), [inventory, ingredientId]);
 
   useEffect(() => {
-    if (!ingredientId) { setConversions([]); return; }
+    if (!ingredientId) { setConversions([]); return; } // eslint-disable-line react-hooks/set-state-in-effect -- [async-fetch] resets conversions on ingredient change; setter receives constant primitive
     fetchUnitConversions(ingredientId)
-      .then(setConversions)
-      .catch(() => setConversions([]));
+      .then(setConversions)  
+      .catch(() => setConversions([]));  
   }, [ingredientId]);
 
   const handleCreateConversion = async (fromUnit: string, factor: number) => {
@@ -114,13 +115,14 @@ export default function CreatePrepInlineModal({
   return (
     <Modal open={open} onClose={handleClose} title="Crea prep" size="md"
       footer={
-        <>
-          <Button variant="secondary" onClick={handleClose}>Annulla</Button>
-          <Button variant="primary" onClick={() => void handleSave()} disabled={saving || !canSave}>
-            {saving && <Loader2 size={14} className="animate-spin mr-1" />}
-            {saving ? 'Creazione...' : `Crea ${variants.length > 0 ? variants.length : ''} prep`}
-          </Button>
-        </>
+        <SaveFooter
+          onCancel={handleClose}
+          onSave={() => void handleSave()}
+          saving={saving}
+          disabled={!canSave}
+          label={`Crea ${variants.length > 0 ? variants.length : ''} prep`}
+          loadingLabel="Creazione..."
+        />
       }
     >
       <div className="space-y-4">

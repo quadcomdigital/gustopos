@@ -29,7 +29,7 @@ import PrepView from './PrepView';
 import type { CategoryModifierPool, CategoryModifierPoolCreateRequest, CategoryModifierPoolUpdateRequest } from '@gustopos/shared';
 
 export type InventoryTabKey = 'stock' | 'bom' | 'prep' | 'menu' | 'categories' | 'pools' | 'foodcost';
-type TabKey = InventoryTabKey;
+type _TabKey = InventoryTabKey;
 
 interface InventoryTabsProps {
   inventory: Ingredient[];
@@ -113,6 +113,8 @@ interface InventoryTabsProps {
   }>;
   onExportFoodCost?: () => Promise<void>;
   onActiveTabChange?: (tab: InventoryTabKey) => void;
+  /** Called when user clicks 'Apri in BoM' quick-link — switches to BoM tab */
+  onOpenBomTab?: (bomId: string) => void;
 }
 
 const TABS: Array<{ key: InventoryTabKey; label: string }> = [
@@ -173,6 +175,7 @@ export default function InventoryTabs({
   onImportFoodCostXlsx,
   onExportFoodCost,
   onActiveTabChange,
+  onOpenBomTab,
 }: InventoryTabsProps) {
   const tabs = simpleCatalogMode ? SIMPLE_TABS : TABS;
   const [activeTab, setActiveTab] = useState<InventoryTabKey>(simpleCatalogMode ? 'menu' : 'stock');
@@ -390,6 +393,7 @@ export default function InventoryTabs({
             onSetMenuItemActive={onSetMenuItemActive}
             onDelete={onDeleteMenuItem}
             onCreateCategory={onCreateCategoryForMenu}
+            onOpenBomTab={(bomId) => { handleTabSwitch('bom'); onOpenBomTab?.(bomId); }}
           />
         )}
 

@@ -1,9 +1,9 @@
 import { useState, useMemo } from 'react';
-import type { Ingredient, BomItem, PrepItem, MenuRecipeComponent } from '@gustopos/shared';
-import { Package, ChefHat, Layers, AlertTriangle, Search } from 'lucide-react';
+import type { Ingredient, BomItem, PrepItem, MenuRecipeComponent, UnitConversion } from '@gustopos/shared';
+import { Package, ChefHat, Layers, Search } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
 import Button from '../../../shared/ui/atoms/Button';
-import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
+import UnitSelect from '../../../shared/ui/molecules/UnitSelect';
 
 interface EditComponentModalProps {
   open: boolean;
@@ -15,10 +15,12 @@ interface EditComponentModalProps {
   onSave: (updated: MenuRecipeComponent) => void;
   onSwap: (newComponentType: 'ingredient' | 'prep' | 'bom', newComponentId: string) => void;
   onRemove: () => void;
+  /** Map of ingredientId → unit conversions for the unit selector */
+  conversionsMap?: Record<string, UnitConversion[]>;
 }
 
 export default function EditComponentModal({
-  open, onClose, component, inventory, bomItems, prepItems, onSave, onSwap, onRemove,
+  open, onClose, component, inventory, bomItems, prepItems, onSave, onSwap, onRemove, conversionsMap = {},
 }: EditComponentModalProps) {
   const [qty, setQty] = useState('1');
   const [unit, setUnit] = useState('');
@@ -31,6 +33,20 @@ export default function EditComponentModal({
       setUnit(component.unit);
     }
   }, [component]);
+
+  // Get conversions for the current component's ingredient (if it's an ingredient)
+  const componentConversions = useMemo(() => {
+    if (!component || component.componentType !== 'ingredient') return [];
+    return conversionsMap[component.componentId] ?? [];
+  }, [component, conversionsMap]);
+
+  const unitExtraOptions = useMemo(() => {
+    return componentConversions.map((c) => ({
+      value: c.fromUnit,
+      label: c.fromUnit,
+      category: 'Conversioni',
+    }));
+  }, [componentConversions]);
 
   const componentName = useMemo(() => {
     if (!component) return '';
@@ -78,12 +94,12 @@ export default function EditComponentModal({
       title={`Modifica: ${componentName}`}
       size="md"
       footer={
-        <>
+        <div className="flex items-center gap-2 w-full">
           <Button variant="danger" onClick={() => { onRemove(); onClose(); }}>Rimuovi</Button>
           <div className="flex-1" />
           <Button variant="secondary" onClick={onClose}>Annulla</Button>
           <Button variant="primary" onClick={() => { handleSave(); onClose(); }}>Salva</Button>
-        </>
+        </div>
       }
     >
       {component && (
@@ -113,11 +129,11 @@ export default function EditComponentModal({
             </div>
             <div>
               <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Unità</label>
-              <input
-                type="text"
+              <UnitSelect
                 value={unit}
-                onChange={(e) => setUnit(e.target.value)}
-                className="w-full px-3 py-2 rounded border border-border text-sm"
+                onChange={setUnit}
+                extraUnits={unitExtraOptions}
+                placeholder="Unità"
               />
             </div>
           </div>

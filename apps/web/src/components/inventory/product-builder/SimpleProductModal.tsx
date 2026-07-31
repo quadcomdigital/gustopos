@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from 'react';
 import type { Category, Ingredient, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
 import Modal from '../../../shared/ui/molecules/Modal';
-import Button from '../../../shared/ui/atoms/Button';
+import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import InlineCategoryPicker from '../InlineCategoryPicker';
 import ModifierGroupsEditor from '../ModifierGroupsEditor';
+import FormField from '../../../shared/ui/molecules/FormField';
 import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
 
 const PRINT_AREA_LABELS: Record<string, string> = { kitchen: 'Cucina', bar: 'Bar', cashier: 'Cassa' };
@@ -39,6 +40,7 @@ export default function SimpleProductModal({
 
   useEffect(() => {
     if (editItem && open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] initializes form fields from editItem prop on modal open
       setName(editItem.name);
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
@@ -118,23 +120,21 @@ export default function SimpleProductModal({
       size="md"
       dirty={dirty}
       footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>Annulla</Button>
-          <Button variant="primary" onClick={() => void handleSave()} disabled={saving}>
-            {saving ? 'Salvataggio...' : isEdit ? 'Salva' : 'Crea prodotto'}
-          </Button>
-        </>
+        <SaveFooter
+          onCancel={onClose}
+          onSave={() => void handleSave()}
+          saving={saving}
+          label={isEdit ? 'Salva' : 'Crea prodotto'}
+        />
       }
     >
       <div className="space-y-3">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Nome</label>
+          <FormField label="Nome" error={errors.name?.message}>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome prodotto" className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.name)}`} />
-            {errors.name && <p className="text-[9px] text-danger mt-0.5">{errors.name.message}</p>}
-          </div>
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Categoria</label>
+          </FormField>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Categoria</label>
             <InlineCategoryPicker
               categories={menuCategories}
               selectedId={categoryId}
@@ -143,11 +143,9 @@ export default function SimpleProductModal({
               label=""
             />
           </div>
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Prezzo (€)</label>
+          <FormField label="Prezzo (€)" error={errors.price?.message}>
             <input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Prezzo di vendita" inputMode="decimal" min="0.01" step="0.10" className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.price)}`} />
-            {errors.price && <p className="text-[9px] text-danger mt-0.5">{errors.price.message}</p>}
-          </div>
+          </FormField>
         </div>
 
         <div className="flex flex-wrap gap-2">

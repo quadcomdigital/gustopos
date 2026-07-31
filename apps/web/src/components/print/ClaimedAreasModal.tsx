@@ -29,6 +29,7 @@ export default function ClaimedAreasModal({
           a === 'kitchen' || a === 'bar' || a === 'cashier',
         )
       : [];
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [bridge-sync] syncs selected areas from bridge.claimedAreas prop; setters receive primitives derived from props
     setSelected(sanitized);
   }, [bridge.id, bridge.claimedAreas]);
 

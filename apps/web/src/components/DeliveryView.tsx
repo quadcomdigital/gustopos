@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { DeliveryStatus, DeliveryUpsertRequest } from '@gustopos/shared';
+import type { DeliveryStatus } from '@gustopos/shared';
 import { useAppStore } from '../store/app-store';
 import ConfirmDialog from './ConfirmDialog';
 import { cn } from '../lib/utils';
@@ -90,7 +90,12 @@ export default function DeliveryView() {
     }
   };
 
-  useEffect(() => { void load(); }, [statusFilter, fromDate, toDate]);
+  useEffect(() => {
+    /* eslint-disable react-hooks/exhaustive-deps -- [load-recursion] load is recreated each render; effect only refreshes on statusFilter / date-range changes */
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] load() calls store set() asynchronously
+    void load();
+  }, [statusFilter, fromDate, toDate]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const visibleItems = items.filter((item) =>
     courierFilter.trim().length === 0

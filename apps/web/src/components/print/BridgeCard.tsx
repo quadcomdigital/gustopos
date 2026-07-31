@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { PrintArea, PrintBridge, PrintBridgePrinterMapping } from '@gustopos/shared';
+import type { PrintArea, PrintBridge } from '@gustopos/shared';
 
 type Freshness = 'fresh' | 'slow' | 'offline';
 

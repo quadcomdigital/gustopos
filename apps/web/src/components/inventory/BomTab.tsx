@@ -1,22 +1,22 @@
-import type { Ingredient, BomItem, Category, BomCreateRequest, PrepItem } from '@gustopos/shared';
-import { RotateCcw, Save, AlertTriangle, Search, Plus, ChevronDown, Layers } from 'lucide-react';
+import type { Ingredient, BomItem, Category, BomCreateRequest, PrepItem, UnitConversion } from '@gustopos/shared';
+import { RotateCcw, Save, AlertTriangle, Plus, Layers } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import Modal from '../../shared/ui/molecules/Modal';
-import SectionHeader from '../../shared/ui/molecules/SectionHeader';
+import TabTemplate from '../../shared/ui/molecules/TabTemplate';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 import UnitSelect from '../../shared/ui/molecules/UnitSelect';
 import Button from '../../shared/ui/atoms/Button';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
-import Skeleton from '../../shared/ui/atoms/Skeleton';
-import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
+import { useAppStore } from '../../store/app-store';
 import { useScopedCategories, explodeBomCost } from './useInventoryShared';
 import InlineCategoryPicker from './InlineCategoryPicker';
 import RecipeBuilder from './RecipeBuilder';
 import BomCards from './BomCards';
+import Field from '../../shared/ui/atoms/Field';
 import { required, minLength, validNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
+import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
-import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 const componentTypeLabel = (componentType: 'ingredient' | 'bom' | 'prep' | undefined) =>
   componentType === 'ingredient' ? 'Ingrediente' : componentType === 'prep' ? 'Preparato' : 'BoM';
@@ -46,8 +46,8 @@ export default function BomTab({
   onRefresh,
   onCreate,
   onUpdate,
-  onAddComponent,
-  onRemoveComponent,
+  onAddComponent: _onAddComponent,
+  onRemoveComponent: _onRemoveComponent,
   onReplaceComponents,
   onDelete,
   onCreateCategory,
@@ -75,6 +75,24 @@ export default function BomTab({
   const bomCategories = useScopedCategories(categories, 'bom');
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const { confirm, requestConfirm, handleConfirm, handleCancel } = useConfirm();
+
+  // ─── Conversions cache for unit selectors ────────────────────────────────
+  const fetchUnitConversionsStore = useAppStore((s) => s.fetchUnitConversions);
+  const [conversionsMap, setConversionsMap] = useState<Record<string, UnitConversion[]>>({});
+  useEffect(() => {
+    if (inventory.length === 0) { setConversionsMap({}); /* eslint-disable-line react-hooks/set-state-in-effect -- [literal-reset] reset conversions when inventory empties */ return; }
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        inventory.map(async (ing) => {
+          const convs = await fetchUnitConversionsStore(ing.id).catch(() => [] as UnitConversion[]);
+          return [ing.id, convs] as [string, UnitConversion[]];
+        }),
+      );
+      if (!cancelled) setConversionsMap(Object.fromEntries(entries));
+    })();
+    return () => { cancelled = true; };
+  }, [inventory, fetchUnitConversionsStore]);
 
   const chipOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -135,10 +153,10 @@ export default function BomTab({
 
   useEffect(() => {
     if (!selectedBom) return;
-    setBomEditName(selectedBom.name);
-    setBomEditCategoryId(selectedBom.categoryId ?? '');
-    setBomEditUnit(selectedBom.unit);
-    setBomEditYield(String(selectedBom.yieldQuantity));
+    setBomEditName(selectedBom.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize BoM edit fields from selected item; all values are primitives
+    setBomEditCategoryId(selectedBom.categoryId ?? '');  
+    setBomEditUnit(selectedBom.unit);  
+    setBomEditYield(String(selectedBom.yieldQuantity));  
   }, [selectedBom]);
 
   const addCreateComponent = () => {
@@ -165,15 +183,14 @@ export default function BomTab({
     if (Object.values(errors).some(Boolean)) return false;
     if (newBomComponents.length === 0) return false;
     const yieldQuantity = Number(newBomYield);
+    setSaving(true);
     try {
       await onCreate({
         name: newBomName.trim(),
         unit: newBomUnit,
-        yieldQuantity,
-        categoryId: newBomCategoryId || undefined,
-        isContainer: 0,
-        isPreBatched: 0,
-        components: newBomComponents,
+        yieldQuantity,            categoryId: newBomCategoryId || undefined,
+            isContainer: 0,
+            components: newBomComponents,
 // CASCADE_BOMTAB_PAYLOAD_DONE
       });
       setNewBomName('');
@@ -186,10 +203,13 @@ export default function BomTab({
       return true;
     } catch {
       return false;
+    } finally {
+      setSaving(false);
     }
   };
 
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
+  const [saving, setSaving] = useState(false);
 
   const saveBomMetadata = async () => {
     if (!selectedBom || !onUpdate) return;
@@ -199,13 +219,20 @@ export default function BomTab({
     setEditErrors(errors);
     if (Object.values(errors).some(Boolean)) return;
     const yieldQuantity = Number(bomEditYield);
-    await onUpdate(selectedBom.id, {
-      name: bomEditName.trim(),
-      unit: bomEditUnit,
-      yieldQuantity,
-      categoryId: bomEditCategoryId || undefined,
-    });
-    void onRefresh?.();
+    setSaving(true);
+    try {
+      await onUpdate(selectedBom.id, {
+        name: bomEditName.trim(),
+        unit: bomEditUnit,
+        yieldQuantity,
+        categoryId: bomEditCategoryId || undefined,
+      });
+      void onRefresh?.();
+    } catch {
+      // Error already handled by store
+    } finally {
+      setSaving(false);
+    }
   };
 
   const removeBom = async (id: string) => {
@@ -218,55 +245,43 @@ export default function BomTab({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px]">
-      <SectionHeader
+    <>
+      <TabTemplate
         title="Elementi Composti (BoM)"
-        actions={
-          <Button variant="secondary" onClick={() => void onRefresh?.()}>
-            <RotateCcw size={14} />
-            Refresh
-          </Button>
+        headerActions={
+          <>
+            <Button variant="secondary" onClick={() => setShowCreateForm(true)}>
+              <Plus size={14} />
+              Nuovo BoM
+            </Button>
+            <Button variant="secondary" onClick={() => void onRefresh?.()}>
+              <RotateCcw size={14} />
+              Refresh
+            </Button>
+          </>
         }
-      />
-      <div className="px-4 py-2 border-b border-border bg-bg/20">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Cerca elemento..."
-            className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm"
-          />
-        </div>
-      </div>
-
-      {bomCategories.length > 0 && (
-        <div className="px-4 py-2 border-b border-border bg-bg/20">
-          <SegmentedChips
-            ariaLabel="Filtra BoM per categoria"
-            value={filterCategoryId}
-            onChange={setFilterCategoryId}
-            options={chipOptions}
-            size="sm"
-          />
-        </div>
-      )}
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Cerca elemento..."
+        chips={{
+          ariaLabel: 'Filtra BoM per categoria',
+          value: filterCategoryId,
+          onChange: setFilterCategoryId,
+          options: chipOptions,
+        }}
+        noScroll
+      >
 
       {/* Mobile Cards */}
       <div className="md:hidden overflow-auto flex-1">
         {filteredBomItems.length === 0 ? (
           <div className="p-8 text-sm text-text-muted text-center">
-            {loading ? (
-              <div className="space-y-2">
-                {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-              </div>
-            ) : (
-              <EmptyState
-                icon={<Layers size={24} />}
-                title={searchQuery ? 'Nessun elemento corrisponde alla ricerca.' : 'Nessun elemento composto configurato.'}
-                description={!searchQuery ? 'Crea il primo elemento composto per iniziare.' : undefined}
-              />
-            )}
+            <LoadingOrEmpty
+              loading={loading}
+              icon={<Layers size={24} />}
+              title={searchQuery ? 'Nessun elemento corrisponde alla ricerca.' : 'Nessun elemento composto configurato.'}
+              description={!searchQuery ? 'Crea il primo elemento composto per iniziare.' : undefined}
+            />
           </div>
         ) : (
           <div className="divide-y divide-border">
@@ -283,136 +298,6 @@ export default function BomTab({
       </div>
 
       <div className="overflow-auto flex-1 hidden md:block">
-        {/* Create Form Toggle */}
-        <div className="border-b border-border bg-bg/20">
-          <button
-            onClick={() => setShowCreateForm((p) => !p)}
-            className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-bg/30 transition-colors"
-          >
-            <Plus size={16} className="text-accent" />
-            <span className="text-xs font-bold uppercase tracking-wider text-secondary">Nuovo elemento composto</span>
-            <ChevronDown size={14} className={`ml-auto text-text-muted transition-transform ${showCreateForm ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-
-        {/* Create Form */}
-        {showCreateForm && (
-        <div className="px-4 py-3 border-b border-border bg-bg/20 space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-            <div>
-              <input
-                value={newBomName}
-                onChange={(e) => setNewBomName(e.target.value)}
-                placeholder="Nome composto (es: Impasto Pizza)"
-                className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(createErrors.name)}`}
-              />
-              {createErrors.name && <p className="text-[9px] text-danger mt-0.5">{createErrors.name.message}</p>}
-            </div>
-            <UnitSelect
-              value={newBomUnit}
-              onChange={setNewBomUnit}
-              placeholder="Unità"
-            />
-            <div>
-              <input
-                value={newBomYield}
-                onChange={(e) => setNewBomYield(e.target.value.replace(/[^0-9.]/g, ''))}
-                placeholder="Quantità prodotta (reso)"
-                inputMode="decimal"
-                min="0.01"
-                step="0.1"
-                aria-label="Quantità prodotta"
-                className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(createErrors.yield)}`}
-              />
-              {createErrors.yield && <p className="text-[9px] text-danger mt-0.5">{createErrors.yield.message}</p>}
-            </div>
-            <SearchableSelect
-              items={bomCategories}
-              getLabel={(cat) => cat.name}
-              getValue={(cat) => cat.id}
-              selectedValue={newBomCategoryId}
-              onSelect={setNewBomCategoryId}
-              placeholder="Categoria BoM"
-            />
-            <Button
-              variant="primary"
-              onClick={() => void createBom()}
-              disabled={newBomComponents.length === 0}
-            >
-              <Save size={14} />
-              Crea BoM
-            </Button>
-          </div>
-
-          {/* Component Picker for creation */}
-          <div className="flex flex-wrap items-end gap-2">
-            <select
-              value={createComponentType}
-              onChange={(e) => { setCreateComponentType(e.target.value as 'ingredient' | 'bom' | 'prep'); setCreateComponentId(''); }}
-              className="px-3 py-2 rounded border border-border text-sm"
-            >
-              <option value="ingredient">Ingrediente</option>
-              <option value="bom">BoM</option>
-              <option value="prep">Preparato</option>
-            </select>
-            <SearchableSelect
-              items={createComponentCandidates}
-              getLabel={(c) => c.label}
-              getValue={(c) => c.id}
-              selectedValue={createComponentId}
-              onSelect={(id) => {
-                setCreateComponentId(id);
-                const candidate = createComponentCandidates.find((c) => c.id === id);
-                if (candidate) setCreateComponentUnit(candidate.unit);
-              }}
-              placeholder="Seleziona..."
-              className="flex-1 min-w-[150px]"
-            />
-            <input
-              value={createComponentQty}
-              onChange={(e) => setCreateComponentQty(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Qty"
-              className="w-20 px-3 py-2 rounded border border-border text-sm"
-            />
-            <UnitSelect
-              value={createComponentUnit}
-              onChange={setCreateComponentUnit}
-              placeholder="Unità"
-              className="w-28"
-            />
-            <Button
-              variant="secondary"
-              onClick={addCreateComponent}
-              disabled={!createComponentId}
-            >
-              Aggiungi
-            </Button>
-          </div>
-
-          {newBomComponents.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {newBomComponents.map((comp, idx) => {
-                const candidate = createComponentCandidates.find((c) => c.id === comp.componentId);
-                const ing = comp.componentType === 'ingredient' ? inventory.find((i) => i.id === comp.componentId) : undefined;
-                const isInactive = ing && !ing.isActive;
-                return (
-                  <span key={`${comp.componentId}-${idx}`} className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-medium text-secondary ${isInactive ? 'bg-amber-50 border-amber-300' : 'bg-bg border-border'}`}>
-                    {isInactive && <AlertTriangle size={10} className="text-amber-600" />}
-                    <span className="font-bold uppercase text-[9px]">{componentTypeLabel(comp.componentType)}</span>
-                    {candidate?.label ?? comp.componentId} · {comp.quantity} {comp.unit}
-                    <button onClick={() => removeCreateComponent(idx)} className="ml-1 px-2 py-1.5 text-danger font-bold text-xs">x</button>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-          {newBomComponents.length === 0 && (
-            <p className="text-[10px] text-text-muted">Aggiungi almeno un componente prima di creare il BoM.</p>
-          )}
-
-        </div>
-        )}
-
         {/* BoM List */}
         <table className="w-full text-left border-collapse">
           <thead>
@@ -429,17 +314,12 @@ export default function BomTab({
             {filteredBomItems.length === 0 && (
               <tr>
                 <td className="px-6 py-8 text-sm text-text-muted text-center" colSpan={6}>
-                  {loading ? (
-                    <div className="space-y-2">
-                      {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-                    </div>
-                  ) : (
-                    <EmptyState
-                      icon={<Layers size={24} />}
-                      title={searchQuery ? 'Nessun elemento corrisponde alla ricerca.' : 'Nessun elemento composto configurato.'}
-                      description={!searchQuery ? 'Crea il primo elemento composto per iniziare.' : undefined}
-                    />
-                  )}
+                  <LoadingOrEmpty
+                    loading={loading}
+                    icon={<Layers size={24} />}
+                    title={searchQuery ? 'Nessun elemento corrisponde alla ricerca.' : 'Nessun elemento composto configurato.'}
+                    description={!searchQuery ? 'Crea il primo elemento composto per iniziare.' : undefined}
+                  />
                 </td>
               </tr>
             )}
@@ -507,6 +387,7 @@ export default function BomTab({
           </tbody>
         </table>
       </div>
+      </TabTemplate>
 
       {/* Edit Modal */}
       <Modal
@@ -526,53 +407,57 @@ export default function BomTab({
         {selectedBom && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Nome</label>
-                <input
-                  value={bomEditName}
-                  onChange={(e) => setBomEditName(e.target.value)}
-                  className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
-                />
-                {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Unità</label>
-                <UnitSelect
-                  value={bomEditUnit}
-                  onChange={setBomEditUnit}
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Resa</label>
-                <input
-                  value={bomEditYield}
-                  onChange={(e) => setBomEditYield(e.target.value.replace(/[^0-9.]/g, ''))}
-                  inputMode="decimal"
-                  min="0.01"
-                  step="0.1"
-                  aria-label="Resa"
-                  className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.yield)}`}
-                />
-                {editErrors.yield && <p className="text-[9px] text-danger">{editErrors.yield.message}</p>}
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Categoria</label>
-                <InlineCategoryPicker
-                  categories={bomCategories}
-                  selectedId={bomEditCategoryId}
-                  onSelect={setBomEditCategoryId}
-                  onCreate={async (name) => {
-                    if (onCreateCategory) await onCreateCategory({ name, scope: 'bom', printAreas: ['kitchen'] });
-                  }}
-                  label=""
-                />
-              </div>
+              <Field label="Nome" error={editErrors.name?.message}>
+                {(props) => (
+                  <input
+                    id={props.id}
+                    aria-describedby={editErrors.name?.message ? props.errorId : undefined}
+                    value={bomEditName}
+                    onChange={(e) => setBomEditName(e.target.value)}
+                    className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
+                  />
+                )}
+              </Field>
+              <Field label="Unità">
+                {(props) => (
+                  <UnitSelect
+                    id={props.id}
+                    ariaLabel="Unità"
+                    value={bomEditUnit}
+                    onChange={setBomEditUnit}
+                  />
+                )}
+              </Field>
+              <Field label="Resa" error={editErrors.yield?.message}>
+                {(props) => (
+                  <input
+                    id={props.id}
+                    aria-label="Resa"
+                    aria-describedby={editErrors.yield?.message ? props.errorId : undefined}
+                    value={bomEditYield}
+                    onChange={(e) => setBomEditYield(e.target.value.replace(/[^0-9.]/g, ''))}
+                    inputMode="decimal"
+                    min="0.01"
+                    step="0.1"
+                    className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.yield)}`}
+                  />
+                )}
+              </Field>
+              <InlineCategoryPicker
+                categories={bomCategories}
+                selectedId={bomEditCategoryId}
+                onSelect={setBomEditCategoryId}
+                onCreate={async (name) => {
+                  if (onCreateCategory) await onCreateCategory({ name, scope: 'bom', printAreas: ['kitchen'] });
+                }}
+                label="Categoria"
+              />
             </div>
 
             <div className="flex items-center gap-2">
-              <Button variant="primary" onClick={() => void saveBomMetadata()}>
+              <Button variant="primary" onClick={() => void saveBomMetadata()} disabled={saving}>
                 <Save size={14} />
-                Salva dettagli
+                {saving ? 'Salvataggio...' : 'Salva dettagli'}
               </Button>
               <Button
                 variant="ghost"
@@ -599,11 +484,165 @@ export default function BomTab({
                 if (!onReplaceComponents) return;
                 void onReplaceComponents(selectedBom.id, { components: updated });
               }}
+              onReplaceBomComponents={onReplaceComponents}
               showCost
               bomItemId={selectedBom.id}
+              conversionsMap={conversionsMap}
             />
           </>
         )}
+      </Modal>
+
+      {/* Create Modal */}
+      <Modal
+        open={showCreateForm}
+        onClose={() => { setShowCreateForm(false); setNewBomComponents([]); setCreateErrors({}); }}
+        title="Nuovo elemento composto (BoM)"
+        size="lg"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => { setShowCreateForm(false); setNewBomComponents([]); setCreateErrors({}); }}>
+              Annulla
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void createBom()}
+              disabled={saving || newBomComponents.length === 0}
+            >
+              <Save size={14} />
+              {saving ? 'Creazione...' : 'Crea BoM'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Field label="Nome" error={createErrors.name?.message} className="w-full">
+              {(props) => (
+                <input
+                  id={props.id}
+                  aria-describedby={createErrors.name?.message ? props.errorId : undefined}
+                  value={newBomName}
+                  onChange={(e) => setNewBomName(e.target.value)}
+                  placeholder="es: Impasto Pizza"
+                  className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.name)}`}
+                />
+              )}
+            </Field>
+            <Field label="Unità">
+              {(props) => (
+                <UnitSelect
+                  id={props.id}
+                  ariaLabel="Unità"
+                  value={newBomUnit}
+                  onChange={setNewBomUnit}
+                />
+              )}
+            </Field>
+            <Field label="Resa" error={createErrors.yield?.message} className="w-full">
+              {(props) => (
+                <input
+                  id={props.id}
+                  aria-describedby={createErrors.yield?.message ? props.errorId : undefined}
+                  value={newBomYield}
+                  onChange={(e) => setNewBomYield(e.target.value.replace(/[^0-9.]/g, ''))}
+                  placeholder="Quantità prodotta"
+                  inputMode="decimal"
+                  min="0.01"
+                  step="0.1"
+                  className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.yield)}`}
+                />
+              )}
+            </Field>
+            <Field label="Categoria">
+              {(props) => (
+                <SearchableSelect
+                  id={props.id}
+                  ariaLabel="Categoria"
+                  items={bomCategories}
+                  getLabel={(cat) => cat.name}
+                  getValue={(cat) => cat.id}
+                  selectedValue={newBomCategoryId}
+                  onSelect={setNewBomCategoryId}
+                  placeholder="Seleziona..."
+                />
+              )}
+            </Field>
+          </div>
+
+          <div className="border-t border-border pt-3">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-2">Componenti</p>
+
+            <div className="flex flex-wrap items-end gap-2 mb-3">
+              <select
+                value={createComponentType}
+                onChange={(e) => { setCreateComponentType(e.target.value as 'ingredient' | 'bom' | 'prep'); setCreateComponentId(''); }}
+                aria-label="Tipo Componente"
+                className="px-3 py-2 rounded border border-border text-sm"
+              >
+                <option value="ingredient">Ingrediente</option>
+                <option value="bom">BoM</option>
+                <option value="prep">Preparato</option>
+              </select>
+              <SearchableSelect
+                items={createComponentCandidates}
+                getLabel={(c) => c.label}
+                getValue={(c) => c.id}
+                selectedValue={createComponentId}
+                onSelect={(id) => {
+                  setCreateComponentId(id);
+                  const candidate = createComponentCandidates.find((c) => c.id === id);
+                  if (candidate) setCreateComponentUnit(candidate.unit);
+                }}
+                placeholder="Seleziona componente..."
+                ariaLabel="Seleziona componente"
+                className="flex-1 min-w-[150px]"
+              />
+              <input
+                value={createComponentQty}
+                onChange={(e) => setCreateComponentQty(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="Qty"
+                aria-label="Quantità componente"
+                className="w-20 px-3 py-2 rounded border border-border text-sm"
+              />
+              <UnitSelect
+                value={createComponentUnit}
+                onChange={setCreateComponentUnit}
+                placeholder="Unità"
+                ariaLabel="Unità componente"
+                className="w-28"
+              />
+              <Button
+                variant="secondary"
+                onClick={addCreateComponent}
+                disabled={!createComponentId}
+              >
+                Aggiungi
+              </Button>
+            </div>
+
+            {newBomComponents.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {newBomComponents.map((comp, idx) => {
+                  const candidate = createComponentCandidates.find((c) => c.id === comp.componentId);
+                  const ing = comp.componentType === 'ingredient' ? inventory.find((i) => i.id === comp.componentId) : undefined;
+                  const isInactive = ing && !ing.isActive;
+                  return (
+                    <span key={`${comp.componentId}-${idx}`} className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-medium text-secondary ${isInactive ? 'bg-amber-50 border-amber-300' : 'bg-bg border-border'}`}>
+                      {isInactive && <AlertTriangle size={10} className="text-amber-600" />}
+                      <span className="font-bold uppercase text-[9px]">{componentTypeLabel(comp.componentType)}</span>
+                      {candidate?.label ?? comp.componentId} · {comp.quantity} {comp.unit}
+                      <button onClick={() => removeCreateComponent(idx)} className="ml-1 text-danger font-bold text-xs">✕</button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            {newBomComponents.length === 0 && (
+              <p className="text-xs text-text-muted italic">Aggiungi almeno un componente prima di creare il BoM.</p>
+            )}
+          </div>
+        </div>
       </Modal>
 
       <ConfirmDialog
@@ -613,6 +652,6 @@ export default function BomTab({
         onConfirm={handleConfirm}
         onCancel={handleCancel}
       />
-    </div>
+    </>
   );
 }

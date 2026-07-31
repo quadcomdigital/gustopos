@@ -2,30 +2,30 @@ import type {
   Ingredient, BomItem, PrepItem, MenuItemAdmin, Category,
   MenuItemCreateRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest,
   MenuItemModifier, PrintArea, ModifierGroup, CategoryModifierPool,
-  IngredientCreateRequest,
+  IngredientCreateRequest, UnitConversion,
 } from '@gustopos/shared';
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { RotateCcw, Search, Plus, UtensilsCrossed, AlertTriangle } from 'lucide-react';
+import { RotateCcw, Plus, UtensilsCrossed } from 'lucide-react';
 import Button from '../../shared/ui/atoms/Button';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
-import Skeleton from '../../shared/ui/atoms/Skeleton';
-import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import Modal from '../../shared/ui/molecules/Modal';
-import SectionHeader from '../../shared/ui/molecules/SectionHeader';
-import { useScopedCategories, componentTypeLabel, explodeBomCost } from './useInventoryShared';
+import TabTemplate from '../../shared/ui/molecules/TabTemplate';
+import { useScopedCategories, componentTypeLabel } from './useInventoryShared';
 import InlineCategoryPicker from './InlineCategoryPicker';
 import RecipeBuilder from './RecipeBuilder';
 import ModifierEditor from './ModifierEditor';
 import ModifierGroupsEditor from './ModifierGroupsEditor';
 import CustomerPreview from './CustomerPreview';
 import { useDebounce } from '../../hooks/useDebounce';
-import { required, minLength, positiveNumber, validNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
+import FormField from '../../shared/ui/molecules/FormField';
+import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
 import MenuCards from './MenuCards';
-import EmptyState from '../../shared/ui/atoms/EmptyState';
+import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 import { createIngredient, createPrepItem } from '../../shared/api/client';
+import { useAppStore } from '../../store/app-store';
 import {
   NewProductSelectionModal,
   SimpleProductModal,
@@ -59,6 +59,8 @@ interface MenuItemsTabProps {
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
   onCreateIngredient?: (payload: IngredientCreateRequest) => Promise<Ingredient>;
   onCreatePrepItem?: (payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
+  /** Called when user clicks 'Apri in BoM' — closes FoodProductModal and switches to BoM tab */
+  onOpenBomTab?: (bomId: string) => void;
 }
 
 export default function MenuItemsTab({
@@ -79,6 +81,7 @@ export default function MenuItemsTab({
   onCreateCategory,
   onCreateIngredient,
   onCreatePrepItem,
+  onOpenBomTab,
 }: MenuItemsTabProps) {
   const [selectedMenuId, setSelectedMenuId] = useState('');
   const [editTab, setEditTab] = useState<EditTab>('metadata');
@@ -115,7 +118,7 @@ export default function MenuItemsTab({
     [menuItems, selectedMenuId],
   );
 
-  const menuRecipeCandidates = useMemo(
+  const _menuRecipeCandidates = useMemo(
     () => inventory.map((item) => ({ id: item.id, label: item.name, unit: item.unit, stockLevel: item.quantity, unitCost: item.unitCost })),
     [inventory],
   );
@@ -132,19 +135,19 @@ export default function MenuItemsTab({
   const [editDefaultContainerId, setEditDefaultContainerId] = useState('');
 
   // New product form state (kept for compatibility, but managed by new modals)
-  const [newName] = useState('');
-  const [newCategory] = useState('');
-  const [newCategoryId] = useState('');
-  const [newPrice] = useState('');
-  const [newPrintAreas] = useState<PrintArea[]>(['kitchen']);
-  const [newModifiers] = useState<MenuItemModifier[]>([]);
-  const [newModifierGroups] = useState<ModifierGroup[]>([]);
-  const [newRecipe] = useState<MenuItemCreateRequest['recipe']>([]);
-  const [newDefaultContainerId] = useState('');
-  const [newSaving] = useState(false);
-  const [newError] = useState('');
-  const [createErrors] = useState<ValidationErrors>({});
-  const [showCreateModal] = useState(false);
+  const [_newName] = useState('');
+  const [_newCategory] = useState('');
+  const [_newCategoryId] = useState('');
+  const [_newPrice] = useState('');
+  const [_newPrintAreas] = useState<PrintArea[]>(['kitchen']);
+  const [_newModifiers] = useState<MenuItemModifier[]>([]);
+  const [_newModifierGroups] = useState<ModifierGroup[]>([]);
+  const [_newRecipe] = useState<MenuItemCreateRequest['recipe']>([]);
+  const [_newDefaultContainerId] = useState('');
+  const [_newSaving] = useState(false);
+  const [_newError] = useState('');
+  const [_createErrors] = useState<ValidationErrors>({});
+  const [_showCreateModal] = useState(false);
 
   // New product builder state
   const [showSelectionModal, setShowSelectionModal] = useState(false);
@@ -153,6 +156,88 @@ export default function MenuItemsTab({
   const [showFoodModal, setShowFoodModal] = useState(false);
   const [editBuilderItem, setEditBuilderItem] = useState<MenuItemAdmin | null>(null);
 
+  // ─── Conversions cache for unit selectors ────────────────────────────────
+  const fetchUnitConversionsStore = useAppStore((s) => s.fetchUnitConversions);
+  const [conversionsMap, setConversionsMap] = useState<Record<string, UnitConversion[]>>({});
+
+  useEffect(() => {
+    if (inventory.length === 0) { setConversionsMap({}); /* eslint-disable-line react-hooks/set-state-in-effect -- [literal-reset] reset conversions when inventory empties */ return; }
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        inventory.map(async (ing) => {
+          const convs = await fetchUnitConversionsStore(ing.id).catch(() => [] as UnitConversion[]);
+          return [ing.id, convs] as [string, UnitConversion[]];
+        }),
+      );
+      if (!cancelled) setConversionsMap(Object.fromEntries(entries));
+    })();
+    return () => { cancelled = true; };
+  }, [inventory, fetchUnitConversionsStore]);
+
+  /** Resolve recipe components: explode BoM references, filter out containers */
+  const resolvedRecipes = useMemo(() => {
+    const map: Record<string, Array<{ componentType: string; name: string; quantity: number; unit: string; unitCost?: number }>> = {};
+    for (const item of menuItems) {
+      const resolved: typeof map[string] = [];
+      for (const comp of item.recipe) {
+        if (comp.componentType === 'bom') {
+          const bom = bomItems.find((b) => b.id === comp.componentId);
+          if (bom && bom.components.length > 0) {
+            const scale = comp.quantity / Number(bom.yieldQuantity || 1);
+            for (const sub of bom.components) {
+              // Skip container ingredients
+              const subInv = inventory.find((i) => i.id === sub.componentId);
+              if (subInv?.isContainer === 1) continue;
+
+              const subName = sub.componentType === 'ingredient'
+                ? (subInv?.name ?? sub.componentId)
+                : sub.componentType === 'prep'
+                  ? (prepItems.find((p) => p.id === sub.componentId)?.name ?? sub.componentId)
+                  : (bomItems.find((b) => b.id === sub.componentId)?.name ?? sub.componentId);
+
+              const qty = Number(sub.quantity) * scale;
+              resolved.push({
+                componentType: sub.componentType,
+                name: subName,
+                quantity: qty,
+                unit: sub.unit,
+                unitCost: subInv?.unitCost ? Number(subInv.unitCost) * qty : undefined,
+              });
+            }
+          } else {
+            // BoM not found — show the reference as fallback
+            resolved.push({
+              componentType: 'bom',
+              name: comp.componentName ?? comp.componentId,
+              quantity: comp.quantity,
+              unit: comp.unit,
+            });
+          }
+        } else {
+          // Regular ingredient / prep component
+          const inv = inventory.find((i) => i.id === comp.componentId);
+          if (inv?.isContainer === 1) continue; // skip containers
+
+          const name = comp.componentName
+            ?? (comp.componentType === 'prep' ? prepItems.find((p) => p.id === comp.componentId)?.name : undefined)
+            ?? inv?.name
+            ?? comp.componentId;
+
+          resolved.push({
+            componentType: comp.componentType,
+            name,
+            quantity: comp.quantity,
+            unit: comp.unit,
+            unitCost: inv?.unitCost ? Number(inv.unitCost) * comp.quantity : undefined,
+          });
+        }
+      }
+      map[item.id] = resolved;
+    }
+    return map;
+  }, [menuItems, bomItems, inventory, prepItems]);
+
   const containerCandidates = useMemo(
     () => inventory.filter((i) => i.isContainer === 1 && i.isActive),
     [inventory],
@@ -160,14 +245,14 @@ export default function MenuItemsTab({
 
   useEffect(() => {
     if (!selectedMenu) return;
-    setEditName(selectedMenu.name);
-    setEditCategory(selectedMenu.category);
-    setEditCategoryId(selectedMenu.categoryId ?? '');
-    setEditPrice(String(selectedMenu.price));
-    setEditPrintAreas(selectedMenu.printAreas);
-    setEditModifiers(selectedMenu.modifiers ?? []);
-    setEditModifierGroups(selectedMenu.modifierGroups ?? []);
-    setEditRecipe(selectedMenu.recipe);
+    setEditName(selectedMenu.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize edit form fields from selected menu item; safe because all values are primitives or read-only arrays
+    setEditCategory(selectedMenu.category);  
+    setEditCategoryId(selectedMenu.categoryId ?? '');  
+    setEditPrice(String(selectedMenu.price));  
+    setEditPrintAreas(selectedMenu.printAreas);  
+    setEditModifiers(selectedMenu.modifiers ?? []);  
+    setEditModifierGroups(selectedMenu.modifierGroups ?? []);  
+    setEditRecipe(selectedMenu.recipe);  
     setEditDefaultContainerId(selectedMenu.defaultContainerId ?? '');
     setEditTab('metadata');
   }, [selectedMenu]);
@@ -187,7 +272,7 @@ export default function MenuItemsTab({
       || modifiersChanged
       || modifierGroupsChanged
     );
-  }, [selectedMenu, editName, editCategoryId, editPrice, editPrintAreas, editRecipe, editModifiers, editModifierGroups]);
+  }, [selectedMenu, editName, editCategoryId, editDefaultContainerId, editPrice, editPrintAreas, editRecipe, editModifiers, editModifierGroups]);
 
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
 
@@ -230,11 +315,37 @@ export default function MenuItemsTab({
 
   const handleCloseModal = useCallback(() => setSelectedMenuId(''), []);
 
+  const replaceBomComponents = useAppStore((s) => s.replaceBomComponents);
+  const createBomItem = useAppStore((s) => s.createBomItem);
+  const handleReplaceBomComponents = useCallback(async (
+    bomId: string,
+    payload: { components: Array<{ componentType: string; componentId: string; quantity: number; unit: string }> },
+  ) => {
+    await replaceBomComponents(bomId, payload as any);
+    void onRefresh?.();
+  }, [replaceBomComponents, onRefresh]);
+
+  const handleCreateBomItem = useCallback(async (payload: any): Promise<string | null> => {
+    await createBomItem(payload);
+    void onRefresh?.();
+    // Store has bomItems updated synchronously after createBomItem completes
+    const state = useAppStore.getState();
+    // Reverse find to get the most recently created BoM (newest appended last)
+    const match = [...state.bomItems].reverse().find((b) => b.name === payload.name);
+    return match?.id ?? null;
+  }, [createBomItem, onRefresh]);
+
+  const handleOpenBomTab = useCallback((bomId: string) => {
+    setShowFoodModal(false);
+    setEditBuilderItem(null);
+    onOpenBomTab?.(bomId);
+  }, [onOpenBomTab]);
+
   return (
-    <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px]">
-      <SectionHeader
+    <>
+      <TabTemplate
         title="Prodotti Vendibili"
-        actions={
+        headerActions={
           <>
             <Button variant="secondary" onClick={() => void onRefresh?.()}>
               <RotateCcw size={14} />
@@ -246,34 +357,22 @@ export default function MenuItemsTab({
             </Button>
           </>
         }
-      />
-      <div className="px-4 py-2 border-b border-border bg-bg/20">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Cerca prodotto o categoria..."
-            className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm"
-          />
-        </div>
-      </div>
-
-      {menuCategories.length > 0 && (
-        <div className="px-4 py-2 border-b border-border bg-bg/20">
-          <SegmentedChips
-            ariaLabel="Filtra prodotti per categoria"
-            value={filterCategoryId}
-            onChange={setFilterCategoryId}
-            options={chipOptions}
-            size="sm"
-          />
-        </div>
-      )}
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Cerca prodotto o categoria..."
+        chips={{
+          ariaLabel: 'Filtra prodotti per categoria',
+          value: filterCategoryId,
+          onChange: setFilterCategoryId,
+          options: chipOptions,
+        }}
+        noScroll
+      >
 
       {/* Mobile Card Layout */}
       <div className="md:hidden overflow-auto flex-1">
           <MenuCards
+          resolvedRecipes={resolvedRecipes}
           items={filteredMenuItems}
           onEdit={(id) => {
             const item = menuItems.find((m) => m.id === id);
@@ -295,17 +394,12 @@ export default function MenuItemsTab({
         />
         {filteredMenuItems.length === 0 && (
           <p className="px-4 py-8 text-sm text-text-muted text-center">
-            {loading ? (
-              <div className="space-y-2">
-                {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-              </div>
-            ) : (
-              <EmptyState
-                icon={<UtensilsCrossed size={24} />}
-                title={searchQuery ? 'Nessun prodotto corrisponde alla ricerca.' : 'Nessun prodotto configurato.'}
-                description={!searchQuery ? 'Crea il primo prodotto per iniziare.' : undefined}
-              />
-            )}
+            <LoadingOrEmpty
+              loading={loading}
+              icon={<UtensilsCrossed size={24} />}
+              title={searchQuery ? 'Nessun prodotto corrisponde alla ricerca.' : 'Nessun prodotto configurato.'}
+              description={!searchQuery ? 'Crea il primo prodotto per iniziare.' : undefined}
+            />
           </p>
         )}
       </div>
@@ -332,23 +426,27 @@ export default function MenuItemsTab({
                 <td className="px-6 py-4 text-sm font-bold">€{item.price.toFixed(2)}</td>
                 {!simpleCatalogMode && (
                   <td className="px-6 py-4">
-                    {item.recipe.length > 0 ? (
-                      <div className="space-y-1">
-                        {item.recipe.map((component, idx) => {
-                          const candidate = menuRecipeCandidates.find((c) => c.id === component.componentId);
-                          const lineCost = candidate?.unitCost ? component.quantity * candidate.unitCost : undefined;
-                          return (
-                            <p key={`${item.id}-${idx}`} className="text-xs text-secondary">
-                              <span className="font-bold uppercase text-[10px] mr-2">{componentTypeLabel(component.componentType)}</span>
-                              {component.componentName ?? candidate?.label ?? component.componentId} · {component.quantity} {component.unit}
-                              {lineCost !== undefined && <span className="ml-1 text-text-muted">€{lineCost.toFixed(2)}</span>}
-                            </p>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-danger">Ricetta mancante</p>
-                    )}
+                    {(() => {
+                      const resolved = resolvedRecipes[item.id];
+                      if (resolved && resolved.length > 0) {
+                        return (
+                          <div className="space-y-1">
+                            {resolved.map((comp, idx) => (
+                              <p key={`${item.id}-rcp-${idx}`} className="text-xs text-secondary">
+                                <span className="font-bold uppercase text-[10px] mr-2">{componentTypeLabel(comp.componentType as any)}</span>
+                                {comp.name} · {Number.isInteger(comp.quantity) ? comp.quantity : comp.quantity.toFixed(2)} {comp.unit}
+                                {comp.unitCost !== undefined && <span className="ml-1 text-text-muted">€{comp.unitCost.toFixed(2)}</span>}
+                              </p>
+                            ))}
+                          </div>
+                        );
+                      }
+                      // Show warning only for products that truly have no recipe (e.g. simple products)
+                      if (item.recipe.length === 0) {
+                        return <p className="text-xs text-danger">Ricetta mancante</p>;
+                      }
+                      return <p className="text-xs text-text-muted italic">—</p>;
+                    })()}
                   </td>
                 )}
                 <td className="px-6 py-4">
@@ -388,23 +486,19 @@ export default function MenuItemsTab({
             {filteredMenuItems.length === 0 && (
               <tr>
                 <td className="px-6 py-8 text-sm text-text-muted" colSpan={simpleCatalogMode ? 4 : 5}>
-                  {loading ? (
-                    <div className="space-y-2">
-                      {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-                    </div>
-                  ) : (
-                    <EmptyState
-                      icon={<UtensilsCrossed size={24} />}
-                      title={searchQuery ? 'Nessun prodotto corrisponde alla ricerca.' : 'Nessun prodotto configurato.'}
-                      description={!searchQuery ? 'Crea il primo prodotto per iniziare.' : undefined}
-                    />
-                  )}
+                  <LoadingOrEmpty
+                    loading={loading}
+                    icon={<UtensilsCrossed size={24} />}
+                    title={searchQuery ? 'Nessun prodotto corrisponde alla ricerca.' : 'Nessun prodotto configurato.'}
+                    description={!searchQuery ? 'Crea il primo prodotto per iniziare.' : undefined}
+                  />
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+      </TabTemplate>
 
       {/* Tabbed Edit Modal */}
       <Modal
@@ -450,11 +544,9 @@ export default function MenuItemsTab({
               {editTab === 'metadata' && (
                 <div className="space-y-3 pt-2">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Nome</label>
+                    <FormField label="Nome" error={editErrors.name?.message}>
                       <input value={editName} onChange={(e) => setEditName(e.target.value)} className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`} />
-                      {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
-                    </div>
+                    </FormField>
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Categoria</label>
                       <InlineCategoryPicker
@@ -465,11 +557,9 @@ export default function MenuItemsTab({
                         label=""
                       />
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Prezzo (€)</label>
+                    <FormField label="Prezzo (€)" error={editErrors.price?.message}>
                       <input value={editPrice} onChange={(e) => setEditPrice(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" min="0.01" step="0.10" aria-label="Prezzo" className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.price)}`} />
-                      {editErrors.price && <p className="text-[9px] text-danger">{editErrors.price.message}</p>}
-                    </div>
+                    </FormField>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
@@ -541,6 +631,7 @@ export default function MenuItemsTab({
                     prepItems={prepItems}
                     onChange={setEditRecipe}
                     showCost
+                    conversionsMap={conversionsMap}
                   />
                   <Button
                     variant="primary"
@@ -645,8 +736,12 @@ export default function MenuItemsTab({
         onReplaceRecipe={onReplaceRecipe}
         onCreateIngredient={onCreateIngredient ?? createIngredient}
         onCreatePrepItem={onCreatePrepItem ?? createPrepItem}
+        onReplaceBomComponents={handleReplaceBomComponents}
+        onCreateBomItem={handleCreateBomItem}
+        conversionsMap={conversionsMap}
+        onOpenBomTab={handleOpenBomTab}
         editItem={editBuilderItem}
       />
-    </div>
+    </>
   );
 }

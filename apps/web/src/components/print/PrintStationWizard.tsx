@@ -76,6 +76,7 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
 
   // Initial mint on mount.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] reissue() calls store set() asynchronously
     void reissue();
   }, [reissue]);
 
@@ -99,7 +100,7 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
   // Load qrcode.react lazily; gracefully fall back to URL text if not installed.
   useEffect(() => {
     let cancelled = false;
-    // @ts-expect-error - qrcode.react is optional; install with: npm install qrcode.react
+    // qrcode.react is optional; install with: npm install qrcode.react
     import("qrcode.react")
       .then((mod) => {
         const Cmp = (mod as { QRCodeSVG?: QRComponent }).QRCodeSVG;

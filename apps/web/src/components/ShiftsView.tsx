@@ -11,7 +11,7 @@ interface ShiftsViewProps {
 }
 
 export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
-  const [loading, setLoading] = useState(false);
+  const [_loading, setLoading] = useState(false);
   const items = useAppStore((state) => state.shifts);
   const refreshShifts = useAppStore((state) => state.refreshShifts);
   const createShift = useAppStore((state) => state.createShift);
@@ -55,9 +55,12 @@ export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
     }
   };
 
+  /* eslint-disable react-hooks/exhaustive-deps -- [load-recursion] load is recreated each render; effect only refreshes on date change */
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] load() calls store set() asynchronously
     void load();
   }, [date]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const createShiftHandler = async () => {
     if (!staffId.trim()) {

@@ -3,15 +3,24 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { MenuItemAdmin } from '@gustopos/shared';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
 
+interface ResolvedComponent {
+  componentType: string;
+  name: string;
+  quantity: number;
+  unit: string;
+}
+
 interface MenuCardsProps {
   items: MenuItemAdmin[];
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onToggleActive: (id: string, active: boolean) => void;
   simpleCatalogMode?: boolean;
+  /** Pre-resolved recipe components (BoM exploded, containers filtered) */
+  resolvedRecipes?: Record<string, ResolvedComponent[]>;
 }
 
-export default function MenuCards({ items, onEdit, onDelete, onToggleActive, simpleCatalogMode }: MenuCardsProps) {
+export default function MenuCards({ items, onEdit, onDelete, onToggleActive, simpleCatalogMode, resolvedRecipes }: MenuCardsProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggle = (id: string) => {
@@ -54,13 +63,15 @@ export default function MenuCards({ items, onEdit, onDelete, onToggleActive, sim
 
             {isExpanded && (
               <div className="px-4 pb-4 space-y-2 border-t border-border/50 ml-7">
-                {!simpleCatalogMode && item.recipe.length > 0 && (
+                {!simpleCatalogMode && (resolvedRecipes?.[item.id] ?? item.recipe).length > 0 && (
                   <div className="pt-2">
                     <p className="text-[9px] font-bold text-text-muted uppercase tracking-wider mb-1">Ricetta</p>
-                    {item.recipe.map((r, idx) => (
+                    {(resolvedRecipes?.[item.id] ?? item.recipe).map((r: any, idx: number) => (
                       <p key={idx} className="text-xs text-secondary">
-                        <span className="font-bold uppercase text-[10px] mr-1">{r.componentType === 'ingredient' ? 'Ingred' : 'BoM'}</span>
-                        {r.componentName ?? r.componentId} · {r.quantity} {r.unit}
+                        <span className="font-bold uppercase text-[10px] mr-1">
+                          {r.componentType === 'ingredient' ? 'Ingred' : r.componentType === 'prep' ? 'Prep' : r.componentType === 'bom' ? 'BoM' : '?'}
+                        </span>
+                        {r.name ?? r.componentName ?? r.componentId} · {r.quantity} {r.unit}
                       </p>
                     ))}
                   </div>

@@ -15,8 +15,9 @@ export interface UseDirtyStateReturn {
  */
 export function useDirtyState(): UseDirtyStateReturn {
   const [dirtyCount, setDirtyCount] = useState(0);
-  const snapshotsRef = useRef(new Map<string, unknown>());
+  const snapshotsRef = useRef<Map<string, unknown>>(new Map());
 
+   
   const snapshot = useCallback(<T>(value: T): T => {
     const key = String(snapshotsRef.current.size);
     if (!snapshotsRef.current.has(key)) {
@@ -29,6 +30,7 @@ export function useDirtyState(): UseDirtyStateReturn {
     setDirtyCount((c) => c + 1);
   }, []);
 
+   
   const reset = useCallback(() => {
     snapshotsRef.current.clear();
     setDirtyCount(0);
@@ -53,16 +55,16 @@ export function useFieldDirty(initial: string | number | boolean): {
   reset: (v?: string | number | boolean) => void;
 } {
   const [value, setValue] = useState(initial);
-  const initialRef = useRef(initial);
+  const [initialValue, setInitialValue] = useState(initial);
 
   const reset = useCallback((v?: string | number | boolean) => {
-    const resetTo = v !== undefined ? v : initialRef.current;
+    const resetTo = v !== undefined ? v : initialValue;
     setValue(resetTo);
-    initialRef.current = resetTo;
-  }, []);
+    setInitialValue(resetTo);
+  }, [initialValue]);
 
   return {
-    isDirty: value !== initialRef.current,
+    isDirty: value !== initialValue,
     value,
     setValue,
     reset,

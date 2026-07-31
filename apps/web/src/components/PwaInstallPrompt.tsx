@@ -33,7 +33,7 @@ export default function PwaInstallPrompt() {
 
     // Check if already installed
     if (window.matchMedia('(display-mode: standalone)').matches) {
-      setInstalled(true);
+      setInstalled(true); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] check PWA install status on mount; literal boolean, safe
     }
 
     return () => {

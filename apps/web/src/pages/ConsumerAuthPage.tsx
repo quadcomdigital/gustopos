@@ -32,6 +32,7 @@ export default function ConsumerAuthPage() {
   // Check for existing session on mount
   useEffect(() => {
     if (!tenantSlug || !getConsumerAccessToken(tenantSlug)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [auth-check] sets loading=false on auth check result; setter receives constant primitive, no cascading risk
       setInitialLoading(false);
       return;
     }
@@ -104,7 +105,7 @@ export default function ConsumerAuthPage() {
     }
   };
 
-  const toggleAuthMode = () => {
+  const _toggleAuthMode = () => {
     setAuthMode((current) => current === 'login' ? 'register' : 'login');
     setAuthError('');
     setPassword('');

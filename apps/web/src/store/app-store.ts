@@ -6,7 +6,6 @@ import {
   type AppData,
   type BomCreateRequest,
   type BomItem,
-  type BomStockItem,
   type BomUpdateRequest,
   type BomUpsertComponentsRequest,
   type Category,
@@ -96,7 +95,6 @@ import {
   type VoidOrderResponse,
   type LoyaltyBalance,
   type LoyaltyTransaction,
-  type Table,
   type TableCreateRequest,
   type TableUpdateRequest,
   type TableBulkCreateRequest,
@@ -106,12 +104,9 @@ import {
   type CartItem,
   type LocalBridgeConfig,
   type LocalBridgeArea,
-  type LocalBridgePrinterMapping,
   type PrintBridge,
   type PrintBridgeOnboardingSecret,
   type PrintBridgeOnboardingSecretCreateCode6DigitResponse,
-  type PrintBridgeOnboardingSecretCreateResponse,
-  type PrintBridgeOnboardingSecretCreateRequest,
   type PrepItem,
   type PrepItemUpdateRequest,
   type UnitConversion,
@@ -139,7 +134,6 @@ import {
   closeTable as closeTableRequest,
   createOrder,
   fetchBomItems,
-  fetchBomStock,
   fetchData,
   fetchBootstrap,
   fetchInventory,
@@ -194,6 +188,7 @@ import {
   updatePrintingSettings as updatePrintingSettingsRequest,
   updateUiSettings as updateUiSettingsRequest,
   updateOrder,
+  updateOrderItemQuantity,
   voidOrder as voidOrderRequest,
   dispatchPrintJob as dispatchPrintJobRequest,
   upsertDeliveryOrder as upsertDeliveryOrderRequest,
@@ -236,21 +231,13 @@ import {
   updateTable as updateTableRequest,
   deleteTable as deleteTableRequest,
   deleteCategory as deleteCategoryRequest,
-  listPrintBridges as listPrintBridgesRequest,
-  listPrintBridges,
-  updateBridgeMappingsRequest,
-  updateBridgeMappings,
-  updateBridgeClaimedAreasRequest,
-  updateBridgeClaimedAreas,
-  triggerBridgeTestPrint as triggerBridgeTestPrintRequest,
-  triggerBridgeTestPrint,
-  listOnboardingSecrets as listOnboardingSecretsRequest,
-  listOnboardingSecrets,
   createOnboardingSecret as createOnboardingSecretRequest,
-  createOnboardingSecret,
   createShortCodePairingRequest,
   revokeOnboardingSecret as revokeOnboardingSecretRequest,
-  revokeOnboardingSecret,
+  updateBridgeMappings,
+  updateBridgeClaimedAreas,
+  listOnboardingSecrets as listOnboardingSecretsRequest,
+  triggerBridgeTestPrint as triggerBridgeTestPrintRequest,
 
 } from '../shared/api/client';
 import { disconnectSocket, getSocket } from '../shared/api/socket';
@@ -479,7 +466,7 @@ interface AppState {
   fiscalExports: FiscalExport[];
   inventoryItems: Ingredient[];
   bomItems: BomItem[];
-  bomStock: BomStockItem[];
+  bomStock: any[];
   menuItemsAdmin: MenuItemAdmin[];
   currentUser: Staff | null;
   uiSettings: UiSettings;
@@ -498,6 +485,7 @@ interface AppState {
   logout: () => Promise<void>;
   createOrder: (order: CreateOrderRequest) => Promise<Order>;
   upsertDeliveryOrder: (orderId: string, payload: DeliveryUpsertRequest) => Promise<void>;
+  updateOrderItemQuantity: (orderId: string, orderItemId: number, quantity: number) => Promise<Order>;
   updateOrder: (id: string, updates: UpdateOrderRequest) => Promise<Order>;
   voidOrder: (id: string, payload: VoidOrderRequest) => Promise<VoidOrderResponse>;
   payTable: (tableId: string) => Promise<PayTableResponse>;
@@ -551,7 +539,6 @@ interface AppState {
   addBomComponent: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) => Promise<void>;
   removeBomComponent: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) => Promise<void>;
   deleteBomItem: (id: string) => Promise<void>;
-  fetchBomStock: () => Promise<void>;
   refreshInventoryItems: () => Promise<void>;
   createIngredient: (payload: IngredientCreateRequest) => Promise<void>;
   updateIngredient: (id: string, payload: IngredientUpdateRequest) => Promise<void>;
@@ -620,11 +607,11 @@ interface AppState {
   revokeOnboardingSecret: (id: string) => Promise<void>;
   // ─── Local browser-bridge slice (Phase E) ──────────────────────────────────
   localBridgeConfig: LocalBridgeConfig | null;
+  localBridgeLastError: string | null;
   setLocalBridgeConfig: (config: LocalBridgeConfig | null) => void;
   setLocalBridgeActive: (active: boolean) => void;
   setLocalBridgeLastError: (msg: string | null) => void;
   authToken: string | null;
-  pollPrintJobs: () => Promise<void>;
   // ─── Prep items (Phase E) ───────────────────────────────────
   prepItems: PrepItem[];
   prepItemsLastFetchedAt: string | null;
@@ -673,7 +660,7 @@ export function replayOfflineQueue(): void {
   if (offlineQueue.length === 0) return;
 
   const state = useAppStore.getState();
-  const get = () => useAppStore.getState();
+  const _get = () => useAppStore.getState();
   const set = useAppStore.setState;
 
   // Clear queue first to prevent infinite loops, then replay
@@ -807,7 +794,7 @@ function handleActionError(error: unknown): string {
   return 'Errore sconosciuto. Riprova.';
 }
 
-async function loadAdminBootstrap(enabledModules: ModuleKey[]) {
+async function _loadAdminBootstrap(enabledModules: ModuleKey[]) {
   const inventoryEnabled = enabledModules.includes('inventory');
   const simpleCatalogOnly = enabledModules.includes('simple_catalog') && !inventoryEnabled;
 
@@ -894,6 +881,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   prepItemsLastFetchedAt: null,
   // ─── Local browser-bridge slice (Phase E) ────────────────────
   localBridgeConfig: null,
+  localBridgeLastError: null,
   authToken: null,
   initDone: false,
 
@@ -902,6 +890,18 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       return;
     }
 
+    // ─── Migrate localBridgeConfig from old standalone persist key ──────────
+    if (typeof window !== 'undefined' && !get().localBridgeConfig) {
+      try {
+        const raw = localStorage.getItem('gustopos.localBridge');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && parsed.enabled) {
+            set({ localBridgeConfig: parsed as LocalBridgeConfig });
+          }
+        }
+      } catch { /* corrupted – ignore */ }
+    }
     set({ initDone: true });
     applyUiTheme(defaultUiSettings);
 
@@ -950,7 +950,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           payments: bootstrap.payments,
           printJobs: bootstrap.printJobs,
           inventoryItems: enabledModules.includes('inventory') ? bootstrap.inventoryItems : [],
-          bomItems: bootstrap.bomItems,
+          bomItems: enabledModules.includes('inventory') ? bootstrap.bomItems : [],
           menuItemsAdmin: bootstrap.menuItemsAdmin,
           categories: bootstrap.categories,
           customers: bootstrap.customers,
@@ -1082,7 +1082,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           payments: bootstrap.payments,
           printJobs: bootstrap.printJobs,
           inventoryItems: normalizedModules.includes('inventory') ? bootstrap.inventoryItems : [],
-          bomItems: bootstrap.bomItems,
+          bomItems: normalizedModules.includes('inventory') ? bootstrap.bomItems : [],
           menuItemsAdmin: bootstrap.menuItemsAdmin,
           categories: bootstrap.categories,
           customers: bootstrap.customers,
@@ -1353,6 +1353,28 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       await dispatchDeliveryOrderRequest(orderId);
       const deliveryOrders = await fetchDeliveryOrdersRequest({ limit: 200 });
       set({ deliveryOrders });
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  updateOrderItemQuantity: async (orderId, orderItemId, quantity) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      if (!hasPermission(state, uiActionPolicyMatrix.ordersUpdate.permission)) {
+        throw new Error('Permessi insufficienti per aggiornare ordine');
+      }
+      const updated = await updateOrderItemQuantity(orderId, orderItemId, quantity);
+      set((s) =>
+        s.data
+          ? { data: { ...s.data, orders: s.data.orders.map((o) => (o.id === updated.id ? updated : o)) } }
+          : s,
+      );
+      return updated;
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1979,16 +2001,6 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (!hasModuleEnabled(get(), 'inventory')) return;
       const bomItems = await fetchBomItems();
       set({ bomItems });
-    } catch (err) {
-      set({ error: handleActionError(err) });
-      throw err;
-    }
-  },
-
-  fetchBomStock: async () => {
-    try {
-      const stock = await fetchBomStock();
-      set({ bomStock: stock });
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -2708,16 +2720,20 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     set({ printBridgesLastFetchedAt: new Date().toISOString() });
   },
   updateBridgeMappings: async (bridgeId, mappings) => {
+    await updateBridgeMappings(bridgeId, mappings);
     set({ printBridgesLastFetchedAt: new Date().toISOString() });
   },
   updateBridgeClaimedAreas: async (bridgeId, claimedAreas) => {
+    await updateBridgeClaimedAreas(bridgeId, claimedAreas);
     set({ printBridgesLastFetchedAt: new Date().toISOString() });
   },
   triggerBridgeTestPrint: async (bridgeId, area) => {
-    // Fire-and-forget; backend dispatches job to the bridge.
+    await triggerBridgeTestPrintRequest(bridgeId, area);
+    set({ printBridgesLastFetchedAt: new Date().toISOString() });
   },
   refreshOnboardingSecrets: async () => {
-    // Refresh is driven at component level; this is a no-op fallback so the selector signature resolves.
+    const secrets = await listOnboardingSecretsRequest();
+    set({ onboardingSecrets: secrets });
   },
   createOnboardingSecret: async (hint) => {
     const res = await createOnboardingSecretRequest(hint ?? {});
@@ -2763,10 +2779,9 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       localBridgeConfig: s.localBridgeConfig ? { ...s.localBridgeConfig, active } : null,
     }));
   },
-  setLocalBridgeLastError: (_msg) => {
-    // Tracked separately by localBridgeSlice; no-op at this layer.
+  setLocalBridgeLastError: (msg) => {
+    set({ localBridgeLastError: msg });
   },
-  pollPrintJobs: async () => { /* stub */ },
 }), {
   name: 'gustopos-cart',
   partialize: (state) => ({
@@ -2775,5 +2790,6 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     cartContextKey: state.cartContextKey,
     posOrderMode: state.posOrderMode,
     posTableNumber: state.posTableNumber,
+    localBridgeConfig: state.localBridgeConfig,
   }),
 }));

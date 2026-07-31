@@ -1,4 +1,4 @@
-import { Suspense, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -25,7 +25,6 @@ import {
 import { cn } from '../../lib/utils';
 import ToastHost from '../../components/ToastHost';
 import PwaInstallPrompt from '../../components/PwaInstallPrompt';
-import { useQzTrayStatus } from '../../components/QzTrayWorker';
 import { useAppStore } from '../../store/app-store';
 import type { BackofficeRouteKey, BackofficeRouteMeta } from './route-guards';
 
@@ -50,7 +49,6 @@ interface BackofficeShellProps {
   userName: string;
   userTenantId: string;
   isOnline: boolean;
-  now: Date;
   offlineQueueCount: number;
   hasImpersonationSnapshot: boolean;
   onExitImpersonation: () => void;
@@ -70,7 +68,6 @@ export default function BackofficeShell(props: BackofficeShellProps) {
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
   const [showTablePicker, setShowTablePicker] = useState(false);
-  const qzStatus = useQzTrayStatus();
   const posOrderMode = useAppStore((s) => s.posOrderMode);
   const posTableNumber = useAppStore((s) => s.posTableNumber);
   const posMenuSearch = useAppStore((s) => s.posMenuSearch);
@@ -80,7 +77,6 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     userName,
     userTenantId,
     isOnline,
-    now,
     offlineQueueCount,
     hasImpersonationSnapshot,
     onExitImpersonation,
@@ -95,6 +91,14 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     deliveryActive,
     children,
   } = props;
+
+  const [clock, setClock] = useState(() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setClock(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const mobilePrimaryRouteKeys: BackofficeRouteKey[] = ['tables', 'pos', 'kitchen', 'dashboard'];
   const activeRoute = routes.find((route) => route.key === activeRouteKey) ?? null;
@@ -124,6 +128,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     const primary = merged.length > 0 ? merged : routes.slice(0, 4);
     const extra = routes.filter((route) => !primary.some((entry) => entry.key === route.key));
     return { mobilePrimaryRoutes: primary, mobileExtraRoutes: extra };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- routes reference (outer-scope memoized Set/array) is stable; activeRoute is the only dynamic trigger
   }, [routes, activeRoute]);
 
   const renderRouteBadge = (routeKey: BackofficeRouteKey, mobile = false) => {
@@ -223,46 +228,9 @@ export default function BackofficeShell(props: BackofficeShellProps) {
             <span>{isOnline ? 'Online' : 'Offline'}</span>
           </div>
 
-          {/* QZ Tray Status Indicator */}
-          {qzStatus.status !== 'disconnected' && (
-            <div
-              className="hidden md:flex px-2 md:px-3 py-1 rounded-full bg-white/15 items-center gap-1 md:gap-2 cursor-help"
-              title={
-                qzStatus.status === 'connected'
-                  ? `QZ Tray ${qzStatus.version || ''} — ${qzStatus.printers.length} printer(s)`
-                  : qzStatus.status === 'connecting'
-                    ? 'Connessione a QZ Tray...'
-                    : qzStatus.status === 'not_installed'
-                      ? 'QZ Tray non installato su questo PC'
-                      : `QZ Tray: ${qzStatus.error || 'errore sconosciuto'}`
-              }
-            >
-              <div
-                className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full ${
-                  qzStatus.status === 'connected'
-                    ? 'bg-green-400 animate-pulse'
-                    : qzStatus.status === 'connecting'
-                      ? 'bg-yellow-400 animate-pulse'
-                      : qzStatus.status === 'not_installed'
-                        ? 'bg-gray-400'
-                        : 'bg-red-400'
-                }`}
-              />
-              <span className="hidden lg:inline">
-                {qzStatus.status === 'connected'
-                  ? `🖨 ${qzStatus.printers.length}`
-                  : qzStatus.status === 'connecting'
-                    ? 'QZ...'
-                    : qzStatus.status === 'not_installed'
-                      ? 'QZ no'
-                      : 'QZ !'}
-              </span>
-            </div>
-          )}
-
           <div className="hidden md:flex px-2 md:px-3 py-1 rounded-full bg-white/15 items-center gap-1 md:gap-2">
             <span className="hidden md:inline">Ora:</span>
-            {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {clock}
           </div>
           {offlineQueueCount > 0 && (
             <div className="px-2 md:px-3 py-1 rounded-full bg-amber-500/20 text-amber-100 flex items-center gap-1 md:gap-2">

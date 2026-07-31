@@ -30,11 +30,14 @@ export default function PublicSelfOrderPage() {
 
   useEffect(() => {
     if (!tenantSlug || !token) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [auth-check] sets error state on invalid params; setters receive constant primitives, no cascading risk
       setError('Link self-order non valido');
+       
       setLoading(false);
       return;
     }
 
+     
     setLoading(true);
     void resolvePublicSelfOrderSession(tenantSlug, token)
       .then((payload) => {

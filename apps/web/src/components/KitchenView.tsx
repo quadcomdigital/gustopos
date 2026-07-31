@@ -54,7 +54,7 @@ function isScheduled(order: Order): boolean {
   return etaMs - nowMs > bufferMs;
 }
 
-function getScheduleCountdown(scheduledFor: string): string {
+function _getScheduleCountdown(scheduledFor: string): string {
   const diffMs = new Date(scheduledFor).getTime() - Date.now();
   if (diffMs <= 0) return 'In scadenza';
   const mins = Math.floor(diffMs / 60_000);

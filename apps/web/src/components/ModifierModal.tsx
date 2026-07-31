@@ -125,7 +125,7 @@ export default function ModifierModal({
 
   React.useEffect(() => {
     if (isOpen) {
-      setActiveTab('togli');
+      setActiveTab('togli'); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] reset modifier tab to default when modal opens; literal string, safe
       setRemovedIds(
         existingOverridesRef.current
           .filter((o) => o.action === 'remove')
@@ -393,7 +393,7 @@ export default function ModifierModal({
               <div className="border-b border-border shrink-0 max-h-[35vh] overflow-y-auto">
                 {modifierGroups.map((group) => {
                   const selected = groupSelections[group.id] ?? [];
-                  const isSingleSelect = group.maxSelections === 1;
+                  const _isSingleSelect = group.maxSelections === 1;
                   return (
                     <div key={group.id} className="px-4 py-3 border-b border-border/50 last:border-b-0">
                       <div className="flex items-center gap-2 mb-2">

@@ -12,11 +12,10 @@ interface StockMovementsDrawerProps {
 
 const MOVEMENT_LABELS: Record<string, { label: string; color: string }> = {
   purchase_receipt: { label: 'Carico acquisto', color: 'text-success' },
-  order_consumption: { label: 'Consumo ordine', color: 'text-danger' },
+  order_deduction: { label: 'Consumo ordine', color: 'text-danger' },
+  order_reversal: { label: 'Storno ordine', color: 'text-warning' },
   manual_adjustment: { label: 'Regolazione manuale', color: 'text-accent' },
-  void_restore: { label: 'Storno ordine', color: 'text-warning' },
-  preparation: { label: 'Preparazione', color: 'text-accent' },
-  bom_preparation: { label: 'Preparazione BOM', color: 'text-accent' },
+  prep_consumption: { label: 'Consumo preparazione', color: 'text-accent' },
 };
 
 export default function StockMovementsDrawer({

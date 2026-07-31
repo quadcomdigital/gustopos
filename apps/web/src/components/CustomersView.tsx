@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import type { Customer, CustomerAnalytics, CustomerCreateRequest, CustomerUpdateRequest, CustomersQuery } from '@gustopos/shared';
 import { Search, Plus, Pencil, Trash2, X, Check, Users } from 'lucide-react';
 import ConfirmDialog from './ConfirmDialog';
-import { cn } from '../lib/utils';
 
 interface CustomersViewProps {
   customers: Customer[];
@@ -19,7 +18,7 @@ export default function CustomersView({
   customers,
   customerAnalytics,
   onRefreshCustomers,
-  onRefreshCustomerAnalytics,
+  onRefreshCustomerAnalytics: _onRefreshCustomerAnalytics,
   onCreateCustomer,
   onUpdateCustomer,
   onDeleteCustomer,
@@ -36,12 +35,14 @@ export default function CustomersView({
   const [deleteTarget, setDeleteTarget] = useState<Customer | null>(null);
   const [actionError, setActionError] = useState('');
 
+  /* eslint-disable react-hooks/exhaustive-deps -- onRefreshCustomers recreated each render; debounce only needs searchQuery as trigger */
   useEffect(() => {
     const debounce = setTimeout(() => {
       onRefreshCustomers({ query: searchQuery || undefined, limit: 200 });
     }, 300);
     return () => clearTimeout(debounce);
   }, [searchQuery]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const handleCreate = useCallback(async () => {
     if (newName.trim().length < 2) return;

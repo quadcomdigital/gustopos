@@ -21,22 +21,35 @@ interface UnitSelectProps {
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
+  /** Additional (dynamic) units to show in the dropdown, e.g. from ingredient unit conversions */
+  extraUnits?: Array<{ value: string; label: string; category: string }>;
+  /** Forwarded to the root wrapper so a sibling `<label htmlFor={id}>` can reference it. */
+  id?: string;
+  /** Forwarded to the main trigger button for screen-reader announcement. */
+  ariaLabel?: string;
 }
 
-export default function UnitSelect({ value, onChange, placeholder = 'Unità', className }: UnitSelectProps) {
+export default function UnitSelect({ value, onChange, placeholder = 'Unità', className, extraUnits, id, ariaLabel }: UnitSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const isCustom = value && !PREDEFINED_UNITS.some((u) => u.value === value);
+  const allUnits = useMemo(() => {
+    if (!extraUnits || extraUnits.length === 0) return PREDEFINED_UNITS;
+    // Merge extra units in, avoiding duplicates by value
+    const existingValues = new Set(PREDEFINED_UNITS.map((u) => u.value));
+    return [...PREDEFINED_UNITS, ...extraUnits.filter((u) => !existingValues.has(u.value))];
+  }, [extraUnits]);
+
+  const isCustom = value && !allUnits.some((u) => u.value === value);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return PREDEFINED_UNITS;
-    return PREDEFINED_UNITS.filter((u) => u.label.toLowerCase().includes(q) || u.category.toLowerCase().includes(q));
-  }, [query]);
+    if (!q) return allUnits;
+    return allUnits.filter((u) => u.label.toLowerCase().includes(q) || u.category.toLowerCase().includes(q));
+  }, [query, allUnits]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -50,6 +63,7 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [controlled-reset] resets highlight on query change; safe because setter receives a constant primitive
     setHighlightedIndex(0);
   }, [query, filtered.length]);
 
@@ -57,6 +71,8 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
     <div ref={rootRef} className={cn('relative', className)}>
       <button
         type="button"
+        id={id}
+        aria-label={ariaLabel}
         onClick={() => {
           setIsOpen((prev) => !prev);
           setTimeout(() => inputRef.current?.focus(), 0);
@@ -76,6 +92,7 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              aria-label={ariaLabel ?? 'Cerca unit\u00e0'}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') { setIsOpen(false); setQuery(''); return; }
                 if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedIndex((p) => Math.min(p + 1, Math.max(filtered.length - 1, 0))); }

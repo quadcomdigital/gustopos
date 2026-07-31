@@ -123,14 +123,14 @@ export default function TenantMenuPage() {
 
   useEffect(() => {
     if (!tenantSlug || !getConsumerAccessToken(tenantSlug)) {
-      setConsumerUser(null);
+      setConsumerUser(null); // eslint-disable-line react-hooks/set-state-in-effect -- [async-fetch] reset user when no auth; literal null, no stale-closure risk
       return;
     }
 
     void fetchConsumerMe(tenantSlug)
       .then((user) => {
-        setConsumerUser(user);
-        setAuthError('');
+        setConsumerUser(user);  
+        setAuthError('');  
       })
       .catch(() => {
         setConsumerUser(null);
@@ -172,9 +172,9 @@ export default function TenantMenuPage() {
         ))
         .map((entry) => ({ ...entry, quantity: Math.max(1, Math.floor(entry.quantity)) }));
 
-      setCart(hydrated);
+      setCart(hydrated); // eslint-disable-line react-hooks/set-state-in-effect -- [async-fetch] cart restored from localStorage in async effect
     } catch {
-      setCart([]);
+      setCart([]);  
     }
   }, [tenantSlug]);
 
@@ -428,9 +428,9 @@ export default function TenantMenuPage() {
     if (!tenantSlug || takeawayEnabled) {
       return;
     }
-    setIsCartOpen(false);
-    setCheckoutStep('cart');
-    setCart([]);
+    setIsCartOpen(false); // eslint-disable-line react-hooks/set-state-in-effect -- [literal-reset] reset cart UI state when takeaway mode changes; all values are literals
+    setCheckoutStep('cart');  
+    setCart([]);  
     localStorage.removeItem(cartStorageKey(tenantSlug));
   }, [takeawayEnabled, tenantSlug]);
 

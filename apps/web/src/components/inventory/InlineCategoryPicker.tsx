@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useId } from 'react';
 import { Check, ChevronDown, Plus, Search } from 'lucide-react';
 import type { Category } from '@gustopos/shared';
 import { cn } from '../../lib/utils';
@@ -51,6 +51,7 @@ export default function InlineCategoryPicker({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [controlled-reset] resets highlight on query change; safe because setter receives a constant primitive
     setHighlightedIndex(0);
   }, [query, filtered.length]);
 
@@ -70,11 +71,16 @@ export default function InlineCategoryPicker({
     }
   };
 
+  const autoId = useId();
+  const _labelId = `icp-${autoId}`;
+  const buttonId = `icp-btn-${autoId}`;
+
   return (
     <div ref={rootRef} className={cn('relative', className)}>
-      <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">{label}</label>
+      <label htmlFor={buttonId} className="text-[10px] font-bold uppercase tracking-widest text-text-muted">{label}</label>
       <button
         type="button"
+        id={buttonId}
         onClick={() => {
           setIsOpen((prev) => !prev);
           setTimeout(() => inputRef.current?.focus(), 0);

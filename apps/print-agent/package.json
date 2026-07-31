@@ -1,0 +1,44 @@
+{
+  "name": "@gustopos/print-agent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GustoPOS Print Agent — persistent Electron tray app that bridges print jobs to QZ Tray",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "electron dist/main.js",
+    "dev": "tsc && electron dist/main.js",
+    "lint": "tsc --noEmit",
+    "package:win": "electron-builder --win",
+    "package:mac": "electron-builder --mac",
+    "package:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.8.0"
+  },
+  "build": {
+    "appId": "com.gustopos.print-agent",
+    "productName": "GustoPOS Print Agent",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": null
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}

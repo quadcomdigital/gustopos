@@ -48,11 +48,11 @@ export function PosRoute() {
   const refreshCustomers = useAppStore((s) => s.refreshCustomers);
   const createOrReuseCustomer = useAppStore((s) => s.createOrReuseCustomer);
   const uiSettings = useAppStore((s) => s.uiSettings);
-  const closeTable = useAppStore((s) => s.closeTable);
-  const splitBill = useAppStore((s) => s.splitBill);
-  const paySelectedItems = useAppStore((s) => s.paySelectedItems);
-  const getTablePaymentStatus = useAppStore((s) => s.getTablePaymentStatus);
-  const transferTable = useAppStore((s) => s.transferTable);
+  const _closeTable = useAppStore((s) => s.closeTable);
+  const _splitBill = useAppStore((s) => s.splitBill);
+  const _paySelectedItems = useAppStore((s) => s.paySelectedItems);
+  const _getTablePaymentStatus = useAppStore((s) => s.getTablePaymentStatus);
+  const _transferTable = useAppStore((s) => s.transferTable);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const { selectedTable, setSelectedTable } = useBackofficeContext();
   const navigate = useNavigate();

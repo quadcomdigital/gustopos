@@ -1,6 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { X, ArrowLeft } from 'lucide-react';
-import { cn } from '../../lib/utils';
 import { useCheckoutStore } from '../../store/checkout-store';
 import CheckoutMainView from './CheckoutMainView';
 import SplitBillView from './SplitBillView';

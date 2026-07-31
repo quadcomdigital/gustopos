@@ -17,14 +17,17 @@ export default function Modal({ open, onClose, title, children, footer, size = '
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern avoids stale callbacks in async paths
   onCloseRef.current = onClose;
   const dirtyRef = useRef(dirty);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern avoids stale `dirty` reads in ESC handler
   dirtyRef.current = dirty;
 
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   // Reset confirm state when modal closes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [controlled-reset] resets confirm state when modal closes; setter receives constant primitive, no stale-closure risk
     if (!open) setConfirmDiscard(false);
   }, [open]);
 
@@ -126,7 +129,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
               {children}
             </div>
             {footer && (
-              <div className="flex items-center gap-2 shrink-0 p-4 border-t border-border">
+              <div className="flex items-center justify-end shrink-0 p-4 border-t border-border">
                 {footer}
               </div>
             )}

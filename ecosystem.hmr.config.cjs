@@ -56,6 +56,7 @@ module.exports = {
         PRINT_BRIDGE_AREAS: "kitchen,bar,cashier",
         PRINT_BRIDGE_PRINTERS: "[]",
         PRINT_BRIDGE_SECRET: "9110db1ba224fc20e36555f2b5167159aef6d2479e1a85069c6a4b0aa15d3a19",
+        PRINT_BRIDGE_TENANT_ID: "ten_26ed333e-9dbd-43f7-85b1-fe57054e9e6f",
         PRINT_BRIDGE_HEARTBEAT_MS: "30000",
         PRINT_BRIDGE_CLAIM_MS: "3000",
         PRINT_BRIDGE_CLAIM_BATCH: "10",

@@ -64,7 +64,7 @@ export default function FoodCostMatrixTab({
   matrixData,
   onRefresh,
   onUpdateCell,
-  onImport,
+  onImport: _onImport,
   onImportXlsx,
   onExport,
   isLoading = false,

@@ -11,6 +11,10 @@ interface SearchableSelectProps<T> {
   placeholder?: string;
   emptyText?: string;
   className?: string;
+  /** Forwarded to the root wrapper so a sibling `<label htmlFor={id}>` can reference it. */
+  id?: string;
+  /** Forwarded to the main trigger button for screen-reader announcement. */
+  ariaLabel?: string;
 }
 
 export default function SearchableSelect<T>({
@@ -22,6 +26,8 @@ export default function SearchableSelect<T>({
   placeholder = 'Cerca...',
   emptyText = 'Nessun risultato',
   className,
+  id,
+  ariaLabel,
 }: SearchableSelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -53,6 +59,7 @@ export default function SearchableSelect<T>({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [controlled-reset] resets highlight on query change; safe because setter receives a constant primitive
     setHighlightedIndex(0);
   }, [query, filtered.length]);
 
@@ -60,6 +67,8 @@ export default function SearchableSelect<T>({
     <div ref={rootRef} className={cn('relative', className)}>
       <button
         type="button"
+        id={id}
+        aria-label={ariaLabel}
         onClick={() => {
           setIsOpen((prev) => !prev);
           setTimeout(() => inputRef.current?.focus(), 0);
@@ -79,6 +88,7 @@ export default function SearchableSelect<T>({
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              aria-label={ariaLabel ?? 'Cerca'}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') { setIsOpen(false); setQuery(''); return; }
                 if (e.key === 'ArrowDown') { e.preventDefault(); setHighlightedIndex((p) => Math.min(p + 1, Math.max(filtered.length - 1, 0))); }

@@ -410,6 +410,7 @@ export class AppController {
 
   @Get("customers")
   @Roles("admin", "waiter")
+  @RequiresPermissions("customers:view")
   @RequiresModule("customers")
   listCustomers(@Query() query: Record<string, string | undefined>) {
     const parsed = customersQuerySchema.parse({
@@ -421,6 +422,7 @@ export class AppController {
 
   @Post("customers")
   @Roles("admin", "waiter")
+  @RequiresPermissions("customers:manage")
   @RequiresModule("customers")
   async createOrReuseCustomer(@Body() payload: CustomerCreateRequest): Promise<Customer> {
     const parsed = customerCreateRequestSchema.parse(payload);
@@ -480,6 +482,7 @@ export class AppController {
 
   @Post("reservations")
   @Roles("admin", "waiter")
+  @RequiresPermissions("reservations:manage")
   @RequiresModule("reservations")
   createReservation(@Body() payload: ReservationCreateRequest): Promise<Reservation> {
     const parsed = reservationCreateRequestSchema.parse(payload);
@@ -494,6 +497,7 @@ export class AppController {
 
   @Patch("reservations/:id")
   @Roles("admin", "waiter")
+  @RequiresPermissions("reservations:manage")
   @RequiresModule("reservations")
   async updateReservation(@Param("id") id: string, @Body() payload: ReservationUpdateRequest): Promise<Reservation> {
     const parsed = reservationUpdateRequestSchema.parse(payload);
@@ -510,6 +514,7 @@ export class AppController {
 
   @Post("reservations/:id/confirm")
   @Roles("admin", "waiter")
+  @RequiresPermissions("reservations:manage")
   @RequiresModule("reservations")
   async confirmReservation(@Param("id") id: string): Promise<Reservation> {
     const updated = await this.tablesRepo.updateReservation(id, { status: "confirmed" });
@@ -525,6 +530,7 @@ export class AppController {
 
   @Post("reservations/:id/cancel")
   @Roles("admin", "waiter")
+  @RequiresPermissions("reservations:manage")
   @RequiresModule("reservations")
   async cancelReservation(@Param("id") id: string): Promise<Reservation> {
     const updated = await this.tablesRepo.updateReservation(id, { status: "cancelled" });
@@ -540,6 +546,7 @@ export class AppController {
 
   @Post("reservations/:id/no-show")
   @Roles("admin", "waiter")
+  @RequiresPermissions("reservations:manage")
   @RequiresModule("reservations")
   async markReservationNoShow(
     @Param("id") id: string,
@@ -572,6 +579,7 @@ export class AppController {
 
   @Post("delivery/orders/:orderId/upsert")
   @Roles("admin", "waiter")
+  @RequiresPermissions("delivery:manage")
   @RequiresModule("delivery")
   upsertDeliveryOrder(@Param("orderId") orderId: string, @Body() payload: DeliveryUpsertRequest): Promise<DeliveryOrder> {
     const parsed = deliveryUpsertRequestSchema.parse(payload);
@@ -586,6 +594,7 @@ export class AppController {
 
   @Patch("delivery/orders/:orderId/status")
   @Roles("admin", "waiter", "chef")
+  @RequiresPermissions("delivery:manage")
   @RequiresModule("delivery")
   async updateDeliveryStatus(
     @Param("orderId") orderId: string,
@@ -605,6 +614,7 @@ export class AppController {
 
   @Post("delivery/orders/:orderId/dispatch")
   @Roles("admin", "waiter")
+  @RequiresPermissions("delivery:manage")
   @RequiresModule("delivery")
   async dispatchDeliveryOrder(@Param("orderId") orderId: string): Promise<DeliveryOrder> {
     const updated = await this.tablesRepo.updateDeliveryStatus(orderId, { status: "out_for_delivery" });
@@ -619,6 +629,7 @@ export class AppController {
   }
 
   @Get("purchasing/suppliers")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   listSuppliers(@Query() query: Record<string, string | undefined>): Promise<Supplier[]> {
@@ -631,6 +642,7 @@ export class AppController {
   }
 
   @Post("purchasing/suppliers")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   createSupplier(@Body() payload: SupplierCreateRequest): Promise<Supplier> {
@@ -639,6 +651,7 @@ export class AppController {
   }
 
   @Patch("purchasing/suppliers/:id")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async updateSupplier(@Param("id") id: string, @Body() payload: SupplierUpdateRequest): Promise<Supplier> {
@@ -651,6 +664,7 @@ export class AppController {
   }
 
   @Get("purchasing/suppliers/:supplierId/ingredients")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   listSupplierIngredients(@Param("supplierId") supplierId: string): Promise<SupplierIngredient[]> {
@@ -658,6 +672,7 @@ export class AppController {
   }
 
   @Get("purchasing/ingredients/:ingredientId/suppliers")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   listIngredientSuppliers(@Param("ingredientId") ingredientId: string): Promise<SupplierIngredient[]> {
@@ -665,6 +680,7 @@ export class AppController {
   }
 
   @Post("purchasing/supplier-ingredients")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async createSupplierIngredient(@Body() payload: { supplierId: string; ingredientId: string; brandName?: string; unitCost?: number; isPreferred?: boolean }): Promise<void> {
@@ -672,6 +688,7 @@ export class AppController {
   }
 
   @Patch("purchasing/supplier-ingredients/:supplierId/:ingredientId")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async updateSupplierIngredient(
@@ -683,6 +700,7 @@ export class AppController {
   }
 
   @Delete("purchasing/supplier-ingredients/:supplierId/:ingredientId")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async deleteSupplierIngredient(
@@ -693,6 +711,7 @@ export class AppController {
   }
 
   @Get("purchasing/suppliers/:id/po-items")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   getSupplierPoItems(@Param("id") id: string) {
@@ -700,6 +719,7 @@ export class AppController {
   }
 
   @Get("purchasing/orders")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   listPurchaseOrders(@Query() query: Record<string, string | undefined>): Promise<PurchaseOrder[]> {
@@ -714,6 +734,7 @@ export class AppController {
   }
 
   @Post("purchasing/orders")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   createPurchaseOrder(@Body() payload: PurchaseOrderCreateRequest): Promise<PurchaseOrder> {
@@ -722,6 +743,7 @@ export class AppController {
   }
 
   @Patch("purchasing/orders/:id/status")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async updatePurchaseOrderStatus(
@@ -743,6 +765,7 @@ export class AppController {
   }
 
   @Post("purchasing/orders/:id/receipts")
+  @RequiresPermissions("purchasing:manage")
   @Roles("admin")
   @RequiresModule("purchasing_suppliers")
   async createGoodsReceipt(
@@ -774,6 +797,7 @@ export class AppController {
   }
 
   @Post("shifts")
+  @RequiresPermissions("shifts:manage")
   @Roles("admin")
   @RequiresModule("staff_shifts_timeclock")
   createShift(@Body() payload: ShiftCreateRequest): Promise<Shift> {
@@ -782,6 +806,7 @@ export class AppController {
   }
 
   @Patch("shifts/:id")
+  @RequiresPermissions("shifts:manage")
   @Roles("admin")
   @RequiresModule("staff_shifts_timeclock")
   async updateShift(@Param("id") id: string, @Body() payload: ShiftUpdateRequest): Promise<Shift> {
@@ -936,6 +961,7 @@ export class AppController {
 
   @Get("customers/:id")
   @Roles("admin")
+  @RequiresPermissions("customers:view")
   @RequiresModule("customers")
   async getCustomer(@Param("id") id: string): Promise<Customer> {
     const customer = await this.customerRepo.getCustomerById(id);
@@ -947,6 +973,7 @@ export class AppController {
 
   @Patch("customers/:id")
   @Roles("admin", "waiter")
+  @RequiresPermissions("customers:manage")
   @RequiresModule("customers")
   async updateCustomer(@Param("id") id: string, @Body() payload: CustomerUpdateRequest): Promise<Customer> {
     const parsed = customerUpdateRequestSchema.parse(payload);
@@ -959,6 +986,7 @@ export class AppController {
 
   @Delete("customers/:id")
   @Roles("admin")
+  @RequiresPermissions("customers:manage")
   @RequiresModule("customers")
   async deleteCustomer(@Param("id") id: string) {
     const ok = await this.customerRepo.deleteCustomerById(id);
@@ -970,6 +998,7 @@ export class AppController {
 
   @Get("customers/:id/addresses")
   @Roles("admin", "waiter")
+  @RequiresPermissions("customers:view")
   @RequiresModule("customers")
   async listCustomerAddresses(@Param("id") id: string) {
     const customer = await this.customerRepo.getCustomerById(id);
@@ -981,6 +1010,7 @@ export class AppController {
 
   @Post("customers/:id/addresses")
   @Roles("admin", "waiter")
+  @RequiresPermissions("customers:manage")
   @RequiresModule("customers")
   async createCustomerAddress(@Param("id") id: string, @Body() payload: CustomerAddressCreateRequest) {
     const customer = await this.customerRepo.getCustomerById(id);
@@ -992,6 +1022,7 @@ export class AppController {
 
   @Patch("customers/:id/addresses/:addressId")
   @Roles("admin", "waiter")
+  @RequiresPermissions("customers:manage")
   @RequiresModule("customers")
   async updateCustomerAddress(@Param("id") id: string, @Param("addressId") addressId: string, @Body() payload: CustomerAddressUpdateRequest) {
     const updated = await this.customerRepo.updateCustomerAddress(addressId, payload);
@@ -1003,6 +1034,7 @@ export class AppController {
 
   @Delete("customers/:id/addresses/:addressId")
   @Roles("admin")
+  @RequiresPermissions("customers:manage")
   @RequiresModule("customers")
   async deleteCustomerAddress(@Param("id") id: string, @Param("addressId") addressId: string) {
     const ok = await this.customerRepo.deleteCustomerAddress(addressId);
@@ -1170,6 +1202,7 @@ export class AppController {
   }
 
   @Post("categories")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   createCategory(@Body() payload: CategoryCreateRequest) {
@@ -1186,6 +1219,7 @@ export class AppController {
   }
 
   @Patch("categories/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async updateCategory(@Param("id") id: string, @Body() payload: CategoryUpdateRequest) {
@@ -1215,6 +1249,7 @@ export class AppController {
   }
 
   @Delete("categories/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteCategory(@Param("id") id: string) {
@@ -1240,6 +1275,7 @@ export class AppController {
   }
 
   @Post("category-modifier-pools")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   createCategoryModifierPool(@Body() payload: CategoryModifierPoolCreateRequest) {
@@ -1248,6 +1284,7 @@ export class AppController {
   }
 
   @Patch("category-modifier-pools/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async updateCategoryModifierPool(@Param("id") id: string, @Body() payload: CategoryModifierPoolUpdateRequest) {
@@ -1260,6 +1297,7 @@ export class AppController {
   }
 
   @Delete("category-modifier-pools/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteCategoryModifierPool(@Param("id") id: string) {
@@ -1389,6 +1427,7 @@ export class AppController {
   }
 
   @Post("inventory")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async createInventoryItem(@Body() payload: IngredientCreateRequest) {
@@ -1400,6 +1439,7 @@ export class AppController {
   }
 
   @Patch("inventory/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async updateInventoryItem(@Param("id") id: string, @Body() payload: IngredientUpdateRequest) {
@@ -1414,6 +1454,7 @@ export class AppController {
   }
 
   @Delete("inventory/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteInventoryItem(@Param("id") id: string) {
@@ -1434,6 +1475,7 @@ export class AppController {
   }
 
   @Post("inventory/:id/adjust")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async adjustInventoryItem(
@@ -1539,6 +1581,7 @@ export class AppController {
   }
 
   @Post("menu")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   createMenuItem(@Body() payload: MenuItemCreateRequest) {
@@ -1549,6 +1592,7 @@ export class AppController {
   }
 
   @Patch("menu/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async updateMenuItem(@Param("id") id: string, @Body() payload: MenuItemUpdateRequest) {
@@ -1576,6 +1620,7 @@ export class AppController {
   }
 
   @Post("menu/:id/recipe")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async replaceMenuRecipe(@Param("id") id: string, @Body() payload: MenuItemReplaceRecipeRequest) {
@@ -1594,6 +1639,7 @@ export class AppController {
   }
 
   @Post("menu/:id/recipe/add")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async addMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) {
@@ -1611,6 +1657,7 @@ export class AppController {
   }
 
   @Post("menu/:id/recipe/remove")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async removeMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) {
@@ -1628,6 +1675,7 @@ export class AppController {
   }
 
   @Post("menu/:id/enable")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async enableMenuItem(@Param("id") id: string) {
@@ -1640,6 +1688,7 @@ export class AppController {
   }
 
   @Post("menu/:id/disable")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async disableMenuItem(@Param("id") id: string) {
@@ -1652,6 +1701,7 @@ export class AppController {
   }
 
   @Delete("menu/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteMenuItem(@Param("id") id: string) {
@@ -1994,7 +2044,25 @@ export class AppController {
 
   // ─── Loyalty Points ─────────────────────────────────────────────────────
 
+  @Get("loyalty/config")
+  @Roles("admin", "waiter")
+  @RequiresModule("loyalty_points")
+  async getLoyaltyConfig(@Req() request: AuthenticatedRequest) {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+    const config = await this.tenantService.getTenantModuleConfig(tenantId, "loyalty_points" as ModuleKey);
+    const loyaltyConfig = (config?.config ?? {}) as Record<string, unknown>;
+    return {
+      earnRate: typeof loyaltyConfig.earnRate === "number" ? loyaltyConfig.earnRate : 1,
+      redeemRate: typeof loyaltyConfig.redeemRate === "number" ? loyaltyConfig.redeemRate : 100,
+      minRedeemPoints: typeof loyaltyConfig.minRedeemPoints === "number" ? loyaltyConfig.minRedeemPoints : 100,
+    };
+  }
+
   @Get("loyalty/:customerId")
+  @RequiresPermissions("loyalty:manage")
   @Roles("admin", "waiter")
   @RequiresModule("loyalty_points")
   async getLoyaltyBalance(@Param("customerId") customerId: string): Promise<LoyaltyBalance> {
@@ -2002,6 +2070,7 @@ export class AppController {
   }
 
   @Post("loyalty/earn")
+  @RequiresPermissions("loyalty:manage")
   @Roles("admin")
   @RequiresModule("loyalty_points")
   async earnLoyaltyPoints(@Body() payload: LoyaltyEarnRequest): Promise<LoyaltyTransaction> {
@@ -2010,6 +2079,7 @@ export class AppController {
   }
 
   @Post("loyalty/redeem")
+  @RequiresPermissions("loyalty:manage")
   @Roles("admin", "waiter")
   @RequiresModule("loyalty_points")
   async redeemLoyaltyPoints(@Body() payload: LoyaltyRedeemRequest): Promise<LoyaltyTransaction> {
@@ -2018,6 +2088,7 @@ export class AppController {
   }
 
   @Get("loyalty/:customerId/transactions")
+  @RequiresPermissions("loyalty:manage")
   @Roles("admin", "waiter")
   @RequiresModule("loyalty_points")
   async listLoyaltyTransactions(
@@ -2394,6 +2465,7 @@ export class AppController {
   }
 
   @Post("prep-items")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async createPrepItem(@Body() payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) {
@@ -2408,6 +2480,7 @@ export class AppController {
   }
 
   @Patch("prep-items/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async updatePrepItem(@Param("id") id: string, @Body() payload: { name?: string; quantityPerUnit?: number; unit?: string }) {
@@ -2420,6 +2493,7 @@ export class AppController {
   }
 
   @Delete("prep-items/:id")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deletePrepItem(@Param("id") id: string) {
@@ -2428,6 +2502,7 @@ export class AppController {
   }
 
   @Post("prep-items/:id/prepare")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async preparePrepItem(@Param("id") id: string, @Body() payload: { quantity: number }) {
@@ -2449,6 +2524,7 @@ export class AppController {
   }
 
   @Post("inventory/:id/conversions")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async createUnitConversion(@Param("id") id: string, @Body() payload: { fromUnit: string; toUnit: string; factor: number }) {
@@ -2463,6 +2539,7 @@ export class AppController {
   // ─── Food Cost Matrix ─────────────────────────────────────────────────
 
   @Get("food-cost-matrix")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async getFoodCostMatrix() {
@@ -2470,6 +2547,7 @@ export class AppController {
   }
 
   @Patch("food-cost-matrix/cell")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async updateFoodCostMatrixCell(
@@ -2485,6 +2563,7 @@ export class AppController {
   }
 
   @Post("food-cost-matrix/import")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async importFoodCostMatrix(
@@ -2494,6 +2573,7 @@ export class AppController {
   }
 
   @Post("food-cost-matrix/import-full")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async importFoodCostFull(
@@ -2506,6 +2586,7 @@ export class AppController {
   }
 
   @Post("food-cost-matrix/import-xlsx")
+  @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async importFoodCostXlsx(

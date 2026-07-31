@@ -40,6 +40,13 @@ In alternativa puoi avviare database e redis con Docker Compose:
 - `npm run db:generate --workspace @gustopos/api` - genera nuove migrazioni Drizzle
 - `npm run db:migrate --workspace @gustopos/api` - applica migrazioni su PostgreSQL
 
+## Print Agent (Go)
+
+- codice sorgente: `apps/print-agent-go/` (vedi `apps/print-agent-go/README.md`)
+- download pubblici dei binari (Windows / Linux / macOS): **`/downloads/`** sul deployment web
+- release e versioning: vedi `apps/print-agent-go/RELEASING.md`
+- per pubblicare una nuova versione: `make linux windows darwin && make publish-downloads` (poi rebuild + deploy web)
+
 ## Sicurezza API
 
 - `GET /api/auth/staff`, `POST /api/auth/login` e `POST /api/auth/refresh` sono pubblici

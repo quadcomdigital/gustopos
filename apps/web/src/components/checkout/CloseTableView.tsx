@@ -7,7 +7,7 @@ import ConfirmDialog from '../ConfirmDialog';
 import { trackUxMetric } from '../../shared/ux/metrics';
 
 export default function CloseTableView() {
-  const { tableId, paymentStatus, closeMethod, paidAmount, discountAmount, surchargeAmount, gatewayReference, setCloseMethod, setPaidAmount, setDiscountAmount, setSurchargeAmount, setGatewayReference, closeTable, busy, error } = useCheckoutStore();
+  const { tableId, paymentStatus, closeMethod, paidAmount, gatewayReference, setCloseMethod, setPaidAmount, setGatewayReference, closeTable, busy, error } = useCheckoutStore();
   const [showConfirm, setShowConfirm] = useState(false);
 
   const handlePay = async () => {
@@ -20,7 +20,7 @@ export default function CloseTableView() {
   const isFullyPaid = paymentStatus != null && remainingAmount <= 0;
 
   return (
-    <div className="p-3 sm:p-4 space-y-4">
+    <form onSubmit={(e) => { e.preventDefault(); setShowConfirm(true); }} className="p-3 sm:p-4 space-y-4">
       {isFullyPaid && (
         <div className="flex items-center justify-center gap-2 p-4 rounded-lg bg-green-50 border border-green-200">
           <CheckCircle size={20} className="text-green-600 shrink-0" />
@@ -95,7 +95,7 @@ export default function CloseTableView() {
           {error && <p className="text-sm text-danger text-center font-semibold">{error}</p>}
 
           <button
-            onClick={() => setShowConfirm(true)}
+            type="submit"
             disabled={busy || ((closeMethod === 'card' || closeMethod === 'mixed') && gatewayReference.trim().length < 3)}
             className="w-full py-3 min-h-[44px] rounded bg-success text-white text-sm font-bold uppercase tracking-wider disabled:opacity-50"
           >
@@ -115,6 +115,6 @@ export default function CloseTableView() {
         }}
         onCancel={() => setShowConfirm(false)}
       />
-    </div>
+    </form>
   );
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { PurchaseOrder, PurchaseOrderStatus, Supplier, SupplierIngredient } from '@gustopos/shared';
+import type { PurchaseOrder, PurchaseOrderStatus, SupplierIngredient } from '@gustopos/shared';
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
 import ConfirmDialog from './ConfirmDialog';
@@ -71,7 +71,7 @@ export default function PurchasingView() {
 
   useEffect(() => {
     if (!selectedSupplierId && suppliers.length > 0) {
-      setSelectedSupplierId(suppliers[0].id);
+      setSelectedSupplierId(suppliers[0].id); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] default supplier selection on load; safe because setter receives a primitive string
     }
   }, [selectedSupplierId, suppliers]);
 
@@ -92,12 +92,13 @@ export default function PurchasingView() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] loadSupplierIngredients calls store set() internally via async callback
     void loadSupplierIngredients(selectedSupplierId);
   }, [selectedSupplierId, loadSupplierIngredients]);
 
   useEffect(() => {
     if (!selectedSupplierId) {
-      setPoItems([]);
+      setPoItems([]); // eslint-disable-line react-hooks/set-state-in-effect -- [literal-reset] reset to empty array when no supplier selected; safe because setter receives a literal []
       return;
     }
     let cancelled = false;

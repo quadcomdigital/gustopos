@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
+import { WebSocketServer, WebSocket } from "ws";
 
 const app = express();
 
@@ -47,6 +48,14 @@ const spoolDir = ensureSpoolDirSync(
 );
 const printBridgeSecret = process.env.PRINT_BRIDGE_SECRET?.trim();
 
+// ─── Print-bridge tenant ID (multi-tenant support) ───────────────────────────
+// When using the legacy env-var auth (PRINT_BRIDGE_SECRET), the API needs to know
+// which tenant this bridge belongs to. If PRINT_BRIDGE_TENANT_ID is not set,
+// the API falls back to DEFAULT_TENANT_ID / "tenant_legacy".
+// Bridges onboarded via the onboarding-secret flow already resolve the tenant
+// automatically and do not need this variable.
+const BRIDGE_TENANT_ID = process.env.PRINT_BRIDGE_TENANT_ID?.trim() || '';
+
 // ─── Print-bridge lifecycle (client side) ────────────────────────────────────
 
 const API_URL = (process.env.API_URL ?? '').replace(/\/$/, '');
@@ -76,6 +85,9 @@ async function bridgeApi(pathname: string, init?: RequestInit): Promise<any> {
   };
   if (printBridgeSecret) {
     headers['X-Print-Bridge-Key'] = printBridgeSecret;
+  }
+  if (BRIDGE_TENANT_ID) {
+    headers['X-Bridge-Tenant-Id'] = BRIDGE_TENANT_ID;
   }
   const res = await fetch(url, { ...init, headers });
   const text = await res.text();
@@ -113,14 +125,22 @@ async function sendHeartbeat(): Promise<void> {
   }
 }
 
-async function drivePrinterJob(job: { id: string; orderId: string; area: string; protocol: string; payload: string }): Promise<void> {
-  // Existing spool-to-disk behavior. A separate PR will wire this to a real printer driver.
+async function drivePrinterJob(job: { id: string; orderId: string; area: string; protocol: string; payload: string }): Promise<boolean> {
+  // Push to connected agents (Electron app on POS machines).
+  // Returns true if at least one agent received the job.
+  if (broadcastToAgents(job)) {
+    console.log(`[print-bridge] pushed job ${job.id} to agent(s)`);
+    return true;
+  }
+
+  // No agent connected — fall back to spool.
   const safeArea = job.area.replace(/[^a-z0-9_-]/gi, '_');
   const fileName = `${Date.now()}_${safeArea}_${job.id}.escpos`;
   const filePath = path.resolve(spoolDir, safeArea, fileName);
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   await fs.promises.writeFile(filePath, Buffer.from(job.payload, 'base64'));
-  console.log(`[print-bridge] claimed job ${job.id} → ${filePath}`);
+  console.log(`[print-bridge] spooled job ${job.id} → ${filePath}`);
+  return false;
 }
 
 async function claimAndProcess(): Promise<void> {
@@ -137,11 +157,15 @@ async function claimAndProcess(): Promise<void> {
   }
   for (const job of jobs) {
     try {
-      await drivePrinterJob(job);
-      await bridgeApi(`/api/print-bridge/jobs/${job.id}/complete`, {
-        method: 'POST',
-        body: JSON.stringify({ bridgeId: BRIDGE_ID }),
-      });
+      const pushed = await drivePrinterJob(job);
+      // If pushed to an agent, the agent will confirm completion via job_done message.
+      // If spooled to disk, mark complete immediately.
+      if (!pushed) {
+        await bridgeApi(`/api/print-bridge/jobs/${job.id}/complete`, {
+          method: 'POST',
+          body: JSON.stringify({ bridgeId: BRIDGE_ID }),
+        });
+      }
     } catch (err) {
       const msg = (err as Error).message ?? 'drive failed';
       console.error(`[print-bridge] job ${job.id} failed: ${msg}`);
@@ -160,6 +184,22 @@ async function claimAndProcess(): Promise<void> {
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let claimTimer: ReturnType<typeof setInterval> | null = null;
 
+// ─── WebSocket agent connections ─────────────────────────────────────────
+// Agents (Electron app on POS machines) connect here to receive print jobs
+// pushed from the bridge. Each agent authenticates with the shared bridge secret.
+const agents = new Map<string, { ws: WebSocket; bridgeId: string }>();
+
+function broadcastToAgents(job: { id: string; orderId: string; area: string; protocol: string; payload: string }): boolean {
+  let pushed = false;
+  agents.forEach((agent) => {
+    if (agent.ws.readyState === WebSocket.OPEN) {
+      agent.ws.send(JSON.stringify({ type: "job", ...job }));
+      pushed = true;
+    }
+  });
+  return pushed;
+}
+
 function startBridgeLifecycle(): void {
   if (!API_URL) {
     console.log('[print-bridge] API_URL not set; skipping bridge lifecycle (signing endpoints still active)');
@@ -173,7 +213,7 @@ function startBridgeLifecycle(): void {
     console.log('[print-bridge] PRINT_BRIDGE_AREAS empty; skipping bridge lifecycle');
     return;
   }
-  console.log(`[print-bridge] starting lifecycle as bridge=${BRIDGE_ID} areas=${BRIDGE_AREAS.join(',')}`);
+  console.log(`[print-bridge] starting lifecycle as bridge=${BRIDGE_ID} tenant=${BRIDGE_TENANT_ID || '(not set)'} areas=${BRIDGE_AREAS.join(',')}`);
   void sendHeartbeat();
   void claimAndProcess();
   heartbeatTimer = setInterval(() => { void sendHeartbeat(); }, HEARTBEAT_INTERVAL_MS);
@@ -220,6 +260,19 @@ function authMiddleware(req: express.Request, res: express.Response, next: expre
 }
 
 // QZ Tray signing endpoints
+// CORS: the POS browser (BridgeWorker) fetches the certificate + signs
+// messages cross-origin from the API origin to this local print-bridge.
+app.use("/signing", (_req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (_req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 const CERTS_DIR = path.resolve(__dirname, "..", "certs");
 const PRIVATE_KEY_PATH = path.join(CERTS_DIR, "private-key.pem");
 const CERT_PATH = path.join(CERTS_DIR, "digital-certificate.pem");
@@ -248,6 +301,18 @@ function getCerts() {
     throw err;
   }
 }
+
+// Serve the private key (authenticated — only the agent should have this)
+app.get("/signing/private-key.pem", authMiddleware, (_req, res) => {
+  try {
+    const { key } = getCerts();
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.send(key);
+  } catch {
+    res.status(500).send("Private key not found");
+  }
+});
 
 // Serve the public certificate
 app.get("/signing/digital-certificate.txt", (_req, res) => {
@@ -538,11 +603,102 @@ export { app, ensureSpoolDirSync, authMiddleware, setCorsHeaders };
 if (require.main === module) {
   const server = createServer(app);
 
-  startBridgeLifecycle();
-  server.listen(port, "127.0.0.1", () => {
-    // eslint-disable-next-line no-console
-    console.log(`[print-bridge] listening on 127.0.0.1:${port}`);
+  // ─── WebSocket server for agent connections ──────────────────────────
+  const wss = new WebSocketServer({ server, path: "/agent" });
+
+  wss.on("connection", (ws) => {
+    let agentBridgeId: string | null = null;
+
+    ws.on("message", async (raw) => {
+      let msg: { type: string; bridgeId?: string; secret?: string; id?: string; error?: string };
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        ws.send(JSON.stringify({ type: "error", error: "Invalid JSON" }));
+        return;
+      }
+
+      switch (msg.type) {
+        case "auth": {
+          if (!printBridgeSecret || msg.secret !== printBridgeSecret) {
+            ws.send(JSON.stringify({ type: "auth_error", error: "Invalid secret" }));
+            ws.close();
+            return;
+          }
+          agentBridgeId = msg.bridgeId ?? BRIDGE_ID;
+          agents.set(agentBridgeId, { ws, bridgeId: agentBridgeId });
+          console.log(`[print-bridge] agent connected: bridgeId=${agentBridgeId}`);
+          ws.send(JSON.stringify({ type: "auth_ok" }));
+          break;
+        }
+        case "job_done": {
+          if (!agentBridgeId || !msg.id) break;
+          console.log(`[print-bridge] agent confirmed job ${msg.id}`);
+          try {
+            await bridgeApi(`/api/print-bridge/jobs/${msg.id}/complete`, {
+              method: "POST",
+              body: JSON.stringify({ bridgeId: agentBridgeId }),
+            });
+            ws.send(JSON.stringify({ type: "job_done_ack", id: msg.id }));
+          } catch (err) {
+            console.error(`[print-bridge] failed to mark job ${msg.id} complete: ${(err as Error).message}`);
+            ws.send(JSON.stringify({ type: "job_done_ack", id: msg.id, error: (err as Error).message }));
+          }
+          break;
+        }
+        case "job_failed": {
+          if (!agentBridgeId || !msg.id) break;
+          const errMsg = msg.error ?? "agent reported failure";
+          console.error(`[print-bridge] agent reported job ${msg.id} failed: ${errMsg}`);
+          try {
+            await bridgeApi(`/api/print-bridge/jobs/${msg.id}/fail`, {
+              method: "POST",
+              body: JSON.stringify({ bridgeId: agentBridgeId, error: errMsg }),
+            });
+            ws.send(JSON.stringify({ type: "job_failed_ack", id: msg.id }));
+          } catch (err) {
+            console.error(`[print-bridge] failed to report failure for ${msg.id}: ${(err as Error).message}`);
+            ws.send(JSON.stringify({ type: "job_failed_ack", id: msg.id, error: (err as Error).message }));
+          }
+          break;
+        }
+        default:
+          console.warn(`[print-bridge] unknown agent message type: ${msg.type}`);
+      }
+    });
+
+    ws.on("close", () => {
+      if (agentBridgeId) {
+        agents.delete(agentBridgeId);
+        console.log(`[print-bridge] agent disconnected: bridgeId=${agentBridgeId}`);
+      }
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[print-bridge] agent WebSocket error: ${err.message}`);
+    });
   });
+
+  const bindAddress = process.env.PRINT_BRIDGE_BIND ?? "127.0.0.1";
+
+  startBridgeLifecycle();
+  server.listen(port, bindAddress, () => {
+    // eslint-disable-next-line no-console
+    console.log(`[print-bridge] listening on ${bindAddress}:${port}`);
+    console.log(`[print-bridge] agent WebSocket at ws://${bindAddress}:${port}/agent`);
+  });
+
+  // Periodic ping to detect stale agent connections (NAT/firewall timeouts)
+  const PING_INTERVAL_MS = 30_000;
+  setInterval(() => {
+    agents.forEach((agent, bridgeId) => {
+      if (agent.ws.readyState === WebSocket.OPEN) {
+        agent.ws.ping();
+      } else {
+        agents.delete(bridgeId);
+      }
+    });
+  }, PING_INTERVAL_MS);
 
   // Graceful shutdown
   function gracefulShutdown(signal: string): void {

@@ -22,7 +22,7 @@ export function useWakeLock(enabled: boolean): { supported: boolean } {
         sentinel = await navigator.wakeLock.request("screen");
       } catch (err) {
         // Suppress: user denial or browser policy. Don't surface to UI.
-        // eslint-disable-next-line no-console
+         
         console.warn("[wakeLock] acquire failed:", err);
       }
     };

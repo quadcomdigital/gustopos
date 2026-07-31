@@ -10,6 +10,7 @@
     "dev": "concurrently -n api,web,print-bridge -c cyan,magenta,yellow \"npm run dev --workspace @gustopos/api\" \"npm run dev --workspace @gustopos/web\" \"npm run dev --workspace @gustopos/print-bridge\"",
     "build": "npm run build --workspace @gustopos/shared && npm run build --workspace @gustopos/api && npm run build --workspace @gustopos/web && npm run build --workspace @gustopos/print-bridge",
     "lint": "npm run lint --workspaces",
+    "lint:eslint": "npm run lint:eslint --workspace @gustopos/web",
     "start": "concurrently -n api,web,print-bridge -c cyan,magenta,yellow \"npm run start --workspace @gustopos/api\" \"npm run preview --workspace @gustopos/web\" \"npm run start --workspace @gustopos/print-bridge\"",
     "clean": "rm -rf apps/web/dist apps/api/dist apps/print-bridge/dist packages/shared/dist"
   },

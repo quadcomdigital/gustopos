@@ -3,12 +3,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import LoginView from '../../components/LoginView';
 import BackofficeShell from './BackofficeShell';
 import { BackofficeContextProvider } from './BackofficeContext';
-import QzTrayWorker from '../../components/QzTrayWorker';
 import {
   type BackofficeRouteKey,
   getAccessibleRoutes,
   getDefaultRoute,
-  getRouteByKey,
   getRouteByPath,
   getTenantRoutePath,
   resolveTenantSlugFromPath,
@@ -39,7 +37,7 @@ export default function BackofficeEntry() {
   const orderHistory = useAppStore((s) => s.orderHistory);
   const uiSettings = useAppStore((s) => s.uiSettings);
 
-  const { isOnline, now } = useBackofficeSessionLifecycle({
+  const { isOnline } = useBackofficeSessionLifecycle({
     currentUser,
     hydrate,
     syncSessionModules,
@@ -120,13 +118,11 @@ export default function BackofficeEntry() {
           refreshOperationalSummaries,
         }}
       >
-        <BridgeWorker />
       <BackofficeShell
           uiBrandName={uiSettings?.brandName ?? ''}
           userName={currentUser.name}
           userTenantId={currentUser.tenantId}
           isOnline={isOnline}
-          now={now}
           offlineQueueCount={offlineQueue.length}
           hasImpersonationSnapshot={hasImpersonationSnapshot}
           onExitImpersonation={() => void exitImpersonation()}
@@ -182,16 +178,15 @@ export default function BackofficeEntry() {
         refreshOperationalSummaries,
       }}
     >
-      {/* Background worker for QZ Tray printing — only when printing module enabled */}
-      {effectiveModules.includes('printing') && <QzTrayWorker />}
-
+      {/* Browser-side printing is handled by the print-bridge BridgeWorker.
+          The standalone print-bridge server (port 11905) and the manual
+          Dispatch flow in Settings still operate independently. */}
       <BridgeWorker />
       <BackofficeShell
         uiBrandName={uiSettings.brandName}
         userName={currentUser.name}
         userTenantId={currentUser.tenantId}
         isOnline={isOnline}
-        now={now}
         offlineQueueCount={offlineQueue.length}
         hasImpersonationSnapshot={hasImpersonationSnapshot}
         onExitImpersonation={() => void exitImpersonation()}

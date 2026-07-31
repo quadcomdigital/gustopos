@@ -1,12 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
 import type { Category, Ingredient, BomItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
-import { Plus, Trash2, Loader2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
+import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import Button from '../../../shared/ui/atoms/Button';
 import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
 import InlineCategoryPicker from '../InlineCategoryPicker';
 import ModifierGroupsEditor from '../ModifierGroupsEditor';
-import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
+import FormField from '../../../shared/ui/molecules/FormField';
+import { required, minLength, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
 
 const PRINT_AREA_LABELS: Record<string, string> = { kitchen: 'Cucina', bar: 'Bar', cashier: 'Cassa' };
 
@@ -36,7 +38,7 @@ interface VariableProductModalProps {
 let variantSeq = 0;
 
 export default function VariableProductModal({
-  open, onClose, onSuccess, categories, inventory, bomItems, categoryModifierPools = [], onCreateCategory, onCreateMenuItem, onUpdateMenuItem, editItem,
+  open, onClose, onSuccess, categories, inventory, bomItems: _bomItems, categoryModifierPools = [], onCreateCategory, onCreateMenuItem, onUpdateMenuItem, editItem,
 }: VariableProductModalProps) {
   const isEdit = !!editItem;
   const [name, setName] = useState('');
@@ -54,6 +56,7 @@ export default function VariableProductModal({
 
   useEffect(() => {
     if (editItem && open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] initializes form fields from editItem prop on modal open
       setName(editItem.name);
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
@@ -149,24 +152,21 @@ export default function VariableProductModal({
       title={isEdit ? `Modifica: ${editItem?.name}` : 'Prodotto variabile'}
       size="lg" dirty={!!name || variants.length > 0}
       footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>Annulla</Button>
-          <Button variant="primary" onClick={() => void handleSave()} disabled={saving}>
-            {saving && <Loader2 size={14} className="animate-spin mr-1" />}
-            {saving ? 'Salvataggio...' : isEdit ? 'Salva' : 'Crea prodotto'}
-          </Button>
-        </>
+        <SaveFooter
+          onCancel={onClose}
+          onSave={() => void handleSave()}
+          saving={saving}
+          label={isEdit ? 'Salva' : 'Crea prodotto'}
+        />
       }
     >
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Nome</label>
+          <FormField label="Nome" error={errors.name?.message}>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome prodotto" className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.name)}`} />
-            {errors.name && <p className="text-[9px] text-danger mt-0.5">{errors.name.message}</p>}
-          </div>
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Categoria</label>
+          </FormField>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Categoria</label>
             <InlineCategoryPicker
               categories={menuCategories} selectedId={categoryId}
               onSelect={(id) => { setCategoryId(id); const c = menuCategories.find((cat) => cat.id === id); if (c) setCategoryName(c.name); }}

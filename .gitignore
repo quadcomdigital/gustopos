@@ -13,3 +13,10 @@ coverage/
 /anydesk.deb
 /BUILD_HASHES.txt
 /PLAN-*.md
+
+# Print-agent release artifacts (generated — publish via make publish-downloads):
+/apps/print-agent-go/bin/
+/apps/web/public/downloads/
+
+# Graphify analysis output (regenerated tooling artifacts):
+/graphify-out/

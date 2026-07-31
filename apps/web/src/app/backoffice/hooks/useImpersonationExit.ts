@@ -3,7 +3,6 @@ import { pushToast } from '../../../shared/ui/toast';
 import { logger } from '../../../lib/logger';
 import {
   getImpersonationSnapshot,
-  clearImpersonationSnapshot,
 } from '../../../shared/auth/impersonation-snapshot';
 
 interface UseImpersonationExitParams {

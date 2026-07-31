@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useAppStore } from "../../store/app-store";
+import { authorizedFetch, API_URL } from "../../shared/api/client";
+import { loadQzScript, getQzConfig, connectAndDiscover } from "../../shared/qz-tray";
 import { useWakeLock } from "../../hooks/useWakeLock";
 import type { LocalBridgeConfig, PrintJob } from "@gustopos/shared";
 
@@ -29,7 +31,6 @@ export default function BridgeWorker() {
   const instanceIdRef = useRef<string>(crypto.randomUUID());
   const workerRef = useRef<Worker | null>(null);
   const qzRef = useRef<any>(null);
-  const qzConfigRef = useRef<{ host: string; port: number; secure: boolean } | null>(null);
   const authTokenRef = useRef<string | undefined>(authToken);
   const isLeaderRef = useRef<boolean>(false);
   const configRef = useRef<LocalBridgeConfig | null>(config);
@@ -119,7 +120,7 @@ export default function BridgeWorker() {
         // thread alive even when the tab is backgrounded.
       };
       w.onerror = (err) => {
-        // eslint-disable-next-line no-console
+         
         console.warn("[BridgeWorker] keepalive worker error:", err);
       };
       w.postMessage({ type: "START", ms: 2000 });
@@ -134,7 +135,7 @@ export default function BridgeWorker() {
         if (workerRef.current === w) workerRef.current = null;
       };
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.warn("[BridgeWorker] keepalive worker boot failed:", err);
     }
   }, [enabled, config?.enableKeepaliveWorker]);
@@ -148,22 +149,9 @@ export default function BridgeWorker() {
       try {
         // Fetch tenant-specific QZ config first.
         abortController = new AbortController();
-        const cfgRes = await fetch("/api/printing/qz-config", {
-          headers: { Authorization: `Bearer ${authTokenRef.current ?? ""}` },
-          signal: abortController.signal,
-        });
-        if (cfgRes.ok) {
-          const body = (await cfgRes.json()) as {
-            qzTray: { hosts: string[]; securePorts: number[]; insecurePorts: number[]; useSecure: boolean };
-          };
-          const host = (body.qzTray?.hosts ?? ["localhost", "127.0.0.1"])[0];
-          const ports = body.qzTray?.useSecure ? body.qzTray?.securePorts ?? [8181] : body.qzTray?.insecurePorts ?? [8182];
-          qzConfigRef.current = { host, port: ports[0] ?? 8182, secure: Boolean(body.qzTray?.useSecure) };
-        } else {
-          qzConfigRef.current = { host: "localhost", port: 8182, secure: false };
-        }
+        const qzConfig = await getQzConfig();
         if (cancelled) return;
-        await loadQzLibraryIfNeeded();
+        await loadQzScript();
         if (cancelled) return;
         const qz = (window as any).qz;
         qzRef.current = qz;
@@ -177,10 +165,7 @@ export default function BridgeWorker() {
         } catch {
           /* some qz builds don't expose setters */
         }
-        if (!qz.websocket.isConnected()) {
-          const cfg = qzConfigRef.current;
-          await qz.websocket.connect({ host: cfg.host, port: cfg.port, secure: cfg.secure });
-        }
+        await connectAndDiscover(qzConfig);
         if (!cancelled) setLocalBridgeActive?.(true);
       } catch (err) {
         if (!cancelled) {
@@ -205,11 +190,22 @@ export default function BridgeWorker() {
       try {
         const host = typeof window !== "undefined" ? window.location.hostname : "browser";
         const printers = await safeListPrinters(qzRef.current);
-        const res = await fetch("/api/print-bridge/heartbeat", {
+        // Include network printers configured as IP:port so they show up in the
+        // bridge pool heartbeat (not discoverable via QZ printers.find()).
+        // Dedupe by name to avoid collisions with QZ-discovered drivers.
+        const known = new Set(printers.map((p) => p.name));
+        for (const m of configRef.current?.printersPerArea ?? []) {
+          if (m.ip) {
+            const name = m.printerName || m.ip;
+            if (known.has(name)) continue;
+            known.add(name);
+            printers.push({ area: m.area ?? null, name, ip: m.ip, port: m.port ?? null });
+          }
+        }
+        const res = await authorizedFetch(`${API_URL}/api/print-bridge/heartbeat`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${authTokenRef.current ?? ""}`,
             "x-bridge-instance-id": instanceIdRef.current,
           },
           body: JSON.stringify({
@@ -240,11 +236,10 @@ export default function BridgeWorker() {
       if (!isLeaderRef.current) return;
       const ctrl = new AbortController();
       try {
-        const res = await fetch("/api/print-bridge/claim", {
+        const res = await authorizedFetch(`${API_URL}/api/print-bridge/claim`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${authTokenRef.current ?? ""}`,
             "x-bridge-instance-id": instanceIdRef.current,
           },
           body: JSON.stringify({ bridgeId: configRef.current?.bridgeId, limit: 5 }),
@@ -261,7 +256,6 @@ export default function BridgeWorker() {
             configRef.current as LocalBridgeConfig,
             qzRef.current,
             instanceIdRef.current,
-            authTokenRef.current,
             setLocalBridgeLastError,
           );
         }
@@ -279,30 +273,6 @@ export default function BridgeWorker() {
 
 // ─── Helpers (module-scope) ──────────────────────────────────────────
 
-async function loadQzLibraryIfNeeded(): Promise<void> {
-  if (typeof window === "undefined") return;
-  if ((window as any).qz) return;
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>("script[data-qz]");
-    if (existing) {
-      const w = window as any;
-      if (w.qz) {
-        resolve();
-        return;
-      }
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error("qz script load error")));
-      return;
-    }
-    const s = document.createElement("script");
-    s.src = "/qz-tray.js";
-    s.dataset.qz = "1";
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("qz script load error"));
-    document.head.appendChild(s);
-  });
-}
-
 async function safeListPrinters(qz: any): Promise<Array<{ area?: string | null; name: string; ip: string | null; port: number | null }>> {
   if (!qz?.printers?.find) return [];
   try {
@@ -318,28 +288,36 @@ async function printAndComplete(
   config: LocalBridgeConfig,
   qz: any,
   instanceId: string,
-  authToken: string | undefined,
   setLocalBridgeLastError?: (msg: string | null) => void,
 ): Promise<void> {
   const mapping = config.printersPerArea?.find((m) => m.area === (job.area as any));
   const printerName = mapping?.printerName;
-  if (!printerName || !qz?.print || !qz?.configs?.create) {
-    await failJobApi(job, config, instanceId, authToken, "no-printer-mapped", setLocalBridgeLastError);
+  const printerIp = mapping?.ip;
+  const printerPort = mapping?.port;
+  // Network printers are addressed by IP:port; local drivers by name.
+  const printerIdentifier = printerIp || printerName;
+  if (!printerIdentifier || !qz?.print || !qz?.configs?.create) {
+    await failJobApi(job, config, instanceId, "no-printer-mapped", setLocalBridgeLastError);
     return;
   }
   try {
-    const cfg = qz.configs.create(printerName);
+    const configOptions: Record<string, unknown> = {};
+    if (printerIp && printerPort) {
+      configOptions.port = printerPort;
+    }
+    const cfg = qz.configs.create(printerIdentifier, configOptions);
     await qz.print(cfg, [
       {
         type: "raw",
         format: "command",
+        flavor: "base64",
         data: job.payload,
         options: { language: job.protocol ?? "escpos" },
       },
     ]);
-    await completeJobApi(job, config, instanceId, authToken);
+    await completeJobApi(job, config, instanceId);
   } catch (err) {
-    await failJobApi(job, config, instanceId, authToken, safeStr(err), setLocalBridgeLastError);
+    await failJobApi(job, config, instanceId, safeStr(err), setLocalBridgeLastError);
   }
 }
 
@@ -347,13 +325,11 @@ async function completeJobApi(
   job: PrintJob,
   config: LocalBridgeConfig,
   instanceId: string,
-  authToken: string | undefined,
 ): Promise<void> {
-  await fetch(`/api/print-bridge/jobs/${encodeURIComponent(job.id)}/complete`, {
+  await authorizedFetch(`${API_URL}/api/print-bridge/jobs/${encodeURIComponent(job.id)}/complete`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       "x-bridge-instance-id": instanceId,
     },
     body: JSON.stringify({ bridgeId: config.bridgeId, notes: "browser-bridge printed" }),
@@ -364,16 +340,14 @@ async function failJobApi(
   job: PrintJob,
   config: LocalBridgeConfig,
   instanceId: string,
-  authToken: string | undefined,
   error: string,
   setLocalBridgeLastError?: (msg: string | null) => void,
 ): Promise<void> {
   setLocalBridgeLastError?.(`job ${job.id} fail: ${error}`);
-  await fetch(`/api/print-bridge/jobs/${encodeURIComponent(job.id)}/fail`, {
+  await authorizedFetch(`${API_URL}/api/print-bridge/jobs/${encodeURIComponent(job.id)}/fail`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       "x-bridge-instance-id": instanceId,
     },
     body: JSON.stringify({ bridgeId: config.bridgeId, error }),

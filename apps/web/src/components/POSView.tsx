@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../store/app-store';
 import { trackUxMetric } from '../shared/ux/metrics';
@@ -66,6 +66,8 @@ export default function POSView({
   const [deliveryFee, setDeliveryFee] = useState('0');
   const [pickupEta, setPickupEta] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isEditingOrdered, setIsEditingOrdered] = useState(false);
+  const [confirmedEditKey, setConfirmedEditKey] = useState<string | null>(null);
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
@@ -74,13 +76,14 @@ export default function POSView({
   const menuSearch = useAppStore((s) => s.posMenuSearch);
   const setMenuSearch = (v: string) => useAppStore.setState({ posMenuSearch: v });
 
+  // Per-item "Salta stampa cucina" toggles (set of cart item IDs)
+  const [skipKitchenById, setSkipKitchenById] = useState<Set<string>>(new Set());
+
   // Product modal state
   const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
 
-  const taxRate = uiSettings?.taxRate ?? 0.10;
-
-  // Sync table from外部 navigation (e.g. tables view → POS)
+  // Sync table from external navigation (e.g. tables view → POS)
   React.useEffect(() => {
     if (initialTable && initialTable !== posTableNumber) {
       setTableNumber(initialTable);
@@ -91,7 +94,7 @@ export default function POSView({
   // Fetch customer addresses when customer is selected for delivery
   useEffect(() => {
     if (orderMode !== 'delivery' || !selectedCustomerId) {
-      setCustomerAddresses([]);
+      setCustomerAddresses([]); // eslint-disable-line react-hooks/set-state-in-effect -- [literal-reset] reset addresses when not in delivery mode; literal []
       return;
     }
     fetchCustomerAddresses(selectedCustomerId)
@@ -103,6 +106,7 @@ export default function POSView({
         }
       })
       .catch(() => setCustomerAddresses([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliveryAddress is read+written inside the effect (default pick on first load); adding to deps would cause infinite re-run loop
   }, [orderMode, selectedCustomerId]);
 
   // Sync cart context when mode or table changes
@@ -113,6 +117,12 @@ export default function POSView({
   React.useEffect(() => {
     setCartContext(cartContextKey);
   }, [cartContextKey, setCartContext]);
+
+  // Clear skip-kitchen-print toggles when order mode changes
+  React.useEffect(() => {
+    setSkipKitchenById(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset on mode change only; literal Set
+  }, [orderMode]);
 
   React.useEffect(() => {
     if (data.tables.length === 0) return;
@@ -169,19 +179,28 @@ export default function POSView({
     return items;
   }, [data.menu, selectedCategory, menuSearch]);
 
-  const alreadyOrdered = useMemo(() => {
+  // Track order context for inline editing (orderId + orderItemId per item)
+  type OrderedItem = OrderItem & { _orderId: string; _orderItemId: number };
+  const alreadyOrdered = useMemo((): OrderedItem[] => {
     if (orderMode === 'takeaway' || orderMode === 'delivery') return [];
-    const items = data.orders
-      .filter((o) => o.table === posTableNumber && o.status !== 'paid' && o.status !== 'cancelled')
-      .flatMap((o) => o.items);
-    const grouped: Record<string, OrderItem> = {};
-    items.forEach((item) => {
-      if (grouped[item.id]) {
-        grouped[item.id].quantity += item.quantity;
-      } else {
-        grouped[item.id] = { ...item };
+    const openOrders = data.orders.filter(
+      (o) => o.table === posTableNumber && o.status !== 'paid' && o.status !== 'cancelled',
+    );
+    const grouped: Record<string, OrderedItem> = {};
+    for (const order of openOrders) {
+      for (const item of order.items) {
+        const key = `${order.id}:${item.orderItemId ?? item.id}`;
+        if (grouped[key]) {
+          grouped[key].quantity += item.quantity;
+        } else {
+          grouped[key] = {
+            ...item,
+            _orderId: order.id,
+            _orderItemId: item.orderItemId ?? 0,
+          };
+        }
       }
-    });
+    }
     return Object.values(grouped);
   }, [data.orders, orderMode, posTableNumber]);
 
@@ -254,6 +273,22 @@ export default function POSView({
     setModifierModalItem(null);
   };
 
+  // --- Inline quantity edit on already-sent items ---
+  const handleUpdateOrderedItem = async (orderId: string, orderItemId: number, newQty: number) => {
+    if (isEditingOrdered) return;
+    setIsEditingOrdered(true);
+    try {
+      await useAppStore.getState().updateOrderItemQuantity(orderId, orderItemId, newQty);
+      const key = `${orderId}:${orderItemId}`;
+      setConfirmedEditKey(key);
+      setTimeout(() => setConfirmedEditKey((prev) => (prev === key ? null : prev)), 1500);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Modifica non riuscita');
+    } finally {
+      setIsEditingOrdered(false);
+    }
+  };
+
   // --- Order submission ---
   const handleSendToKitchen = async () => {
     if (posCart.length === 0) return;
@@ -295,6 +330,7 @@ export default function POSView({
           price: ci.basePrice + ci.modifierPriceDelta,
           quantity: ci.quantity,
           notes: ci.notes || undefined,
+          skipKitchenPrint: skipKitchenById.has(ci.cartItemId) || undefined,
           ingredientOverrides: ci.ingredientOverrides.length > 0 ? ci.ingredientOverrides : undefined,
           selectedModifiers: ci.selectedModifiers.length > 0 ? ci.selectedModifiers : undefined,
         })),
@@ -326,6 +362,7 @@ export default function POSView({
       }
 
       clearPosCart();
+      setSkipKitchenById(new Set());
       setShowCartMobile(false);
       setActionSuccess(orderMode === 'delivery' ? 'Delivery creato con successo' : 'Ordine inviato in cucina');
     } catch (error) {
@@ -372,47 +409,6 @@ export default function POSView({
       >
         {/* ============ MOBILE HEADER ============ */}
         <div className="lg:hidden space-y-3 mb-4">
-          {/* Order Mode Switcher */}
-          <div className="flex gap-1.5">
-            {([
-              { mode: 'dine_in' as const, label: 'Sala' },
-              { mode: 'takeaway' as const, label: 'Asporto' },
-              { mode: 'delivery' as const, label: 'Delivery' },
-            ]).map(({ mode, label }) => (
-              <button
-                key={mode}
-                onClick={() => setOrderMode(mode)}
-                className={cn(
-                  'flex-1 min-h-[44px] py-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all',
-                  orderMode === mode
-                    ? 'bg-primary text-white border-primary'
-                    : 'bg-white text-secondary border-border',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Mobile Search */}
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
-            <input
-              value={menuSearch}
-              onChange={(e) => setMenuSearch(e.target.value)}
-              placeholder="Cerca piatto..."
-              className="w-full pl-9 pr-9 py-2.5 rounded-lg border border-border text-sm bg-white"
-            />
-            {menuSearch && (
-              <button
-                onClick={() => setMenuSearch('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-
           {/* Category Pills */}
           <div className="overflow-x-auto no-scrollbar">
             <div className="flex gap-1.5">
@@ -745,21 +741,56 @@ export default function POSView({
               <h3 className="text-[9px] font-bold text-text-muted uppercase tracking-widest border-b border-border pb-0.5">
                 Già Ordinati
               </h3>
-              {alreadyOrdered.map((item) => (
-                <div key={item.id} className="opacity-50 py-0.5">
-                  <div className="flex items-center justify-between">
+              {alreadyOrdered.map((item) => {
+                const itemKey = `${item._orderId}:${item._orderItemId}`;
+                const isConfirmed = confirmedEditKey === itemKey;
+                return (
+                <div
+                  key={itemKey}
+                  className={cn(
+                    "py-0.5 rounded-md transition-all duration-300",
+                    isConfirmed && "bg-green-50 ring-1 ring-green-200",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-1">
                     <span className="text-[10px] text-secondary truncate flex-1">
                       {item.quantity}× {item.name}
                     </span>
-                    <span className="text-[10px] font-bold ml-2 shrink-0">€{(item.price * item.quantity).toFixed(2)}</span>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newQty = item.quantity > 1 ? item.quantity - 1 : 0;
+                          void handleUpdateOrderedItem(item._orderId, item._orderItemId, newQty);
+                        }}
+                        className="w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded transition-colors active:scale-90"
+                      >
+                        <Minus size={11} className="text-text-muted" />
+                      </button>
+                      <span className="w-5 text-center text-[10px] font-bold text-secondary">{item.quantity}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleUpdateOrderedItem(item._orderId, item._orderItemId, item.quantity + 1);
+                        }}
+                        className="w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded transition-colors active:scale-90"
+                      >
+                        <Plus size={11} className="text-text-muted" />
+                      </button>
+                      <span className="text-[10px] font-bold ml-1">€{(item.price * item.quantity).toFixed(2)}</span>
+                    </div>
                   </div>
                   {item.selectedModifiers && item.selectedModifiers.length > 0 && (
                     <p className="text-[9px] text-text-muted truncate pl-2">
                       {item.selectedModifiers.map((sm) => modifierOptionNameById.get(sm.optionId) ?? sm.optionId).join(' · ')}
                     </p>
                   )}
+                  {isConfirmed && (
+                    <p className="text-[9px] text-green-600 font-bold pl-2 animate-pulse">✓ Aggiornato</p>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -805,24 +836,50 @@ export default function POSView({
                       <div className="flex items-center bg-white rounded-lg border border-border shrink-0">
                         <button
                           onClick={() => updatePosCartItem(item.cartItemId, { quantity: Math.max(1, item.quantity - 1) })}
-                          className="w-10 h-10 flex items-center justify-center hover:bg-gray-50 rounded-l-lg transition-colors active:scale-95"
+                          className="w-7 h-7 flex items-center justify-center hover:bg-gray-50 rounded-l-lg transition-colors active:scale-95"
                         >
-                          <Minus size={14} />
+                          <Minus size={12} />
                         </button>
-                        <span className="w-8 text-center text-xs font-bold">{item.quantity}</span>
+                        <span className="w-6 text-center text-xs font-bold">{item.quantity}</span>
                         <button
                           onClick={() => updatePosCartItem(item.cartItemId, { quantity: item.quantity + 1 })}
-                          className="w-10 h-10 flex items-center justify-center hover:bg-gray-50 rounded-r-lg transition-colors active:scale-95"
+                          className="w-7 h-7 flex items-center justify-center hover:bg-gray-50 rounded-r-lg transition-colors active:scale-95"
                         >
-                          <Plus size={14} />
+                          <Plus size={12} />
                         </button>
                       </div>
                       <span className="text-xs font-bold text-primary shrink-0">€{((item.basePrice + item.modifierPriceDelta) * item.quantity).toFixed(2)}</span>
                       <button
-                        onClick={() => removeFromPosCart(item.cartItemId)}
-                        className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-danger transition-colors shrink-0"
+                        onClick={() => {
+                          setSkipKitchenById((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(item.cartItemId)) next.delete(item.cartItemId);
+                            else next.add(item.cartItemId);
+                            return next;
+                          });
+                        }}
+                        className={cn(
+                          'min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg transition-all shrink-0',
+                          skipKitchenById.has(item.cartItemId)
+                            ? 'bg-amber-50 text-amber-600'
+                            : 'text-text-muted hover:text-text-muted/60',
+                        )}
+                        title="Salta stampa cucina"
                       >
-                        <Trash2 size={16} />
+                        <Printer size={14} className={skipKitchenById.has(item.cartItemId) ? 'line-through decoration-amber-400' : ''} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSkipKitchenById((prev) => {
+                            const next = new Set(prev);
+                            next.delete(item.cartItemId);
+                            return next;
+                          });
+                          removeFromPosCart(item.cartItemId);
+                        }}
+                        className="min-w-[36px] min-h-[36px] flex items-center justify-center text-text-muted hover:text-danger transition-colors shrink-0"
+                      >
+                        <Trash2 size={14} />
                       </button>
                     </div>
 

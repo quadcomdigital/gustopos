@@ -6,7 +6,7 @@ import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import { trackUxMetric } from '../../shared/ux/metrics';
 
 export default function SplitBillView() {
-  const { tableId, paymentStatus, splitPeople, setSplitPeople, splitShares, initSplit, updateShareMethod, updateShareGatewayRef, markShareAsPaid, busy, error } = useCheckoutStore();
+  const { tableId, splitPeople, setSplitPeople, splitShares, initSplit, updateShareMethod, updateShareGatewayRef, markShareAsPaid, busy, error } = useCheckoutStore();
   const data = useAppStore((s) => s.data);
 
   if (!data) return null;

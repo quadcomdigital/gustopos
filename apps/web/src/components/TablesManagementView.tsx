@@ -14,7 +14,7 @@ interface TablesManagementViewProps {
 
 export default function TablesManagementView({
   tables,
-  loading,
+  loading: _loading,
   onCreateTable,
   onBulkCreateTables,
   onUpdateTable,

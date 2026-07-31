@@ -1,16 +1,15 @@
 import type { Category } from '@gustopos/shared';
+import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import { Plus, RotateCcw, Save, ChevronDown, Search, Tag, Package, Layers, UtensilsCrossed } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import Modal from '../../shared/ui/molecules/Modal';
 import SectionHeader from '../../shared/ui/molecules/SectionHeader';
 import Button from '../../shared/ui/atoms/Button';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
-import Skeleton from '../../shared/ui/atoms/Skeleton';
 import { useDebounce } from '../../hooks/useDebounce';
 import { required, minLength, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
-import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 const PRINT_AREA_LABELS: Record<string, string> = {
   kitchen: 'Cucina',
@@ -71,6 +70,7 @@ export default function CategoriesTab({
 
   const scopes: Category['scope'][] = ['ingredient', 'bom', 'menu'];
   const { confirm, requestConfirm, handleConfirm, handleCancel } = useConfirm();
+  const [saving, setSaving] = useState(false);
 
   const createCategory = async () => {
     if (!onCreate) return;
@@ -80,6 +80,7 @@ export default function CategoriesTab({
     if (Object.values(errors).some(Boolean)) return;
     const name = newCategoryName.trim();
     const printAreas = (newCategoryPrintAreas.length > 0 ? newCategoryPrintAreas : ['kitchen']) as ('kitchen' | 'bar' | 'cashier')[];
+    setSaving(true);
     try {
       await onCreate({ name, scope: newCategoryScope, printAreas });
       setNewCategoryName('');
@@ -89,6 +90,8 @@ export default function CategoriesTab({
       void onRefresh?.();
     } catch {
       // Error already handled by store
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -104,12 +107,19 @@ export default function CategoriesTab({
     errors.name = required(editCategoryName, 'Nome') ?? minLength(editCategoryName, 2, 'Nome');
     setEditErrors(errors);
     if (Object.values(errors).some(Boolean)) return;
-    await onUpdate(editingCategory.id, {
-      name: editCategoryName.trim(),
-      printAreas: editCategoryPrintAreas.length > 0 ? editCategoryPrintAreas : ['kitchen'],
-    });
-    setEditingCategoryId('');
-    void onRefresh?.();
+    setSaving(true);
+    try {
+      await onUpdate(editingCategory.id, {
+        name: editCategoryName.trim(),
+        printAreas: editCategoryPrintAreas.length > 0 ? editCategoryPrintAreas : ['kitchen'],
+      });
+      setEditingCategoryId('');
+      void onRefresh?.();
+    } catch {
+      // Error already handled by store
+    } finally {
+      setSaving(false);
+    }
   };
 
   const removeCategory = async (id: string) => {
@@ -193,9 +203,9 @@ export default function CategoriesTab({
             </button>
           ))}
         </div>
-        <Button variant="primary" onClick={() => void createCategory()}>
+        <Button variant="primary" onClick={() => void createCategory()} disabled={saving}>
           <Plus size={14} />
-          Crea
+          {saving ? 'Creazione...' : 'Crea'}
         </Button>
 
       </div>
@@ -204,17 +214,12 @@ export default function CategoriesTab({
       {/* Category list grouped by scope */}
       <div className="p-4 space-y-4">
         {filteredCategories.length === 0 && (
-          loading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-            </div>
-          ) : (
-            <EmptyState
-              icon={<Tag size={24} />}
-              title={searchQuery ? 'Nessuna categoria corrisponde alla ricerca.' : 'Nessuna categoria configurata.'}
-              description={!searchQuery ? 'Crea la prima categoria per iniziare.' : undefined}
-            />
-          )
+          <LoadingOrEmpty
+            loading={loading}
+            icon={<Tag size={24} />}
+            title={searchQuery ? 'Nessuna categoria corrisponde alla ricerca.' : 'Nessuna categoria configurata.'}
+            description={!searchQuery ? 'Crea la prima categoria per iniziare.' : undefined}
+          />
         )}
         {(['ingredient', 'bom', 'menu'] as const).map((scope) => {
           const scopeCategories = filteredCategories.filter((c) => c.scope === scope);
@@ -272,9 +277,9 @@ export default function CategoriesTab({
         dirty={editModalDirty}
         footer={
           <>
-            <Button variant="primary" onClick={() => void saveEdit()}>
+            <Button variant="primary" onClick={() => void saveEdit()} disabled={saving}>
               <Save size={14} />
-              Salva
+              {saving ? 'Salvataggio...' : 'Salva'}
             </Button>
             <Button variant="secondary" onClick={() => setEditingCategoryId('')}>
               Annulla

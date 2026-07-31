@@ -48,13 +48,21 @@ export default function BindBridgeMappingModal({
         next[m.area] = m.name;
       }
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [bridge-sync] syncs rows from bridge.mappings prop; setters receive primitives derived from props
     setRows(next);
   }, [bridge.id, bridge.mappings]);
 
   // Require every claimed area to have a printer selected before Save becomes available.
   const allMappingsValid = useMemo(
-    () => claimedAreas.length > 0 && claimedAreas.every((area) => !!(rows[area] && rows[area]?.trim())),
-    [claimedAreas, rows],
+    () => {
+      const claimed = Array.isArray(bridge.claimedAreas)
+        ? bridge.claimedAreas.filter((a): a is PrintArea =>
+            a === 'kitchen' || a === 'bar' || a === 'cashier',
+          )
+        : [];
+      return claimed.length > 0 && claimed.every((area) => !!(rows[area] && rows[area]?.trim()));
+    },
+    [bridge.claimedAreas, rows],
   );
 
   const printerOptions = useMemo(() => {

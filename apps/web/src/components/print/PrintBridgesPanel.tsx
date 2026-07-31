@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PrintArea, PrintBridge, PrintBridgePrinterMapping } from "@gustopos/shared";
+import type { LocalBridgeConfig, LocalBridgeArea, PrintArea, PrintBridge, PrintBridgePrinterMapping } from "@gustopos/shared";
 import { useAppStore } from "../../store/app-store";
-import { useLocalBridge } from "../../store/localBridgeSlice";
 import BridgeCard from "./BridgeCard";
 import BindBridgeMappingModal from "./BindBridgeMappingModal";
 import ClaimedAreasModal from "./ClaimedAreasModal";
@@ -24,11 +23,11 @@ export default function PrintBridgesPanel() {
   const triggerTestPrint = useAppStore((s) => s.triggerBridgeTestPrint);
   const lastFetchedAt = useAppStore((s) => s.printBridgesLastFetchedAt);
 
-  // Phase E — local browser bridge slice (separate store)
-  const localConfig = useLocalBridge((s) => s.config);
-  const localActive = useLocalBridge((s) => s.active);
-  const localLastError = useLocalBridge((s) => s.lastError);
-  const setLocalConfig = useLocalBridge((s) => s.setConfig);
+  // Phase E — local browser bridge slice (now unified in app-store)
+  const localConfig = useAppStore((s) => (s as any).localBridgeConfig) as LocalBridgeConfig | null;
+  const localActive = (localConfig as any)?.active ?? false;
+  const localLastError = useAppStore((s) => (s as any).localBridgeLastError) as string | null;
+  const setLocalBridgeConfig = useAppStore((s) => (s as any).setLocalBridgeConfig);
 
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -103,8 +102,8 @@ export default function PrintBridgesPanel() {
   );
 
   const handleDisableLocalBridge = useCallback(() => {
-    setLocalConfig(null);
-  }, [setLocalConfig]);
+    setLocalBridgeConfig(null);
+  }, [setLocalBridgeConfig]);
 
   return (
     <section className="rounded-xl border border-border p-4 space-y-3 bg-white">
@@ -166,7 +165,8 @@ export default function PrintBridgesPanel() {
               <span className="text-text-muted">Stampanti: </span>
               {localConfig.printersPerArea.map((m) => (
                 <span key={m.area} className="mr-2 font-mono">
-                  [{m.area}] {m.printerName}
+                  [{m.area}] {m.printerName || m.ip || "—"}
+                  {m.ip ? ` @ ${m.ip}:${m.port ?? 9100}` : ""}
                 </span>
               ))}
             </div>

@@ -1,5 +1,5 @@
 import type { Category, Ingredient, CategoryModifierPool } from '@gustopos/shared';
-import { Plus, Trash2, Save, X } from 'lucide-react';
+import { Trash2, Save, X } from 'lucide-react';
 import { useState } from 'react';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 

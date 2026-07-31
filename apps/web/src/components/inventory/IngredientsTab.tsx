@@ -1,8 +1,7 @@
-import type { Ingredient, Category, IngredientCreateRequest, IngredientUpdateRequest } from '@gustopos/shared';
-import { AlertTriangle, RotateCcw, ToggleRight, ToggleLeft, Eye, Search, ChevronUp, ChevronDown, ChevronRight, Plus, Trash2, Package, ChefHat } from 'lucide-react';
+import type { Ingredient, Category, IngredientCreateRequest, IngredientUpdateRequest, UnitConversion } from '@gustopos/shared';
+import { AlertTriangle, RotateCcw, ToggleRight, ToggleLeft, Eye, Search, ChevronUp, ChevronDown, ChevronRight, Plus, Trash2, Package, ChefHat, ArrowLeftRight } from 'lucide-react';
 import { Fragment, useMemo, useState, useEffect, useCallback } from 'react';
 import Button from '../../shared/ui/atoms/Button';
-import Skeleton from '../../shared/ui/atoms/Skeleton';
 import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
 import Modal from '../../shared/ui/molecules/Modal';
@@ -14,10 +13,12 @@ import InlineCategoryPicker from './InlineCategoryPicker';
 import StockMovementsDrawer from './StockMovementsDrawer';
 import { useAppStore } from '../../store/app-store';
 import { useDebounce } from '../../hooks/useDebounce';
-import { required, minLength, positiveNumber, validNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
+import Field from '../../shared/ui/atoms/Field';
+import { required, minLength, validNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
+import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
-import EmptyState from '../../shared/ui/atoms/EmptyState';
+import UnitConversionManager from './UnitConversionManager';
 
 interface IngredientsTabProps {
   inventory: Ingredient[];
@@ -81,8 +82,11 @@ export default function IngredientsTab({
   const [adjustNotes, setAdjustNotes] = useState('');
   const [movementsIngredientId, setMovementsIngredientId] = useState('');
   const [movements, setMovements] = useState<any[]>([]);
-  const [movementsLoading, setMovementsLoading] = useState(false);
+  const [_movementsLoading, setMovementsLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [conversions, setConversions] = useState<UnitConversion[]>([]);
+  const fetchUnitConversions = useAppStore((s) => s.fetchUnitConversions);
+  const createUnitConversion = useAppStore((s) => s.createUnitConversion);
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
@@ -207,21 +211,24 @@ export default function IngredientsTab({
   useEffect(() => {
     if (!selectedIngredientId) return;
     if (!inventory.some((item) => item.id === selectedIngredientId)) {
-      setSelectedIngredientId('');
+      setSelectedIngredientId(''); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] reset selection when ingredient is removed; setter receives literal empty string
     }
   }, [inventory, selectedIngredientId]);
 
   useEffect(() => {
     if (!selectedIngredient) return;
-    setIngredientEditName(selectedIngredient.name);
-    setIngredientEditCategoryId(selectedIngredient.categoryId ?? '');
-    setIngredientEditQty(String(selectedIngredient.quantity));
-    setIngredientEditUnit(selectedIngredient.unit);
-    setIngredientEditThreshold(String(selectedIngredient.minThreshold));
-    setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));
+    setIngredientEditName(selectedIngredient.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize edit fields from selected ingredient; safe because all values are primitives
+    setIngredientEditCategoryId(selectedIngredient.categoryId ?? '');  
+    setIngredientEditQty(String(selectedIngredient.quantity));  
+    setIngredientEditUnit(selectedIngredient.unit);  
+    setIngredientEditThreshold(String(selectedIngredient.minThreshold));  
+    setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));  
     setIngredientEditSalePrice(selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '');
     setIngredientEditIsContainer(selectedIngredient.isContainer === 1);
-  }, [selectedIngredient]);
+
+    // Load unit conversions for this ingredient
+    void fetchUnitConversions(selectedIngredient.id).then(setConversions);
+  }, [selectedIngredient, fetchUnitConversions]);
 
   // Keyboard navigation
   const listRef = useCallback((node: HTMLDivElement | null) => {
@@ -464,7 +471,7 @@ export default function IngredientsTab({
         title="Nuovo ingrediente"
         size="md"
         footer={
-          <>
+          <div className="flex gap-2">
             <Button variant="secondary" onClick={() => setShowCreateModal(false)}>
               Annulla
             </Button>
@@ -474,107 +481,121 @@ export default function IngredientsTab({
             >
               Crea ingrediente
             </Button>
-          </>
+          </div>
         }
       >
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Nome</label>
-            <input
-              value={newIngredientName}
-              onChange={(e) => setNewIngredientName(e.target.value)}
-              placeholder="Nome ingrediente"
-              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.name)}`}
-            />
-            {createErrors.name && <p className="text-[9px] text-danger mt-0.5">{createErrors.name.message}</p>}
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Categoria</label>
-            <SearchableSelect
-              items={ingredientCategories}
-              getLabel={(cat) => cat.name}
-              getValue={(cat) => cat.id}
-              selectedValue={newIngredientCategoryId}
-              onSelect={setNewIngredientCategoryId}
-              placeholder="Seleziona categoria..."
-            />
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Quantità</label>
-            <input
-              value={newIngredientQty}
-              onChange={(e) => setNewIngredientQty(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Quantità"
-              inputMode="decimal"
-              min="0"
-              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.qty)}`}
-            />
-            {createErrors.qty && <p className="text-[9px] text-danger mt-0.5">{createErrors.qty.message}</p>}
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Unità</label>
-            <UnitSelect
-              value={newIngredientUnit}
-              onChange={setNewIngredientUnit}
-              placeholder="Seleziona unità..."
-            />
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Soglia minima</label>
-            <input
-              value={newIngredientThreshold}
-              onChange={(e) => setNewIngredientThreshold(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Soglia minima"
-              inputMode="decimal"
-              min="0"
-              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.threshold)}`}
-            />
-            {createErrors.threshold && <p className="text-[9px] text-danger mt-0.5">{createErrors.threshold.message}</p>}
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Costo unità (€)</label>
-            <input
-              value={newIngredientUnitCost}
-              onChange={(e) => setNewIngredientUnitCost(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Costo unità"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.unitCost)}`}
-            />
-            {createErrors.unitCost && <p className="text-[9px] text-danger mt-0.5">{createErrors.unitCost.message}</p>}
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Prezzo vendita (€)</label>
-            <input
-              value={newIngredientSalePrice}
-              onChange={(e) => setNewIngredientSalePrice(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Prezzo vendita"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.salePrice)}`}
-            />
-            {createErrors.salePrice && <p className="text-[9px] text-danger mt-0.5">{createErrors.salePrice.message}</p>}
-          </div>
-
-          <div className="flex items-center">
-            <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
+          <Field label="Nome" error={createErrors.name?.message}>
+            {(props) => (
               <input
-                type="checkbox"
-                checked={newIngredientIsContainer}
-                onChange={(e) => setNewIngredientIsContainer(e.target.checked)}
-                className="accent-accent"
+                id={props.id}
+                aria-describedby={createErrors.name?.message ? props.errorId : undefined}
+                value={newIngredientName}
+                onChange={(e) => setNewIngredientName(e.target.value)}
+                placeholder="Nome ingrediente"
+                className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.name)}`}
               />
-              Contenitore
-            </label>
-          </div>
+            )}
+          </Field>
+
+          <Field label="Categoria">
+            {(props) => (
+              <SearchableSelect
+                id={props.id}
+                ariaLabel="Categoria"
+                items={ingredientCategories}
+                getLabel={(cat) => cat.name}
+                getValue={(cat) => cat.id}
+                selectedValue={newIngredientCategoryId}
+                onSelect={setNewIngredientCategoryId}
+                placeholder="Seleziona categoria..."
+              />
+            )}
+          </Field>
+
+          <Field label="Quantità" error={createErrors.qty?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={createErrors.qty?.message ? props.errorId : undefined}
+                value={newIngredientQty}
+                onChange={(e) => setNewIngredientQty(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="Quantità"
+                inputMode="decimal"
+                min="0"
+                className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.qty)}`}
+              />
+            )}
+          </Field>
+
+          <Field label="Unità">
+            {(props) => (
+              <UnitSelect
+                id={props.id}
+                ariaLabel="Unità"
+                value={newIngredientUnit}
+                onChange={setNewIngredientUnit}
+                placeholder="Seleziona unità..."
+              />
+            )}
+          </Field>
+
+          <Field label="Soglia minima" error={createErrors.threshold?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={createErrors.threshold?.message ? props.errorId : undefined}
+                value={newIngredientThreshold}
+                onChange={(e) => setNewIngredientThreshold(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="Soglia minima"
+                inputMode="decimal"
+                min="0"
+                className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.threshold)}`}
+              />
+            )}
+          </Field>
+
+          <Field label="Costo unità (€)" error={createErrors.unitCost?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={createErrors.unitCost?.message ? props.errorId : undefined}
+                value={newIngredientUnitCost}
+                onChange={(e) => setNewIngredientUnitCost(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="Costo unità"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.unitCost)}`}
+              />
+            )}
+          </Field>
+
+          <Field label="Prezzo vendita (€)" error={createErrors.salePrice?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={createErrors.salePrice?.message ? props.errorId : undefined}
+                value={newIngredientSalePrice}
+                onChange={(e) => setNewIngredientSalePrice(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="Prezzo vendita"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                className={`w-full px-3 py-2 rounded border border-border text-sm ${getErrorClass(createErrors.salePrice)}`}
+              />
+            )}
+          </Field>
+
+          <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={newIngredientIsContainer}
+              onChange={(e) => setNewIngredientIsContainer(e.target.checked)}
+              className="accent-accent"
+            />
+            Contenitore
+          </label>
         </div>
       </Modal>
 
@@ -647,17 +668,12 @@ export default function IngredientsTab({
             {filteredInventory.length === 0 && (
               <tr>
                 <td className="px-6 py-8 text-sm text-text-muted text-center" colSpan={isSuppliersEnabled ? 7 : 6}>
-                  {loading ? (
-                    <div className="space-y-2">
-                      {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-                    </div>
-                  ) : (
-                    <EmptyState
-                      icon={<Package size={24} />}
-                      title={searchQuery ? 'Nessun ingrediente corrisponde alla ricerca.' : filterCategoryId ? 'Nessun ingrediente in questa categoria.' : 'Nessun ingrediente configurato.'}
-                      description={!searchQuery && !filterCategoryId ? 'Crea il primo ingrediente per iniziare.' : undefined}
-                    />
-                  )}
+                  <LoadingOrEmpty
+                    loading={loading}
+                    icon={<Package size={24} />}
+                    title={searchQuery ? 'Nessun ingrediente corrisponde alla ricerca.' : filterCategoryId ? 'Nessun ingrediente in questa categoria.' : 'Nessun ingrediente configurato.'}
+                    description={!searchQuery && !filterCategoryId ? 'Crea il primo ingrediente per iniziare.' : undefined}
+                  />
                 </td>
               </tr>
             )}
@@ -808,17 +824,12 @@ export default function IngredientsTab({
       <div className="md:hidden divide-y divide-border overflow-y-auto flex-1">
         {filteredInventory.length === 0 && (
           <div className="p-8 text-sm text-text-muted text-center">
-            {loading ? (
-              <div className="space-y-2">
-                {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
-              </div>
-            ) : (
-              <EmptyState
-                icon={<Package size={24} />}
-                title={searchQuery ? 'Nessun ingrediente corrisponde alla ricerca.' : filterCategoryId ? 'Nessun ingrediente in questa categoria.' : 'Nessun ingrediente configurato.'}
-                description={!searchQuery && !filterCategoryId ? 'Crea il primo ingrediente per iniziare.' : undefined}
-              />
-            )}
+            <LoadingOrEmpty
+              loading={loading}
+              icon={<Package size={24} />}
+              title={searchQuery ? 'Nessun ingrediente corrisponde alla ricerca.' : filterCategoryId ? 'Nessun ingrediente in questa categoria.' : 'Nessun ingrediente configurato.'}
+              description={!searchQuery && !filterCategoryId ? 'Crea il primo ingrediente per iniziare.' : undefined}
+            />
           </div>
         )}
         {filteredInventory.map((item) => {
@@ -921,92 +932,99 @@ export default function IngredientsTab({
         size="md"
         dirty={editModalDirty}
         footer={
-          <>
+          <div className="flex items-center gap-2 w-full">
             {saveError && <p className="text-xs text-danger mr-auto">{saveError}</p>}
             <Button variant="primary" onClick={() => void saveIngredient()}>
               Salva ingrediente
-            </Button>
-            {selectedIngredient && (
+            </Button>              {selectedIngredient && (
               <Button variant="danger" onClick={() => void removeIngredient(selectedIngredient.id)}>
                 Elimina
               </Button>
             )}
-            <Button variant="secondary" onClick={() => setSelectedIngredientId('')}>
+            <Button variant="secondary" onClick={() => { setSelectedIngredientId(''); setConversions([]); }}>
               Annulla
             </Button>
-          </>
+          </div>
         }
       >
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Nome</label>
-            <input
-              value={ingredientEditName}
-              onChange={(e) => setIngredientEditName(e.target.value)}
-              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
-            />
-            {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Quantità</label>
-            <input
-              value={ingredientEditQty}
-              onChange={(e) => setIngredientEditQty(e.target.value.replace(/[^0-9.]/g, ''))}
-              inputMode="decimal"
-              min="0"
-              aria-label="Quantità"
-              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.qty)}`}
-            />
-            {editErrors.qty && <p className="text-[9px] text-danger">{editErrors.qty.message}</p>}
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Soglia minima</label>
-            <input
-              value={ingredientEditThreshold}
-              onChange={(e) => setIngredientEditThreshold(e.target.value.replace(/[^0-9.]/g, ''))}
-              inputMode="decimal"
-              min="0"
-              aria-label="Soglia minima"
-              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.threshold)}`}
-            />
-            {editErrors.threshold && <p className="text-[9px] text-danger">{editErrors.threshold.message}</p>}
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Unità di misura</label>
-            <UnitSelect
-              value={ingredientEditUnit}
-              onChange={setIngredientEditUnit}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Costo unità (€)</label>
-            <input
-              value={ingredientEditUnitCost}
-              onChange={(e) => setIngredientEditUnitCost(e.target.value.replace(/[^0-9.]/g, ''))}
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              aria-label="Costo unità"
-              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.unitCost)}`}
-            />
-            {editErrors.unitCost && <p className="text-[9px] text-danger">{editErrors.unitCost.message}</p>}
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Prezzo vendita (€)</label>
-            <input
-              value={ingredientEditSalePrice}
-              onChange={(e) => setIngredientEditSalePrice(e.target.value.replace(/[^0-9.]/g, ''))}
-              placeholder="Opzionale"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              aria-label="Prezzo vendita"
-              className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.salePrice)}`}
-            />
-            {editErrors.salePrice && <p className="text-[9px] text-danger">{editErrors.salePrice.message}</p>}
-          </div>
-          <div className="md:col-span-2 flex flex-col gap-1">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Categoria</label>
+          <Field label="Nome" error={editErrors.name?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={editErrors.name?.message ? props.errorId : undefined}
+                value={ingredientEditName}
+                onChange={(e) => setIngredientEditName(e.target.value)}
+                className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.name)}`}
+              />
+            )}
+          </Field>
+          <Field label="Quantità" error={editErrors.qty?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={editErrors.qty?.message ? props.errorId : undefined}
+                value={ingredientEditQty}
+                onChange={(e) => setIngredientEditQty(e.target.value.replace(/[^0-9.]/g, ''))}
+                inputMode="decimal"
+                min="0"
+                className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.qty)}`}
+              />
+            )}
+          </Field>
+          <Field label="Soglia minima" error={editErrors.threshold?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={editErrors.threshold?.message ? props.errorId : undefined}
+                value={ingredientEditThreshold}
+                onChange={(e) => setIngredientEditThreshold(e.target.value.replace(/[^0-9.]/g, ''))}
+                inputMode="decimal"
+                min="0"
+                className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.threshold)}`}
+              />
+            )}
+          </Field>
+          <Field label="Unità di misura">
+            {(props) => (
+              <UnitSelect
+                id={props.id}
+                ariaLabel="Unità di misura"
+                value={ingredientEditUnit}
+                onChange={setIngredientEditUnit}
+              />
+            )}
+          </Field>
+          <Field label="Costo unità (€)" error={editErrors.unitCost?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={editErrors.unitCost?.message ? props.errorId : undefined}
+                value={ingredientEditUnitCost}
+                onChange={(e) => setIngredientEditUnitCost(e.target.value.replace(/[^0-9.]/g, ''))}
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.unitCost)}`}
+              />
+            )}
+          </Field>
+          <Field label="Prezzo vendita (€)" error={editErrors.salePrice?.message}>
+            {(props) => (
+              <input
+                id={props.id}
+                aria-describedby={editErrors.salePrice?.message ? props.errorId : undefined}
+                value={ingredientEditSalePrice}
+                onChange={(e) => setIngredientEditSalePrice(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="Opzionale"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.salePrice)}`}
+              />
+            )}
+          </Field>
+          <div className="md:col-span-2">
             <InlineCategoryPicker
               categories={ingredientCategories}
               selectedId={ingredientEditCategoryId}
@@ -1014,22 +1032,20 @@ export default function IngredientsTab({
               onCreate={async (name) => {
                 if (onCreateCategory) await onCreateCategory({ name, scope: 'ingredient', printAreas: ['kitchen'] });
               }}
-              label=""
+              label="Categoria"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-bold cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={ingredientEditIsContainer}
-                onChange={(e) => setIngredientEditIsContainer(e.target.checked)}
-                className="accent-accent"
-              />
-              Container
-            </label>
-          </div>
+          <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={ingredientEditIsContainer}
+              onChange={(e) => setIngredientEditIsContainer(e.target.checked)}
+              className="accent-accent"
+            />
+            Container
+          </label>
           <div className="md:col-span-2 flex items-center gap-3 pt-2 border-t border-border">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</label>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</span>
             {selectedIngredient && (
               <button
                 onClick={() => void toggleIngredientActive(selectedIngredient)}
@@ -1047,6 +1063,37 @@ export default function IngredientsTab({
             )}
           </div>
         </div>
+          {selectedIngredient && conversions.length >= 0 && (
+            <div className="md:col-span-2 border-t border-border pt-3 mt-2">
+              <details className="group">
+                <summary className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-text-muted cursor-pointer hover:text-secondary transition-colors">
+                  <ArrowLeftRight size={12} />
+                  Conversioni unità di misura
+                  <span className="text-[9px] font-normal normal-case text-text-muted ml-auto group-open:hidden">
+                    {conversions.length > 0 ? `${conversions.length} definita(e)` : 'Mostra'}
+                  </span>
+                </summary>
+                <div className="mt-2">
+                  <UnitConversionManager
+                    ingredientName={selectedIngredient.name}
+                    ingredientUnit={ingredientEditUnit}
+                    conversions={conversions}
+                    onCreateConversion={async (fromUnit, factor) => {
+                      const created = await createUnitConversion(selectedIngredient.id, {
+                        fromUnit,
+                        toUnit: ingredientEditUnit,
+                        factor,
+                      });
+                      if (created) {
+                        setConversions((prev) => [...prev, created]);
+                      }
+                    }}
+                  />
+                </div>
+              </details>
+            </div>
+          )}
+
       </Modal>
 
       {/* Adjust Stock Modal */}
@@ -1056,7 +1103,7 @@ export default function IngredientsTab({
         title="Regolazione manuale stock"
         size="sm"
         footer={
-          <>
+          <div className="flex gap-2">
             <Button
               variant="primary"
               onClick={() => void submitAdjust()}
@@ -1067,7 +1114,7 @@ export default function IngredientsTab({
             <Button variant="secondary" onClick={() => setAdjustTargetId('')}>
               Annulla
             </Button>
-          </>
+          </div>
         }
       >
         {(() => {
@@ -1087,17 +1134,19 @@ export default function IngredientsTab({
                   <p className="text-lg font-bold text-primary">{item.quantity} <span className="text-xs text-text-muted">{item.unit}</span></p>
                 </div>
               </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Quantità (positivo=+, negativo=−)</label>
-                <input
-                  value={adjustDelta}
-                  onChange={(e) => setAdjustDelta(e.target.value.replace(/[^0-9.\-]/g, ''))}
-                  className="px-3 py-2 rounded border border-border text-sm"
-                  type="number"
-                  step="any"
-                  autoFocus
-                />
-              </div>
+              <Field label="Quantità (segno: + o −)">
+                {(props) => (
+                  <input
+                    id={props.id}
+                    value={adjustDelta}
+                    onChange={(e) => setAdjustDelta(e.target.value.replace(/[^0-9.\-]/g, ''))}
+                    className="px-3 py-2 rounded border border-border text-sm"
+                    type="number"
+                    step="any"
+                    autoFocus
+                  />
+                )}
+              </Field>
               {delta !== 0 && (
                 <div className="rounded-lg border border-border p-2 flex items-center justify-between text-sm">
                   <span className="text-text-muted">{item.quantity} {item.unit}</span>
@@ -1105,14 +1154,16 @@ export default function IngredientsTab({
                   <span className="font-bold text-primary">= {newQty} {item.unit}</span>
                 </div>
               )}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Note (opzionale)</label>
-                <input
-                  value={adjustNotes}
-                  onChange={(e) => setAdjustNotes(e.target.value)}
-                  className="px-3 py-2 rounded border border-border text-sm"
-                />
-              </div>
+              <Field label="Note (opzionale)">
+                {(props) => (
+                  <input
+                    id={props.id}
+                    value={adjustNotes}
+                    onChange={(e) => setAdjustNotes(e.target.value)}
+                    className="px-3 py-2 rounded border border-border text-sm"
+                  />
+                )}
+              </Field>
             </>
           );
         })()}

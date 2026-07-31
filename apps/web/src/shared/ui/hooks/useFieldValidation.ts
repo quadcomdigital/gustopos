@@ -7,14 +7,14 @@ export function required(value: string, label: string): FieldError | undefined {
   return undefined;
 }
 
-export function minLength(value: string, min: number, label: string): FieldError | undefined {
+export function minLength(value: string, min: number, _label: string): FieldError | undefined {
   if (value.trim().length > 0 && value.trim().length < min) {
     return { message: `Min. ${min} caratteri` };
   }
   return undefined;
 }
 
-export function minNumber(value: string, min: number, label: string): FieldError | undefined {
+export function minNumber(value: string, min: number, _label: string): FieldError | undefined {
   const n = Number(value);
   if (value !== '' && (!Number.isFinite(n) || n < min)) {
     return { message: `Min. ${min}` };

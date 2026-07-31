@@ -84,7 +84,7 @@ interface TreeNodeProps {
   depth: number;
 }
 
-function TreeNode({ component, bomItems, prepItems, inventory, ingredientNameById, bomNameById, prepNameById, getName, depth }: TreeNodeProps) {
+function TreeNode({ component, bomItems, prepItems, inventory, ingredientNameById: _ingredientNameById, bomNameById: _bomNameById, prepNameById: _prepNameById, getName, depth }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(false);
   const isBoM = component.componentType === 'bom';
   const bom = isBoM ? bomItems.find((b) => b.id === component.componentId) : null;

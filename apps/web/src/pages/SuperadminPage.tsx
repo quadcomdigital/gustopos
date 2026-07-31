@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
+/* eslint-disable jsx-a11y/label-has-for -- file uses useId()-derived `fieldId('key')` helper for htmlFor. eslint-plugin-jsx-a11y cannot statically resolve CallExpression htmlFor values, producing false positives while the runtime DOM linkage is correct. Inputs also carry `aria-label`/`id` for defense-in-depth and the visible-or-sr-only label patterns correctly point at the control via the `htmlFor` expression. */
 import { useNavigate } from 'react-router-dom';
 import type {
   ModuleKey,
@@ -110,6 +111,8 @@ async function tenantAdminFetch(path: string, init?: RequestInit): Promise<unkno
 
 export default function SuperadminPage() {
   const navigate = useNavigate();
+  const idPrefix = useId();
+  const fieldId = (key: string) => `${idPrefix}-${key}`;
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getToken()));
@@ -755,11 +758,14 @@ export default function SuperadminPage() {
     }
   }
 
+  /* eslint-disable react-hooks/exhaustive-deps -- [load-recursion] load is recreated each render; effect only refreshes on auth transition */
   useEffect(() => {
     if (isAuthenticated) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] load() calls setState() asyncronously
       void load();
     }
   }, [isAuthenticated]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   if (!isAuthenticated) {
     return (
@@ -767,17 +773,23 @@ export default function SuperadminPage() {
         <section className="w-full max-w-md bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-sm">
           <h1 className="text-xl font-bold text-slate-800">Superadmin Login</h1>
           <p className="text-xs text-slate-500">Accesso master per gestione tenant e moduli.</p>
+          <label htmlFor={fieldId('login-username')} className="sr-only">Username</label>
           <input
+            id={fieldId('login-username')}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
             placeholder="Username"
+            aria-label="Username"
             className="w-full px-3 py-2 rounded border border-slate-300 text-sm"
           />
+          <label htmlFor={fieldId('login-password')} className="sr-only">Password</label>
           <input
+            id={fieldId('login-password')}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             type="password"
             placeholder="Password"
+            aria-label="Password"
             className="w-full px-3 py-2 rounded border border-slate-300 text-sm"
           />
           <button
@@ -811,10 +823,14 @@ export default function SuperadminPage() {
         <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
           <p className="text-sm font-bold uppercase tracking-widest text-slate-700">Crea Tenant</p>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-            <input value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder="Nome tenant" className="px-3 py-2 rounded border border-slate-300 text-sm" />
-            <input value={createSlug} onChange={(event) => setCreateSlug(event.target.value)} placeholder="slug" className="px-3 py-2 rounded border border-slate-300 text-sm" />
-            <input value={createSubdomain} onChange={(event) => setCreateSubdomain(event.target.value)} placeholder="subdomain" className="px-3 py-2 rounded border border-slate-300 text-sm" />
-            <input value={createDomain} onChange={(event) => setCreateDomain(event.target.value)} placeholder="domain (optional)" className="px-3 py-2 rounded border border-slate-300 text-sm" />
+            <label htmlFor={fieldId('create-name')} className="sr-only">Nome tenant</label>
+            <input id={fieldId('create-name')} value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder="Nome tenant" aria-label="Nome tenant" className="px-3 py-2 rounded border border-slate-300 text-sm" />
+            <label htmlFor={fieldId('create-slug')} className="sr-only">Slug</label>
+            <input id={fieldId('create-slug')} value={createSlug} onChange={(event) => setCreateSlug(event.target.value)} placeholder="slug" aria-label="Slug" className="px-3 py-2 rounded border border-slate-300 text-sm" />
+            <label htmlFor={fieldId('create-subdomain')} className="sr-only">Subdomain</label>
+            <input id={fieldId('create-subdomain')} value={createSubdomain} onChange={(event) => setCreateSubdomain(event.target.value)} placeholder="subdomain" aria-label="Subdomain" className="px-3 py-2 rounded border border-slate-300 text-sm" />
+            <label htmlFor={fieldId('create-domain')} className="sr-only">Domain</label>
+            <input id={fieldId('create-domain')} value={createDomain} onChange={(event) => setCreateDomain(event.target.value)} placeholder="domain (optional)" aria-label="Domain (optional)" className="px-3 py-2 rounded border border-slate-300 text-sm" />
           </div>
           <button
             onClick={() => void createTenant()}
@@ -828,18 +844,24 @@ export default function SuperadminPage() {
         <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
           <p className="text-sm font-bold uppercase tracking-widest text-slate-700">Bulk Module Actions</p>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            <label htmlFor={fieldId('bulk-module-key')} className="sr-only">Modulo</label>
             <select
+              id={fieldId('bulk-module-key')}
               value={bulkModuleKey}
               onChange={(event) => setBulkModuleKey(event.target.value as ModuleKey)}
+              aria-label="Modulo da configurare in bulk"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             >
               {MODULES.map((entry) => (
                 <option key={entry.key} value={entry.key}>{entry.label}</option>
               ))}
             </select>
+            <label htmlFor={fieldId('bulk-enable')} className="sr-only">Stato</label>
             <select
+              id={fieldId('bulk-enable')}
               value={bulkEnable}
               onChange={(event) => setBulkEnable(event.target.value as 'on' | 'off')}
+              aria-label="Stato modulo (ON o OFF)"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             >
               <option value="on">Set ON</option>
@@ -861,7 +883,9 @@ export default function SuperadminPage() {
           <p className="text-sm font-bold uppercase tracking-widest text-slate-700">Loyalty Points Config</p>
           <p className="text-xs text-slate-500">Configura regole base earn/redeem per tenant con modulo <code>loyalty_points</code>.</p>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            <label htmlFor={fieldId('loyalty-tenant')} className="sr-only">Tenant loyalty</label>
             <select
+              id={fieldId('loyalty-tenant')}
               value={loyaltyTenantId}
               onChange={(event) => {
                 const nextId = event.target.value;
@@ -871,6 +895,7 @@ export default function SuperadminPage() {
                   setLoyaltyTenantId('');
                 }
               }}
+              aria-label="Tenant loyalty"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             >
               <option value="">Seleziona tenant</option>
@@ -878,22 +903,31 @@ export default function SuperadminPage() {
                 <option key={`loyalty-tenant-${tenant.id}`} value={tenant.id}>{tenant.slug}</option>
               ))}
             </select>
+            <label htmlFor={fieldId('loyalty-earn-rate')} className="sr-only">Earn rate</label>
             <input
+              id={fieldId('loyalty-earn-rate')}
               value={loyaltyEarnRate}
               onChange={(event) => setLoyaltyEarnRate(event.target.value.replace(/[^0-9.]/g, ''))}
               placeholder="Earn rate (pt per EUR)"
+              aria-label="Earn rate (punti per EUR)"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             />
+            <label htmlFor={fieldId('loyalty-redeem-rate')} className="sr-only">Redeem rate</label>
             <input
+              id={fieldId('loyalty-redeem-rate')}
               value={loyaltyRedeemRate}
               onChange={(event) => setLoyaltyRedeemRate(event.target.value.replace(/[^0-9.]/g, ''))}
               placeholder="Redeem rate (pt per EUR)"
+              aria-label="Redeem rate (punti per EUR)"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             />
+            <label htmlFor={fieldId('loyalty-min-redeem')} className="sr-only">Soglia minima redeem</label>
             <input
+              id={fieldId('loyalty-min-redeem')}
               value={loyaltyMinRedeemPoints}
               onChange={(event) => setLoyaltyMinRedeemPoints(event.target.value.replace(/[^0-9]/g, ''))}
               placeholder="Soglia minima redeem"
+              aria-label="Soglia minima redeem"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             />
           </div>
@@ -912,10 +946,13 @@ export default function SuperadminPage() {
             Richiede sessione impersonata tenant con moduli <code>self_order_qr</code> + <code>public_menu</code> attivi.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
+            <label htmlFor={fieldId('self-order-table')} className="sr-only">Table ID</label>
             <input
+              id={fieldId('self-order-table')}
               value={selfOrderTableId}
               onChange={(event) => setSelfOrderTableId(event.target.value)}
               placeholder="Table ID (es: t1)"
+              aria-label="Table ID"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             />
             <button
@@ -941,7 +978,9 @@ export default function SuperadminPage() {
             Dipende da moduli <code>public_takeaway</code> + <code>public_menu</code> + <code>kitchen</code>.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+            <label htmlFor={fieldId('takeaway-tenant')} className="sr-only">Tenant takeaway</label>
             <select
+              id={fieldId('takeaway-tenant')}
               value={takeawayTenantId}
               onChange={(event) => {
                 const nextId = event.target.value;
@@ -951,6 +990,7 @@ export default function SuperadminPage() {
                   setTakeawayTenantId('');
                 }
               }}
+              aria-label="Tenant per public takeaway"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             >
               <option value="">Seleziona tenant</option>
@@ -958,24 +998,30 @@ export default function SuperadminPage() {
                 <option key={`takeaway-tenant-${tenant.id}`} value={tenant.id}>{tenant.slug}</option>
               ))}
             </select>
+            <label htmlFor={fieldId('takeaway-min-order')} className="sr-only">Min order</label>
             <input
+              id={fieldId('takeaway-min-order')}
               value={takeawayMinOrderAmount}
               onChange={(event) => setTakeawayMinOrderAmount(event.target.value.replace(/[^0-9.]/g, ''))}
               placeholder="Min order (€)"
+              aria-label="Min order amount in EUR"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             />
+            <label htmlFor={fieldId('takeaway-max-items')} className="sr-only">Max items</label>
             <input
+              id={fieldId('takeaway-max-items')}
               value={takeawayMaxItems}
               onChange={(event) => setTakeawayMaxItems(event.target.value.replace(/[^0-9]/g, ''))}
               placeholder="Max items"
+              aria-label="Max items consentiti per ordine"
               className="px-3 py-2 rounded border border-slate-300 text-sm"
             />
-            <label className="flex items-center gap-2 px-3 py-2 rounded border border-slate-300 text-xs font-semibold">
-              <input type="checkbox" checked={takeawayEtaRequired} onChange={(event) => setTakeawayEtaRequired(event.target.checked)} />
+            <label htmlFor={fieldId('takeaway-eta-required')} className="flex items-center gap-2 px-3 py-2 rounded border border-slate-300 text-xs font-semibold">
+              <input id={fieldId('takeaway-eta-required')} type="checkbox" aria-label="ETA required" checked={takeawayEtaRequired} onChange={(event) => setTakeawayEtaRequired(event.target.checked)} />
               ETA required
             </label>
-            <label className="flex items-center gap-2 px-3 py-2 rounded border border-slate-300 text-xs font-semibold">
-              <input type="checkbox" checked={takeawayAllowNotes} onChange={(event) => setTakeawayAllowNotes(event.target.checked)} />
+            <label htmlFor={fieldId('takeaway-allow-notes')} className="flex items-center gap-2 px-3 py-2 rounded border border-slate-300 text-xs font-semibold">
+              <input id={fieldId('takeaway-allow-notes')} type="checkbox" aria-label="Allow notes" checked={takeawayAllowNotes} onChange={(event) => setTakeawayAllowNotes(event.target.checked)} />
               Allow notes
             </label>
           </div>
@@ -992,15 +1038,21 @@ export default function SuperadminPage() {
           <div className="flex flex-wrap items-center gap-2 justify-between">
             <p className="text-sm font-bold uppercase tracking-widest text-slate-700">Tenants</p>
             <div className="flex gap-2">
+              <label htmlFor={fieldId('search-tenant')} className="sr-only">Cerca tenant</label>
               <input
+                id={fieldId('search-tenant')}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Cerca tenant"
+                aria-label="Cerca tenant per nome, slug o subdomain"
                 className="px-3 py-2 rounded border border-slate-300 text-sm"
               />
+              <label htmlFor={fieldId('status-filter')} className="sr-only">Filtro stato tenant</label>
               <select
+                id={fieldId('status-filter')}
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value as 'all' | 'active' | 'inactive')}
+                aria-label="Filtra per stato tenant"
                 className="px-3 py-2 rounded border border-slate-300 text-sm"
               >
                 <option value="all">Tutti</option>
@@ -1253,19 +1305,24 @@ export default function SuperadminPage() {
             <div className="space-y-3">
               <p className="text-sm font-bold uppercase tracking-widest text-slate-700">Designer (Preset: Minimal Elegante)</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <label htmlFor={fieldId('design-preset')} className="sr-only">Preset design menu pubblico</label>
                 <select
+                  id={fieldId('design-preset')}
                   value={designPreset}
                   onChange={(event) => setDesignPreset(event.target.value as 'minimal_elegant' | 'rich_visual' | 'modern_bistro')}
+                  aria-label="Preset design menu pubblico"
                   className="px-3 py-2 rounded border border-slate-300 text-sm"
                 >
                   <option value="minimal_elegant">Minimal Elegante</option>
                   <option value="rich_visual">Rich Visual</option>
                   <option value="modern_bistro">Modern Bistro</option>
                 </select>
-                <label className="px-3 py-2 rounded border border-slate-300 text-sm flex items-center justify-between gap-2 cursor-pointer">
+                <label htmlFor={fieldId('upload-logo')} className="px-3 py-2 rounded border border-slate-300 text-sm flex items-center justify-between gap-2 cursor-pointer">
                   <span>Upload logo</span>
                   <input
+                    id={fieldId('upload-logo')}
                     type="file"
+                    aria-label="Upload logo file"
                     accept="image/*"
                     className="hidden"
                     onChange={(event) => {
@@ -1276,16 +1333,21 @@ export default function SuperadminPage() {
                     }}
                   />
                 </label>
+                <label htmlFor={fieldId('design-logo-url')} className="sr-only">Logo URL</label>
                 <input
+                  id={fieldId('design-logo-url')}
                   value={designLogoUrl}
                   onChange={(event) => setDesignLogoUrl(event.target.value)}
                   placeholder="Logo URL"
+                  aria-label="Logo URL"
                   className="px-3 py-2 rounded border border-slate-300 text-sm"
                 />
-                <label className="px-3 py-2 rounded border border-slate-300 text-sm flex items-center justify-between gap-2 cursor-pointer">
+                <label htmlFor={fieldId('upload-hero')} className="px-3 py-2 rounded border border-slate-300 text-sm flex items-center justify-between gap-2 cursor-pointer">
                   <span>Upload hero</span>
                   <input
+                    id={fieldId('upload-hero')}
                     type="file"
+                    aria-label="Upload hero image file"
                     accept="image/*"
                     className="hidden"
                     onChange={(event) => {
@@ -1296,51 +1358,75 @@ export default function SuperadminPage() {
                     }}
                   />
                 </label>
+                <label htmlFor={fieldId('design-hero-url')} className="sr-only">Hero image URL</label>
                 <input
+                  id={fieldId('design-hero-url')}
                   value={designHeroImageUrl}
                   onChange={(event) => setDesignHeroImageUrl(event.target.value)}
                   placeholder="Hero image URL"
+                  aria-label="Hero image URL"
                   className="px-3 py-2 rounded border border-slate-300 text-sm"
                 />
+                <label htmlFor={fieldId('design-tagline')} className="sr-only">Tagline</label>
                 <input
+                  id={fieldId('design-tagline')}
                   value={designTagline}
                   onChange={(event) => setDesignTagline(event.target.value)}
                   placeholder="Tagline"
+                  aria-label="Tagline brand"
                   className="px-3 py-2 rounded border border-slate-300 text-sm"
                 />
+                <label htmlFor={fieldId('design-currency')} className="sr-only">Currency</label>
                 <input
+                  id={fieldId('design-currency')}
                   value={designCurrency}
                   onChange={(event) => setDesignCurrency(event.target.value)}
                   placeholder="Currency (EUR)"
+                  aria-label="Currency (EUR)"
                   className="px-3 py-2 rounded border border-slate-300 text-sm"
                 />
+                <label htmlFor={fieldId('design-category-order')} className="sr-only">Category order IDs</label>
                 <input
+                  id={fieldId('design-category-order')}
                   value={designCategoryOrderText}
                   onChange={(event) => setDesignCategoryOrderText(event.target.value)}
                   placeholder="Category order IDs (comma)"
+                  aria-label="Category order IDs (CSV)"
                   className="px-3 py-2 rounded border border-slate-300 text-sm md:col-span-2"
                 />
+                <label htmlFor={fieldId('design-hidden-categories')} className="sr-only">Hidden category IDs</label>
                 <input
+                  id={fieldId('design-hidden-categories')}
                   value={designHiddenCategoryIdsText}
                   onChange={(event) => setDesignHiddenCategoryIdsText(event.target.value)}
                   placeholder="Hidden category IDs (comma)"
+                  aria-label="Hidden category IDs (CSV)"
                   className="px-3 py-2 rounded border border-slate-300 text-sm md:col-span-2"
                 />
+                <label htmlFor={fieldId('design-featured-items')} className="sr-only">Featured item IDs</label>
                 <input
+                  id={fieldId('design-featured-items')}
                   value={designFeaturedItemIdsText}
                   onChange={(event) => setDesignFeaturedItemIdsText(event.target.value)}
                   placeholder="Featured item IDs (comma)"
+                  aria-label="Featured item IDs (CSV)"
                   className="px-3 py-2 rounded border border-slate-300 text-sm md:col-span-2"
                 />
+                <label htmlFor={fieldId('design-sold-out-items')} className="sr-only">Sold out item IDs</label>
                 <input
+                  id={fieldId('design-sold-out-items')}
                   value={designSoldOutItemIdsText}
                   onChange={(event) => setDesignSoldOutItemIdsText(event.target.value)}
                   placeholder="Sold out item IDs (comma)"
+                  aria-label="Sold out item IDs (CSV)"
                   className="px-3 py-2 rounded border border-slate-300 text-sm md:col-span-2"
                 />
                 <div className="flex items-center gap-2">
+                  <label htmlFor={fieldId('design-accent-color')} className="sr-only">Accent color</label>
                   <input
+                    id={fieldId('design-accent-color')}
                     type="color"
+                    aria-label="Accent color"
                     value={designAccentColor}
                     onChange={(event) => setDesignAccentColor(event.target.value)}
                     className="h-9 w-14 rounded border border-slate-300"
@@ -1392,9 +1478,11 @@ export default function SuperadminPage() {
                               </button>
                             </div>
                           </div>
-                          <label className="mt-2 inline-flex items-center gap-2 text-[11px] text-slate-700 font-semibold">
+                          <label htmlFor={fieldId(`menu-cat-hide-${category.id}`)} className="mt-2 inline-flex items-center gap-2 text-[11px] text-slate-700 font-semibold">
                             <input
+                              id={fieldId(`menu-cat-hide-${category.id}`)}
                               type="checkbox"
+                              aria-label={`Nascondi categoria ${category.name}`}
                               checked={isHidden}
                               onChange={() => setDesignHiddenCategoryIdsText((current) => toggleIdInTextState(current, category.id))}
                             />
@@ -1428,22 +1516,26 @@ export default function SuperadminPage() {
                           <p className="text-xs font-semibold text-slate-800">{item.name}</p>
                           <p className="text-[10px] text-slate-500">{item.id} • {item.category}</p>
                           <div className="mt-2 flex items-center gap-3">
-                            <label className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-semibold">
-                              <input
-                                type="checkbox"
-                                checked={isFeatured}
-                                onChange={() => setDesignFeaturedItemIdsText((current) => toggleIdInTextState(current, item.id))}
-                              />
-                              Featured
-                            </label>
-                            <label className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-semibold">
-                              <input
-                                type="checkbox"
-                                checked={isSoldOut}
-                                onChange={() => setDesignSoldOutItemIdsText((current) => toggleIdInTextState(current, item.id))}
-                              />
-                              Sold out
-                            </label>
+                          <label htmlFor={fieldId(`menu-item-featured-${item.id}`)} className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-semibold">
+                            <input
+                              id={fieldId(`menu-item-featured-${item.id}`)}
+                              type="checkbox"
+                              aria-label={`Featured ${item.name}`}
+                              checked={isFeatured}
+                              onChange={() => setDesignFeaturedItemIdsText((current) => toggleIdInTextState(current, item.id))}
+                            />
+                            Featured
+                          </label>
+                          <label htmlFor={fieldId(`menu-item-soldout-${item.id}`)} className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-semibold">
+                            <input
+                              id={fieldId(`menu-item-soldout-${item.id}`)}
+                              type="checkbox"
+                              aria-label={`Sold out ${item.name}`}
+                              checked={isSoldOut}
+                              onChange={() => setDesignSoldOutItemIdsText((current) => toggleIdInTextState(current, item.id))}
+                            />
+                            Sold out
+                          </label>
                           </div>
                         </div>
                       );
@@ -1453,12 +1545,11 @@ export default function SuperadminPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-4">
-                <label className="inline-flex items-center gap-2 text-xs text-slate-700 font-semibold">
-                  <input type="checkbox" checked={designShowIngredients} onChange={(event) => setDesignShowIngredients(event.target.checked)} />
+                <label htmlFor={fieldId('design-show-ingredients')} className="inline-flex items-center gap-2 text-xs text-slate-700 font-semibold">
+                  <input id={fieldId('design-show-ingredients')} type="checkbox" aria-label="Mostra ingredienti" checked={designShowIngredients} onChange={(event) => setDesignShowIngredients(event.target.checked)} />
                   Mostra ingredienti
-                </label>
-                <label className="inline-flex items-center gap-2 text-xs text-slate-700 font-semibold">
-                  <input type="checkbox" checked={designShowPrices} onChange={(event) => setDesignShowPrices(event.target.checked)} />
+                </label>            <label htmlFor={fieldId('design-show-prices')} className="inline-flex items-center gap-2 text-xs text-slate-700 font-semibold">
+                  <input id={fieldId('design-show-prices')} type="checkbox" aria-label="Mostra prezzi" checked={designShowPrices} onChange={(event) => setDesignShowPrices(event.target.checked)} />
                   Mostra prezzi
                 </label>
                 <button

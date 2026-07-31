@@ -4,7 +4,6 @@ import {
   bomCreateRequestSchema,
   bomItemSchema,
   bomListResponseSchema,
-  bomStockItemSchema,
   bomUpdateRequestSchema,
   bomUpsertComponentsRequestSchema,
   createOrderRequestSchema,
@@ -137,16 +136,15 @@ import {
   staffCreateRequestSchema,
   staffResetPinRequestSchema,
   staffListResponseSchema,
-  staffSchema,
   staffUpdateRequestSchema,
   updateOrderRequestSchema,
   loyaltyBalanceSchema,
   loyaltyTransactionSchema,
   loyaltyTransactionsListSchema,
+  loyaltyConfigSchema,
   type AppData,
   type BomCreateRequest,
   type BomItem,
-  type BomStockItem,
   type BomUpdateRequest,
   type BomUpsertComponentsRequest,
   type CreateOrderRequest,
@@ -274,6 +272,7 @@ import {
   type UpdateOrderRequest,
   type LoyaltyBalance,
   type LoyaltyTransaction,
+  type LoyaltyConfig,
   type PrepItem,
   type PrepItemUpdateRequest,
   type UnitConversion,
@@ -355,6 +354,9 @@ export function clearAuthSession() {
   localStorage.removeItem(REFRESH_TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(TENANT_KEY);
+  // Reset tenant cache so inferTenantId() re-evaluates on next call
+  _tenantIdResolved = false;
+  _cachedTenantId = null as unknown as string;
 }
 
 export async function logout(): Promise<void> {
@@ -376,6 +378,9 @@ export function persistAuthSession(payload: RefreshResponse) {
   if (payload.user.tenantId) {
     localStorage.setItem(TENANT_KEY, payload.user.tenantId);
   }
+  // Invalidate tenant cache so inferTenantId() re-evaluates with the correct stored user
+  _tenantIdResolved = false;
+  _cachedTenantId = null as unknown as string;
 }
 
 function authHeaders(): Record<string, string> {
@@ -546,28 +551,42 @@ export async function login(staffId: string, pin: string): Promise<LoginResponse
   return payload;
 }
 
+let refreshPromise: Promise<boolean> | null = null;
+
 export async function refreshSession(): Promise<boolean> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) {
-    clearAuthSession();
-    return false;
+  if (refreshPromise) {
+    return refreshPromise;
   }
 
-  const request = refreshRequestSchema.parse({ refreshToken });
-  const response = await fetch(`${API_URL}/api/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...tenantHeaders() },
-    body: JSON.stringify(request),
-  });
+  refreshPromise = (async () => {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) {
+      clearAuthSession();
+      return false;
+    }
 
-  if (!response.ok) {
-    clearAuthSession();
-    return false;
-  }
+    try {
+      const request = refreshRequestSchema.parse({ refreshToken });
+      const response = await fetch(`${API_URL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...tenantHeaders() },
+        body: JSON.stringify(request),
+      });
 
-  const payload = await readJson(response, refreshResponseSchema);
-  persistAuthSession(payload);
-  return true;
+      if (!response.ok) {
+        clearAuthSession();
+        return false;
+      }
+
+      const payload = await readJson(response, refreshResponseSchema);
+      persistAuthSession(payload);
+      return true;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 export async function fetchData(): Promise<AppData> {
@@ -1066,6 +1085,18 @@ export async function createOrder(payload: CreateOrderRequest): Promise<Order> {
   return readJson(response, orderSchema);
 }
 
+export async function updateOrderItemQuantity(orderId: string, orderItemId: number, quantity: number): Promise<Order> {
+  const response = await authorizedFetch(`${API_URL}/api/orders/${orderId}/items/${orderItemId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ quantity }),
+  });
+
+  return readJson(response, orderSchema);
+}
+
 export async function updateOrder(id: string, payload: UpdateOrderRequest): Promise<Order> {
   const request = updateOrderRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/orders/${id}`, {
@@ -1284,41 +1315,7 @@ export async function deleteBomItem(id: string): Promise<LogoutResponse> {
   return readJson(response, logoutResponseSchema);
 }
 
-export async function fetchBomStock(): Promise<BomStockItem[]> {
-  const response = await authorizedFetch(`${API_URL}/api/bom/stock`);
-  return readJson(response, z.array(bomStockItemSchema));
-}
-
-export async function prepareBom(id: string, quantity: number): Promise<{
-  bomId: string;
-  name: string;
-  previousStock: number;
-  newStock: number;
-  ingredientsDeducted: Array<{ id: string; name: string; quantity: number; unit: string }>;
-}> {
-  const response = await authorizedFetch(`${API_URL}/api/bom/${id}/prepare`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quantity }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error((err as { message?: string }).message || 'Failed to prepare BOM');
-  }
-
-  return response.json();
-}
-
-export async function updateBomPreBatched(id: string, isPreBatched: boolean): Promise<void> {
-  await authorizedFetch(`${API_URL}/api/bom/${id}/pre-batched`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ isPreBatched }),
-  });
-}
-
-export async function fetchPayments(filters: PaymentFilters = {}): Promise<Payment[]> {
+    export async function fetchPayments(filters: PaymentFilters = {}): Promise<Payment[]> {
   const parsed = paymentFiltersSchema.parse(filters);
   const query = new URLSearchParams();
 
@@ -2203,6 +2200,13 @@ export async function redeemLoyaltyPoints(customerId: string, points: number, or
   return readJson(response, loyaltyTransactionSchema);
 }
 
+// ─── Loyalty Points ──────────────────────────────────────────────────
+
+export async function fetchLoyaltyConfig(): Promise<LoyaltyConfig> {
+  const response = await authorizedFetch(`${API_URL}/api/loyalty/config`);
+  return readJson(response, loyaltyConfigSchema);
+}
+
 export async function fetchLoyaltyTransactions(customerId: string, limit?: number): Promise<LoyaltyTransaction[]> {
   const query = new URLSearchParams();
   if (limit) query.set('limit', String(limit));
@@ -2390,7 +2394,6 @@ import type {
   PrintBridgePrintBridgesListResponse,
   PrintBridgeUpdateMappingsRequest,
   PrintBridgeUpdateClaimedAreasRequest,
-  PrintBridgeTestPrintRequest,
   PrintBridgeTestPrintResponse,
   PrintArea,
 } from '@gustopos/shared';
@@ -2404,7 +2407,7 @@ export async function listPrintBridgesRequest(): Promise<PrintBridge[]> {
 // CASCADE_CLIENT_LIST_BRIDGES_BODY_DONE
 }
 
-export async function updateBridgeMappingsRequest(
+export async function updateBridgeMappings(
   bridgeId: string,
   mappings: PrintBridgeUpdateMappingsRequest['mappings'],
 ): Promise<PrintBridge> {
@@ -2415,7 +2418,7 @@ export async function updateBridgeMappingsRequest(
   return res.bridge;
 }
 
-export async function updateBridgeClaimedAreasRequest(
+export async function updateBridgeClaimedAreas(
   bridgeId: string,
   claimedAreas: PrintBridgeUpdateClaimedAreasRequest['claimedAreas'],
 ): Promise<PrintBridge> {
@@ -2522,8 +2525,8 @@ export async function fetchRefreshBridge(
 }
 
 export async function saveLocalBridgeConfig(
-  config: LocalBridgeConfig | null,
-  setToken?: (token: string | null) => void,
+  _config: LocalBridgeConfig | null,
+  _setToken?: (token: string | null) => void,
   _opts?: { replaceState?: boolean },
 ): Promise<{ ok: true }> {
   // Persistence is handled by the dedicated localBridgeSlice; this stub returns
@@ -2560,7 +2563,5 @@ export {
   listOnboardingSecretsRequest as listOnboardingSecrets,
   createOnboardingSecretRequest as createOnboardingSecret,
   revokeOnboardingSecretRequest as revokeOnboardingSecret,
-  updateBridgeMappingsRequest as updateBridgeMappings,
-  updateBridgeClaimedAreasRequest as updateBridgeClaimedAreas,
 };
 // CASCADE_CLIENT_PHASE_E_BLOCK_DONE

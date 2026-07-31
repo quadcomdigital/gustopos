@@ -475,7 +475,13 @@ export class PrintBridgeRepository {
       where: and(
         eq(printBridgeOnboardingSecrets.shortCodeHash, hash),
         isNotNull(printBridgeOnboardingSecrets.shortCodeHash),
-        gt(printBridgeOnboardingSecrets.shortCodeExpiresAt, now),
+        // Unbound codes expire after the 90s pairing window (brute-force
+        // protection). Once a code is bound to a bridge it becomes that
+        // bridge's permanent credential until the secret is revoked (detached).
+        or(
+          gt(printBridgeOnboardingSecrets.shortCodeExpiresAt, now),
+          isNotNull(printBridgeOnboardingSecrets.boundBridgeId),
+        ),
         isNull(printBridgeOnboardingSecrets.revokedAt),
       ),
     });
@@ -530,7 +536,10 @@ export class PrintBridgeRepository {
         and(
           eq(printBridgeOnboardingSecrets.shortCodeHash, hash),
           isNotNull(printBridgeOnboardingSecrets.shortCodeHash),
-          gt(printBridgeOnboardingSecrets.shortCodeExpiresAt, now),
+          or(
+            gt(printBridgeOnboardingSecrets.shortCodeExpiresAt, now),
+            isNotNull(printBridgeOnboardingSecrets.boundBridgeId),
+          ),
           isNull(printBridgeOnboardingSecrets.revokedAt),
         ),
       )

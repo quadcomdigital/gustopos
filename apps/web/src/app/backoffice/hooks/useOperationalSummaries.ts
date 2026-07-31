@@ -27,12 +27,14 @@ export function useOperationalSummaries(params: UseOperationalSummariesParams) {
     setDeliverySummary(delivery);
   }, [enabledModules]);
 
+  const enabledKey = enabledModules.join('|');
   useEffect(() => {
     if (!currentUser || currentUser.role !== 'admin') {
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] refreshOperationalSummaries calls store set() internally; called asynchronously via void
     void refreshOperationalSummaries();
-  }, [currentUser, enabledModules.join('|'), refreshOperationalSummaries]);
+  }, [currentUser, enabledKey, refreshOperationalSummaries]);
 
   return {
     reservationsSummary,
