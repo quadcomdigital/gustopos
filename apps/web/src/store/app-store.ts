@@ -245,6 +245,30 @@ import {
 import { disconnectSocket, getSocket } from '../shared/api/socket';
 import { applyUiTheme } from '../lib/theme';
 import { uiActionPolicyMatrix } from '../shared/authz/policy';
+import {
+  isReservationsQueryFresh,
+  normalizeReservationsQuery,
+  reservationsQueryKey,
+} from './reservations-cache';
+
+let reservationsRequestSequence = 0;
+const reservationsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
+
+function invalidateReservationsCache(): Pick<AppState, 'reservations' | 'reservationsQuery' | 'reservationsQueryKey' | 'reservationsFetchedAt'> {
+  reservationsRequestSequence += 1;
+  reservationsInFlight.clear();
+  return {
+    reservations: [],
+    reservationsQuery: null,
+    reservationsQueryKey: null,
+    reservationsFetchedAt: null,
+  };
+}
+
+async function refreshCurrentReservations(get: () => AppState): Promise<void> {
+  const state = get();
+  await state.refreshReservations(state.reservationsQuery ?? { limit: 200 }, true);
+}
 
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
@@ -512,6 +536,9 @@ interface AppState {
   payments: Payment[];
   printJobs: PrintJob[];
   reservations: Reservation[];
+  reservationsQuery: ReservationsQuery | null;
+  reservationsQueryKey: string | null;
+  reservationsFetchedAt: number | null;
   deliveryOrders: DeliveryOrder[];
   categories: Category[];
   customers: Customer[];
@@ -613,7 +640,7 @@ interface AppState {
   refreshUiSettings: () => Promise<void>;
   updateUiSettings: (payload: UiSettings) => Promise<void>;
   updatePrintingSettings: (payload: { printing: Partial<UiSettings['printing']> }) => Promise<void>;
-  refreshReservations: (query?: ReservationsQuery) => Promise<void>;
+  refreshReservations: (query?: ReservationsQuery, force?: boolean) => Promise<void>;
   createReservation: (payload: ReservationCreateRequest) => Promise<void>;
   updateReservation: (id: string, payload: ReservationUpdateRequest) => Promise<void>;
   confirmReservation: (id: string) => Promise<void>;
@@ -907,6 +934,9 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   payments: [],
   printJobs: [],
   reservations: [],
+  reservationsQuery: null,
+  reservationsQueryKey: null,
+  reservationsFetchedAt: null,
   deliveryOrders: [],
   categories: [],
   customers: [],
@@ -978,7 +1008,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const refreshed = await refreshSession();
       if (!refreshed) {
         disconnectSocket();
-        set({ loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -987,7 +1017,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         // Refresh succeeded but user payload is missing/corrupted: this is a real auth-session corruption.
         clearAuthSession();
         disconnectSocket();
-        set({ loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1057,6 +1087,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (!refreshed) {
         disconnectSocket();
         set({
+          ...invalidateReservationsCache(),
           currentUser: null,
           tenantContext: null,
           enabledModules: [],
@@ -1073,6 +1104,13 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const activeModules = new Set(normalizedModules);
       const shouldLoadCoreData = normalizedModules.includes('kitchen');
       const shouldReloadData = shouldLoadCoreData && !get().data;
+
+      const previousTenantId = get().tenantContext?.tenantId;
+      const tenantChanged = Boolean(previousTenantId && currentUser?.tenantId && previousTenantId !== currentUser.tenantId);
+      const reservationsDisabled = previousModules.includes('reservations') && !activeModules.has('reservations');
+      const reservationsCacheReset = tenantChanged || reservationsDisabled
+        ? invalidateReservationsCache()
+        : null;
 
       if (!areSameModules(previousModules, normalizedModules)) {
         disconnectSocket();
@@ -1094,7 +1132,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         inventoryItems: activeModules.has('inventory') ? nextData.inventory : [],
         payments: activeModules.has('analytics') ? state.payments : [],
         printJobs: activeModules.has('printing') ? state.printJobs : [],
-        reservations: activeModules.has('reservations') ? state.reservations : [],
+        reservations: reservationsCacheReset ? reservationsCacheReset.reservations : (activeModules.has('reservations') ? state.reservations : []),
+        reservationsQuery: reservationsCacheReset ? reservationsCacheReset.reservationsQuery : (activeModules.has('reservations') ? state.reservationsQuery : null),
+        reservationsQueryKey: reservationsCacheReset ? reservationsCacheReset.reservationsQueryKey : (activeModules.has('reservations') ? state.reservationsQueryKey : null),
+        reservationsFetchedAt: reservationsCacheReset ? reservationsCacheReset.reservationsFetchedAt : (activeModules.has('reservations') ? state.reservationsFetchedAt : null),
         deliveryOrders: activeModules.has('delivery') ? state.deliveryOrders : [],
         categories: activeModules.has('inventory') || activeModules.has('simple_catalog') ? state.categories : [],
         customers: activeModules.has('customers') ? state.customers : [],
@@ -1129,6 +1170,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (bootstrap) {
         applyUiTheme(bootstrap.uiSettings);
         set({
+          ...invalidateReservationsCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1158,6 +1200,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         applyUiTheme(uiSettings);
 
         set({
+          ...invalidateReservationsCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1192,7 +1235,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       staffAdmin: [],
       payments: [],
       printJobs: [],
-      reservations: [],
+      ...invalidateReservationsCache(),
       deliveryOrders: [],
       suppliers: [],
       purchaseOrders: [],
@@ -1294,17 +1337,51 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  refreshReservations: async (query) => {
-    try {
-      const currentUser = get().currentUser;
-      if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'waiter')) return;
-      if (!hasModuleEnabled(get(), 'reservations')) return;
-      const reservations = await fetchReservations(query ?? { limit: 200 });
-      set({ reservations });
-    } catch (err) {
-      set({ error: handleActionError(err) });
-      throw err;
+  refreshReservations: async (query, force = false) => {
+    const currentUser = get().currentUser;
+    if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'waiter')) return;
+    if (!hasModuleEnabled(get(), 'reservations')) return;
+
+    const normalizedQuery = normalizeReservationsQuery(query);
+    const key = reservationsQueryKey(normalizedQuery);
+    const state = get();
+    if (!force && state.reservationsQueryKey === key && isReservationsQueryFresh(state.reservationsFetchedAt)) {
+      return;
     }
+    const inFlight = reservationsInFlight.get(key);
+    if (inFlight && !force) {
+      return inFlight.promise;
+    }
+    if (force) {
+      reservationsInFlight.delete(key);
+    }
+
+    const requestId = ++reservationsRequestSequence;
+    const requestPromise = (async () => {
+      try {
+        const reservations = await fetchReservations(normalizedQuery);
+        // A newer query must win even if an older request resolves later.
+        if (requestId !== reservationsRequestSequence) return;
+        set({
+          reservations,
+          reservationsQuery: normalizedQuery,
+          reservationsQueryKey: key,
+          reservationsFetchedAt: Date.now(),
+        });
+      } catch (err) {
+        if (requestId === reservationsRequestSequence) {
+          set({ error: handleActionError(err) });
+        }
+        throw err;
+      } finally {
+        if (reservationsInFlight.get(key)?.requestId === requestId) {
+          reservationsInFlight.delete(key);
+        }
+      }
+    })();
+
+    reservationsInFlight.set(key, { requestId, promise: requestPromise });
+    return requestPromise;
   },
 
   createReservation: async (payload) => {
@@ -1314,8 +1391,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo reservations disabilitato per questo tenant');
       }
       await createReservationRequest(payload);
-      const reservations = await fetchReservations({ limit: 200 });
-      set({ reservations });
+      await refreshCurrentReservations(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1329,8 +1405,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo reservations disabilitato per questo tenant');
       }
       await updateReservationRequest(id, payload);
-      const reservations = await fetchReservations({ limit: 200 });
-      set({ reservations });
+      await refreshCurrentReservations(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1343,8 +1418,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo reservations disabilitato per questo tenant');
       }
       await confirmReservationRequest(id);
-      const reservations = await fetchReservations({ limit: 200 });
-      set({ reservations });
+      await refreshCurrentReservations(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1357,8 +1431,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo reservations disabilitato per questo tenant');
       }
       await cancelReservationRequest(id);
-      const reservations = await fetchReservations({ limit: 200 });
-      set({ reservations });
+      await refreshCurrentReservations(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1371,8 +1444,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo reservations disabilitato per questo tenant');
       }
       await markReservationNoShowRequest(id, reason);
-      const reservations = await fetchReservations({ limit: 200 });
-      set({ reservations });
+      await refreshCurrentReservations(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
