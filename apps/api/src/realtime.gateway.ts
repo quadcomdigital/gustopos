@@ -56,8 +56,6 @@ export class RealtimeGateway implements OnModuleInit {
     this.server.use(async (socket, next) => {
       const token = socket.handshake.auth?.token;
       const participantToken = socket.handshake.auth?.participantToken;
-      console.log(`[realtime] middleware: socket ${socket.id} token=${token ? token.substring(0, 20) + "..." : "NONE"}`);
-
       if (!token || typeof token !== "string") {
         // Public group-order clients do not have staff JWTs. They may connect
         // with a participant token, but can receive events only after the room
@@ -176,7 +174,6 @@ export class RealtimeGateway implements OnModuleInit {
 
   async emit<T>(event: string, payload: T, tenantId?: string): Promise<void> {
     const sockets = [...this.server.sockets.sockets.values()];
-    console.log(`[realtime] emit "${event}" to ${sockets.length} socket(s) tenant=${tenantId ?? "all"}`);
     for (const socket of sockets) {
       if (socket.data.authenticated !== true) {
         continue;
