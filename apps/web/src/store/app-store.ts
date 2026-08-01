@@ -263,6 +263,14 @@ import {
   purchaseOrdersQueryKey,
   suppliersQueryKey,
 } from './purchasing-cache';
+import {
+  isShiftsQueryFresh,
+  isTimeReportQueryFresh,
+  normalizeShiftsQuery,
+  normalizeTimeReportQuery,
+  shiftsQueryKey,
+  timeReportQueryKey,
+} from './shifts-cache';
 
 let reservationsRequestSequence = 0;
 const reservationsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
@@ -272,6 +280,10 @@ let suppliersRequestSequence = 0;
 const suppliersInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 let purchaseOrdersRequestSequence = 0;
 const purchaseOrdersInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
+let shiftsRequestSequence = 0;
+const shiftsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
+let timeReportRequestSequence = 0;
+const timeReportInFlight = new Map<string, { requestId: number; promise: Promise<TimeReportResponse> }>();
 
 function invalidateReservationsCache(): Pick<AppState, 'reservations' | 'reservationsQuery' | 'reservationsQueryKey' | 'reservationsFetchedAt'> {
   reservationsRequestSequence += 1;
@@ -330,6 +342,35 @@ async function refreshCurrentSuppliers(get: () => AppState): Promise<void> {
 async function refreshCurrentPurchaseOrders(get: () => AppState): Promise<void> {
   const state = get();
   await state.refreshPurchaseOrders(state.purchaseOrdersQuery ?? { limit: 200 }, true);
+}
+
+function invalidateShiftsCache(): Pick<AppState, 'shifts' | 'shiftsQuery' | 'shiftsQueryKey' | 'shiftsFetchedAt' | 'timeEntries' | 'timeReport' | 'timeReportQuery' | 'timeReportQueryKey' | 'timeReportFetchedAt'> {
+  shiftsRequestSequence += 1;
+  timeReportRequestSequence += 1;
+  shiftsInFlight.clear();
+  timeReportInFlight.clear();
+  return {
+    shifts: [],
+    shiftsQuery: null,
+    shiftsQueryKey: null,
+    shiftsFetchedAt: null,
+    timeEntries: [],
+    timeReport: null,
+    timeReportQuery: null,
+    timeReportQueryKey: null,
+    timeReportFetchedAt: null,
+  };
+}
+
+async function refreshCurrentShifts(get: () => AppState): Promise<void> {
+  const state = get();
+  await state.refreshShifts(state.shiftsQuery ?? { limit: 200 }, true);
+}
+
+async function refreshCurrentTimeReport(get: () => AppState): Promise<TimeReportResponse | null> {
+  const state = get();
+  if (!state.timeReportQuery) return null;
+  return state.refreshTimeReport(state.timeReportQuery, true);
 }
 
 type StoreSet = (
@@ -618,7 +659,14 @@ interface AppState {
   purchaseOrdersQueryKey: string | null;
   purchaseOrdersFetchedAt: number | null;
   shifts: Shift[];
+  shiftsQuery: ShiftsQuery | null;
+  shiftsQueryKey: string | null;
+  shiftsFetchedAt: number | null;
   timeEntries: TimeEntry[];
+  timeReport: TimeReportResponse | null;
+  timeReportQuery: TimeReportQuery | null;
+  timeReportQueryKey: string | null;
+  timeReportFetchedAt: number | null;
   fiscalExports: FiscalExport[];
   inventoryItems: Ingredient[];
   bomItems: BomItem[];
@@ -728,12 +776,12 @@ interface AppState {
   createPurchaseOrder: (payload: PurchaseOrderCreateRequest) => Promise<void>;
   updatePurchaseOrderStatus: (id: string, payload: PurchaseOrderStatusUpdateRequest) => Promise<void>;
   createGoodsReceipt: (orderId: string, payload: GoodsReceiptCreateRequest) => Promise<GoodsReceipt>;
-  refreshShifts: (query?: ShiftsQuery) => Promise<void>;
+  refreshShifts: (query?: ShiftsQuery, force?: boolean) => Promise<void>;
   createShift: (payload: ShiftCreateRequest) => Promise<void>;
   updateShift: (id: string, payload: ShiftUpdateRequest) => Promise<void>;
   clockIn: (payload: ClockInRequest) => Promise<TimeEntry>;
   clockOut: (payload: ClockOutRequest) => Promise<TimeEntry>;
-  refreshTimeReport: (query: TimeReportQuery) => Promise<TimeReportResponse>;
+  refreshTimeReport: (query: TimeReportQuery, force?: boolean) => Promise<TimeReportResponse>;
   refreshFiscalExports: (query?: FiscalExportsQuery) => Promise<void>;
   closeFiscalDay: (payload: FiscalCloseRequest) => Promise<FiscalClosure>;
   createFiscalExport: (payload: FiscalExportCreateRequest) => Promise<FiscalExport>;
@@ -1025,7 +1073,14 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   purchaseOrdersQueryKey: null,
   purchaseOrdersFetchedAt: null,
   shifts: [],
+  shiftsQuery: null,
+  shiftsQueryKey: null,
+  shiftsFetchedAt: null,
   timeEntries: [],
+  timeReport: null,
+  timeReportQuery: null,
+  timeReportQueryKey: null,
+  timeReportFetchedAt: null,
   fiscalExports: [],
   inventoryItems: [],
   bomItems: [],
@@ -1088,7 +1143,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const refreshed = await refreshSession();
       if (!refreshed) {
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1097,7 +1152,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         // Refresh succeeded but user payload is missing/corrupted: this is a real auth-session corruption.
         clearAuthSession();
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1113,6 +1168,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         set({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
+          ...invalidateShiftsCache(),
           data: bootstrap.data,
           staff: bootstrap.staff,
           uiSettings: bootstrap.uiSettings,
@@ -1145,6 +1201,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         set({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
+          ...invalidateShiftsCache(),
           data,
           staff: staffList,
           uiSettings,
@@ -1174,6 +1231,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateReservationsCache(),
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
+          ...invalidateShiftsCache(),
           currentUser: null,
           tenantContext: null,
           enabledModules: [],
@@ -1204,6 +1262,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const purchasingDisabled = previousModules.includes('purchasing_suppliers') && !activeModules.has('purchasing_suppliers');
       const purchasingCacheReset = tenantChanged || purchasingDisabled
         ? invalidatePurchasingCache()
+        : null;
+      const shiftsDisabled = previousModules.includes('staff_shifts_timeclock') && !activeModules.has('staff_shifts_timeclock');
+      const shiftsCacheReset = tenantChanged || shiftsDisabled
+        ? invalidateShiftsCache()
         : null;
 
       if (!areSameModules(previousModules, normalizedModules)) {
@@ -1246,8 +1308,15 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         purchaseOrdersQuery: purchasingCacheReset ? purchasingCacheReset.purchaseOrdersQuery : (activeModules.has('purchasing_suppliers') ? state.purchaseOrdersQuery : null),
         purchaseOrdersQueryKey: purchasingCacheReset ? purchasingCacheReset.purchaseOrdersQueryKey : (activeModules.has('purchasing_suppliers') ? state.purchaseOrdersQueryKey : null),
         purchaseOrdersFetchedAt: purchasingCacheReset ? purchasingCacheReset.purchaseOrdersFetchedAt : (activeModules.has('purchasing_suppliers') ? state.purchaseOrdersFetchedAt : null),
-        shifts: activeModules.has('staff_shifts_timeclock') ? state.shifts : [],
-        timeEntries: activeModules.has('staff_shifts_timeclock') ? state.timeEntries : [],
+        shifts: shiftsCacheReset ? shiftsCacheReset.shifts : (activeModules.has('staff_shifts_timeclock') ? state.shifts : []),
+        shiftsQuery: shiftsCacheReset ? shiftsCacheReset.shiftsQuery : (activeModules.has('staff_shifts_timeclock') ? state.shiftsQuery : null),
+        shiftsQueryKey: shiftsCacheReset ? shiftsCacheReset.shiftsQueryKey : (activeModules.has('staff_shifts_timeclock') ? state.shiftsQueryKey : null),
+        shiftsFetchedAt: shiftsCacheReset ? shiftsCacheReset.shiftsFetchedAt : (activeModules.has('staff_shifts_timeclock') ? state.shiftsFetchedAt : null),
+        timeReport: shiftsCacheReset ? shiftsCacheReset.timeReport : (activeModules.has('staff_shifts_timeclock') ? state.timeReport : null),
+        timeReportQuery: shiftsCacheReset ? shiftsCacheReset.timeReportQuery : (activeModules.has('staff_shifts_timeclock') ? state.timeReportQuery : null),
+        timeReportQueryKey: shiftsCacheReset ? shiftsCacheReset.timeReportQueryKey : (activeModules.has('staff_shifts_timeclock') ? state.timeReportQueryKey : null),
+        timeReportFetchedAt: shiftsCacheReset ? shiftsCacheReset.timeReportFetchedAt : (activeModules.has('staff_shifts_timeclock') ? state.timeReportFetchedAt : null),
+        timeEntries: shiftsCacheReset ? shiftsCacheReset.timeEntries : (activeModules.has('staff_shifts_timeclock') ? state.timeEntries : []),
         fiscalExports: activeModules.has('fiscal_exports') ? state.fiscalExports : [],
         bomItems: activeModules.has('inventory') ? state.bomItems : [],
         bomStock: activeModules.has('inventory') ? state.bomStock : [],
@@ -1276,6 +1345,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateReservationsCache(),
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
+          ...invalidateShiftsCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1308,6 +1378,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateReservationsCache(),
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
+          ...invalidateShiftsCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1345,6 +1416,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       ...invalidateReservationsCache(),
       ...invalidateDeliveryCache(),
       ...invalidatePurchasingCache(),
+      ...invalidateShiftsCache(),
       purchaseOrders: [],
       shifts: [],
       timeEntries: [],
@@ -2789,13 +2861,33 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  refreshShifts: async (query) => {
+  refreshShifts: async (query, force = false) => {
     try {
       const currentUser = get().currentUser;
       if (!currentUser || currentUser.role !== 'admin') return;
       if (!hasModuleEnabled(get(), 'staff_shifts_timeclock')) return;
-      const shifts = await fetchShifts(query);
-      set({ shifts });
+      const normalizedQuery = normalizeShiftsQuery(query);
+      const key = shiftsQueryKey(normalizedQuery);
+      const state = get();
+      if (!force && state.shiftsQueryKey === key && isShiftsQueryFresh(state.shiftsFetchedAt)) return;
+      const inFlight = shiftsInFlight.get(key);
+      if (inFlight && !force) return inFlight.promise;
+      if (force) shiftsInFlight.delete(key);
+      const requestId = ++shiftsRequestSequence;
+      const requestPromise = (async () => {
+        try {
+          const shifts = await fetchShifts(normalizedQuery);
+          if (requestId !== shiftsRequestSequence) return;
+          set({ shifts, shiftsQuery: normalizedQuery, shiftsQueryKey: key, shiftsFetchedAt: Date.now() });
+        } catch (err) {
+          if (requestId === shiftsRequestSequence) set({ error: handleActionError(err) });
+          throw err;
+        } finally {
+          if (shiftsInFlight.get(key)?.requestId === requestId) shiftsInFlight.delete(key);
+        }
+      })();
+      shiftsInFlight.set(key, { requestId, promise: requestPromise });
+      return requestPromise;
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -2809,8 +2901,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo staff_shifts_timeclock disabilitato per questo tenant');
       }
       await createShiftRequest(payload);
-      const shifts = await fetchShifts({ limit: 200 });
-      set({ shifts });
+      await refreshCurrentShifts(get);
+      await refreshCurrentTimeReport(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -2824,8 +2916,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo staff_shifts_timeclock disabilitato per questo tenant');
       }
       await updateShiftRequest(id, payload);
-      const shifts = await fetchShifts({ limit: 200 });
-      set({ shifts });
+      await refreshCurrentShifts(get);
+      await refreshCurrentTimeReport(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -2840,6 +2932,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const entry = await clockInRequest(payload);
       set((state) => ({ timeEntries: [...state.timeEntries, entry] }));
+      await refreshCurrentShifts(get);
+      await refreshCurrentTimeReport(get);
       return entry;
     } catch (err) {
       set({ error: handleActionError(err) });
@@ -2857,6 +2951,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       set((state) => ({
         timeEntries: state.timeEntries.map((e) => (e.id === entry.id ? entry : e)),
       }));
+      await refreshCurrentShifts(get);
+      await refreshCurrentTimeReport(get);
       return entry;
     } catch (err) {
       set({ error: handleActionError(err) });
@@ -2864,11 +2960,35 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  refreshTimeReport: async (query) => {
+  refreshTimeReport: async (query, force = false) => {
     try {
       const currentUser = get().currentUser;
       if (!currentUser || currentUser.role !== 'admin') throw new Error('Non autorizzato');
-      return await fetchTimeReport(query);
+      const normalizedQuery = normalizeTimeReportQuery(query);
+      const key = timeReportQueryKey(normalizedQuery);
+      const state = get();
+      if (!force && state.timeReportQueryKey === key && isTimeReportQueryFresh(state.timeReportFetchedAt) && state.timeReport) {
+        return state.timeReport;
+      }
+      const inFlight = timeReportInFlight.get(key);
+      if (inFlight && !force) return inFlight.promise;
+      if (force) timeReportInFlight.delete(key);
+      const requestId = ++timeReportRequestSequence;
+      const requestPromise = (async () => {
+        try {
+          const report = await fetchTimeReport(normalizedQuery);
+          if (requestId !== timeReportRequestSequence) return report;
+          set({ timeReport: report, timeReportQuery: normalizedQuery, timeReportQueryKey: key, timeReportFetchedAt: Date.now() });
+          return report;
+        } catch (err) {
+          if (requestId === timeReportRequestSequence) set({ error: handleActionError(err) });
+          throw err;
+        } finally {
+          if (timeReportInFlight.get(key)?.requestId === requestId) timeReportInFlight.delete(key);
+        }
+      })();
+      timeReportInFlight.set(key, { requestId, promise: requestPromise });
+      return requestPromise;
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
