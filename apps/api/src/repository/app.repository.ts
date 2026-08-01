@@ -975,7 +975,7 @@ export class AppRepository {
     }
   }
 
-  async getBootstrapData(enabledModules: string[]): Promise<{
+  async getBootstrapData(enabledModules: string[], role?: string): Promise<{
     data: AppData;
     staff: Staff[];
     uiSettings: UiSettings;
@@ -999,6 +999,18 @@ export class AppRepository {
     const printingEnabled = enabledModules.includes('printing');
     const customersEnabled = enabledModules.includes('customers');
 
+    // C4 — bootstrap per-dominio: carichiamo SOLO i domini accessibili al ruolo
+    // (allineato a route-guards.ts). Un cameriere non scarica payments, analytics,
+    // orderHistory o inventory admin che non può aprire; i domini admin si caricano
+    // lazy alla prima apertura della view tramite le refresh* dello store.
+    const isAdmin = role === "admin";
+    const isChef = role === "chef";
+    const isWaiter = role === "waiter";
+    // Se il ruolo non è risolvibile, mantieni il comportamento precedente (tutto).
+    const isAdminOrUnresolved = isAdmin || role === undefined;
+    const canViewInventory = isAdmin || isChef;
+    const canViewCustomers = isAdmin || isWaiter;
+
     // Parallel fetch all data in a single round-trip
     const [
       data,
@@ -1018,27 +1030,23 @@ export class AppRepository {
       kitchenEnabled ? this.getPublicData() : Promise.resolve({ staff: [], tables: [], inventory: [], bomItems: [], menu: [], orders: [], categories: [], categoryModifierPools: [] } as AppData),
       this.staffRepo.listStaffPublic(),
       this.getUiSettings(),
-      kitchenEnabled ? this.staffRepo.listStaffAdmin() : Promise.resolve([]),
-      analyticsEnabled ? this.paymentsRepo.listPayments({ limit: 200 }) : Promise.resolve([]),
-      printingEnabled ? this.printJobsRepo.listPrintJobs({ limit: 100 }) : Promise.resolve([]),
-      inventoryEnabled ? this.inventoryRepo.listInventoryItems() : Promise.resolve([]),
-      inventoryEnabled ? this.inventoryRepo.listBomItems() : Promise.resolve([]),
-      inventoryEnabled ? this.inventoryRepo.listPrepItems() : Promise.resolve([]),
-      inventoryEnabled
+      isAdminOrUnresolved && kitchenEnabled ? this.staffRepo.listStaffAdmin() : Promise.resolve([]),
+      isAdminOrUnresolved && analyticsEnabled ? this.paymentsRepo.listPayments({ limit: 200 }) : Promise.resolve([]),
+      isAdminOrUnresolved && printingEnabled ? this.printJobsRepo.listPrintJobs({ limit: 100 }) : Promise.resolve([]),
+      canViewInventory && inventoryEnabled ? this.inventoryRepo.listInventoryItems() : Promise.resolve([]),
+      canViewInventory && inventoryEnabled ? this.inventoryRepo.listBomItems() : Promise.resolve([]),
+      canViewInventory && inventoryEnabled ? this.inventoryRepo.listPrepItems() : Promise.resolve([]),
+      canViewInventory && (inventoryEnabled || simpleCatalogOnly)
         ? this.inventoryRepo.listCategories()
-        : simpleCatalogOnly
-          ? this.inventoryRepo.listCategories()
-          : Promise.resolve([]),
-      customersEnabled ? this.customerRepo.listCustomers({ limit: 100 }) : Promise.resolve([]),
-      analyticsEnabled ? this.listOrderHistory({ limit: 200 }) : Promise.resolve([]),
-      analyticsEnabled ? this.customerRepo.getCustomerAnalytics({}) : Promise.resolve(null),
+        : Promise.resolve([]),
+      canViewCustomers && customersEnabled ? this.customerRepo.listCustomers({ limit: 100 }) : Promise.resolve([]),
+      isAdminOrUnresolved && analyticsEnabled ? this.listOrderHistory({ limit: 200 }) : Promise.resolve([]),
+      isAdminOrUnresolved && analyticsEnabled ? this.customerRepo.getCustomerAnalytics({}) : Promise.resolve(null),
     ]);
 
-    const menuItemsAdmin = inventoryEnabled
+    const menuItemsAdmin = canViewInventory && (inventoryEnabled || simpleCatalogOnly)
       ? await this.inventoryRepo.listMenuItemsAdmin()
-      : simpleCatalogOnly
-        ? await this.inventoryRepo.listMenuItemsAdmin()
-        : [];
+      : [];
 
     return {
       data,

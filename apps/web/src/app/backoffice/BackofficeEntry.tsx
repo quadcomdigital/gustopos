@@ -128,8 +128,8 @@ export default function BackofficeEntry() {
           onExitImpersonation={() => void exitImpersonation()}
           onLogout={handleLogout}
           pendingOrdersCount={0}
-          orderHistoryCount={orderHistory.length}
-          analyticsEnabled={enabledModules.includes('analytics')}
+          orderHistoryCount={currentUser.role === 'admin' ? orderHistory.length : 0}
+          analyticsEnabled={enabledModules.includes('analytics') && currentUser.role === 'admin'}
           routes={accessibleRoutes}
           activeRouteKey={(activeRoute?.key ?? defaultRoute?.key ?? 'dashboard') as BackofficeRouteKey}
           onNavigate={(routeKey) => navigate(getTenantRoutePath(routeKey, tenantSlug))}
@@ -192,8 +192,8 @@ export default function BackofficeEntry() {
         onExitImpersonation={() => void exitImpersonation()}
         onLogout={handleLogout}
         pendingOrdersCount={pendingOrdersCount}
-        orderHistoryCount={orderHistory.length}
-        analyticsEnabled={enabledModules.includes('analytics')}
+        orderHistoryCount={currentUser.role === 'admin' ? orderHistory.length : 0}
+        analyticsEnabled={enabledModules.includes('analytics') && currentUser.role === 'admin'}
         routes={accessibleRoutes}
         activeRouteKey={(activeRoute?.key ?? defaultRoute?.key ?? 'dashboard') as BackofficeRouteKey}
         onNavigate={(routeKey) => navigate(getTenantRoutePath(routeKey, tenantSlug))}

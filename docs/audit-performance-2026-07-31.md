@@ -107,6 +107,13 @@ Alla **prima connessione di ogni utente** (anche un cameriere che usa solo la cu
 
 **Fix proposto:** Caricare **solo** i domini necessari al ruolo/modulo: `kitchen` → solo `getPublicData()` (alleggerita). I domini admin (analytics, inventory admin, customers…) si caricano **lazy** alla prima apertura della view (già esistono le `refresh*` per farlo — manca solo il trigger).
 
+**✅ IMPLEMENTATO (gating per ruolo lato API, non lazy trigger).** `getBootstrapData(enabledModules, role?)` ora restituisce a ogni ruolo **esattamente** i domini accessibili, allineati a `route-guards.ts` web:
+- `admin` (o ruolo irrisolvibile → fallback al vecchio comportamento): staffAdmin, payments, printJobs, orderHistory, customerAnalytics
+- `admin`/`chef`: inventoryItems, bomItems, prepItems, categories, menuItemsAdmin (incl. `simpleCatalogOnly`)
+- `admin`/`waiter`: customers
+
+La scelta del gating per ruolo (invece dei lazy trigger on-mount) è intenzionale: il bootstrap role-aware fornisce già a ogni ruolo i propri domini in un **singolo round-trip**, senza double-fetch per gli admin né flash di stato vuoto. Lato web solo una correzione: il footer "Ordini Totali Oggi" di `BackofficeShell` ora è visibile solo per `role === 'admin'` (`BackofficeEntry.tsx`), perché `orderHistory` non è più scaricato dai non-admin.
+
 **Rischio:** Basso-Medio. Migliora drasticamente il tempo di primo render.
 
 ---

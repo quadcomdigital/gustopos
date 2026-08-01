@@ -340,9 +340,11 @@ export class AppController {
 
   @Get("bootstrap")
   @Roles("admin", "waiter", "chef")
-  getBootstrap(@Query() query: { modules?: string }) {
+  getBootstrap(@Query() query: { modules?: string }, @Req() request: AuthenticatedRequest) {
     const enabledModules = query.modules ? query.modules.split(',') : [];
-    return this.appRepository.getBootstrapData(enabledModules);
+    // C4: bootstrap per-dominio — l'API restituisce solo i domini accessibili al
+    // ruolo; i domini admin vengono caricati lazy alla prima apertura della view.
+    return this.appRepository.getBootstrapData(enabledModules, request.user?.role);
   }
 
   @Get("payments")
