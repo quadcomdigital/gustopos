@@ -73,7 +73,7 @@ export default function DeliveryView() {
   const [error, setError] = useState('');
   const [pendingCancel, setPendingCancel] = useState<{ orderId: string; status: DeliveryStatus } | null>(null);
 
-  const load = async () => {
+  const load = async (force = false) => {
     setLoading(true);
     setError('');
     try {
@@ -82,7 +82,7 @@ export default function DeliveryView() {
         from: fromDate ? new Date(`${fromDate}T00:00:00`).toISOString() : undefined,
         to: toDate ? new Date(`${toDate}T23:59:59`).toISOString() : undefined,
         limit: 300,
-      });
+      }, force);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Errore caricamento');
     } finally {
@@ -102,6 +102,10 @@ export default function DeliveryView() {
       ? true
       : (item.courierName ?? '').toLowerCase().includes(courierFilter.trim().toLowerCase()),
   );
+
+  const manualRefresh = async () => {
+    await load(true);
+  };
 
   const submit = async () => {
     if (!orderId.trim()) { setError('Order ID richiesto'); return; }
@@ -165,6 +169,13 @@ export default function DeliveryView() {
           <p className="text-[10px] sm:text-xs text-text-muted font-medium">{activeCount} attivi</p>
         </div>
         <div className="flex gap-1.5">
+          <button
+            onClick={() => void manualRefresh()}
+            disabled={loading}
+            className="min-h-[44px] px-3 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider border border-border bg-white disabled:opacity-50 active:scale-95 transition-all"
+          >
+            {loading ? 'Caricamento...' : 'Aggiorna'}
+          </button>
           <button
             onClick={() => setActiveSection('queue')}
             className={cn(

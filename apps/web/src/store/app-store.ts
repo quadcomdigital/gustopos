@@ -250,9 +250,16 @@ import {
   normalizeReservationsQuery,
   reservationsQueryKey,
 } from './reservations-cache';
+import {
+  deliveryQueryKey,
+  isDeliveryQueryFresh,
+  normalizeDeliveryQuery,
+} from './delivery-cache';
 
 let reservationsRequestSequence = 0;
 const reservationsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
+let deliveryRequestSequence = 0;
+const deliveryInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 
 function invalidateReservationsCache(): Pick<AppState, 'reservations' | 'reservationsQuery' | 'reservationsQueryKey' | 'reservationsFetchedAt'> {
   reservationsRequestSequence += 1;
@@ -268,6 +275,22 @@ function invalidateReservationsCache(): Pick<AppState, 'reservations' | 'reserva
 async function refreshCurrentReservations(get: () => AppState): Promise<void> {
   const state = get();
   await state.refreshReservations(state.reservationsQuery ?? { limit: 200 }, true);
+}
+
+function invalidateDeliveryCache(): Pick<AppState, 'deliveryOrders' | 'deliveryOrdersQuery' | 'deliveryOrdersQueryKey' | 'deliveryOrdersFetchedAt'> {
+  deliveryRequestSequence += 1;
+  deliveryInFlight.clear();
+  return {
+    deliveryOrders: [],
+    deliveryOrdersQuery: null,
+    deliveryOrdersQueryKey: null,
+    deliveryOrdersFetchedAt: null,
+  };
+}
+
+async function refreshCurrentDeliveryOrders(get: () => AppState): Promise<void> {
+  const state = get();
+  await state.refreshDeliveryOrders(state.deliveryOrdersQuery ?? { limit: 200 }, true);
 }
 
 type StoreSet = (
@@ -540,6 +563,9 @@ interface AppState {
   reservationsQueryKey: string | null;
   reservationsFetchedAt: number | null;
   deliveryOrders: DeliveryOrder[];
+  deliveryOrdersQuery: DeliveryOrdersQuery | null;
+  deliveryOrdersQueryKey: string | null;
+  deliveryOrdersFetchedAt: number | null;
   categories: Category[];
   customers: Customer[];
   orderHistory: Order[];
@@ -646,7 +672,7 @@ interface AppState {
   confirmReservation: (id: string) => Promise<void>;
   cancelReservation: (id: string) => Promise<void>;
   markReservationNoShow: (id: string, reason: string) => Promise<void>;
-  refreshDeliveryOrders: (query?: DeliveryOrdersQuery) => Promise<void>;
+  refreshDeliveryOrders: (query?: DeliveryOrdersQuery, force?: boolean) => Promise<void>;
   updateDeliveryOrderStatus: (orderId: string, payload: DeliveryStatusUpdateRequest) => Promise<void>;
   dispatchDeliveryOrder: (orderId: string) => Promise<void>;
 
@@ -938,6 +964,9 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   reservationsQueryKey: null,
   reservationsFetchedAt: null,
   deliveryOrders: [],
+  deliveryOrdersQuery: null,
+  deliveryOrdersQueryKey: null,
+  deliveryOrdersFetchedAt: null,
   categories: [],
   customers: [],
   orderHistory: [],
@@ -1008,7 +1037,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const refreshed = await refreshSession();
       if (!refreshed) {
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1017,7 +1046,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         // Refresh succeeded but user payload is missing/corrupted: this is a real auth-session corruption.
         clearAuthSession();
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1031,6 +1060,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (bootstrap) {
         applyUiTheme(bootstrap.uiSettings);
         set({
+          ...invalidateDeliveryCache(),
           data: bootstrap.data,
           staff: bootstrap.staff,
           uiSettings: bootstrap.uiSettings,
@@ -1061,6 +1091,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         applyUiTheme(uiSettings);
 
         set({
+          ...invalidateDeliveryCache(),
           data,
           staff: staffList,
           uiSettings,
@@ -1075,7 +1106,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
     } catch {
       disconnectSocket();
-      set({ loading: false });
+      set({ ...invalidateDeliveryCache(), loading: false });
     }
   },
 
@@ -1088,6 +1119,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         disconnectSocket();
         set({
           ...invalidateReservationsCache(),
+          ...invalidateDeliveryCache(),
           currentUser: null,
           tenantContext: null,
           enabledModules: [],
@@ -1110,6 +1142,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const reservationsDisabled = previousModules.includes('reservations') && !activeModules.has('reservations');
       const reservationsCacheReset = tenantChanged || reservationsDisabled
         ? invalidateReservationsCache()
+        : null;
+      const deliveryDisabled = previousModules.includes('delivery') && !activeModules.has('delivery');
+      const deliveryCacheReset = tenantChanged || deliveryDisabled
+        ? invalidateDeliveryCache()
         : null;
 
       if (!areSameModules(previousModules, normalizedModules)) {
@@ -1136,7 +1172,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         reservationsQuery: reservationsCacheReset ? reservationsCacheReset.reservationsQuery : (activeModules.has('reservations') ? state.reservationsQuery : null),
         reservationsQueryKey: reservationsCacheReset ? reservationsCacheReset.reservationsQueryKey : (activeModules.has('reservations') ? state.reservationsQueryKey : null),
         reservationsFetchedAt: reservationsCacheReset ? reservationsCacheReset.reservationsFetchedAt : (activeModules.has('reservations') ? state.reservationsFetchedAt : null),
-        deliveryOrders: activeModules.has('delivery') ? state.deliveryOrders : [],
+        deliveryOrders: deliveryCacheReset ? deliveryCacheReset.deliveryOrders : (activeModules.has('delivery') ? state.deliveryOrders : []),
+        deliveryOrdersQuery: deliveryCacheReset ? deliveryCacheReset.deliveryOrdersQuery : (activeModules.has('delivery') ? state.deliveryOrdersQuery : null),
+        deliveryOrdersQueryKey: deliveryCacheReset ? deliveryCacheReset.deliveryOrdersQueryKey : (activeModules.has('delivery') ? state.deliveryOrdersQueryKey : null),
+        deliveryOrdersFetchedAt: deliveryCacheReset ? deliveryCacheReset.deliveryOrdersFetchedAt : (activeModules.has('delivery') ? state.deliveryOrdersFetchedAt : null),
         categories: activeModules.has('inventory') || activeModules.has('simple_catalog') ? state.categories : [],
         customers: activeModules.has('customers') ? state.customers : [],
         orderHistory: activeModules.has('analytics') ? state.orderHistory : [],
@@ -1171,6 +1210,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         applyUiTheme(bootstrap.uiSettings);
         set({
           ...invalidateReservationsCache(),
+          ...invalidateDeliveryCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1201,6 +1241,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
         set({
           ...invalidateReservationsCache(),
+          ...invalidateDeliveryCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1236,7 +1277,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       payments: [],
       printJobs: [],
       ...invalidateReservationsCache(),
-      deliveryOrders: [],
+      ...invalidateDeliveryCache(),
       suppliers: [],
       purchaseOrders: [],
       shifts: [],
@@ -1331,6 +1372,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo delivery disabilitato per questo tenant');
       }
       await upsertDeliveryOrderRequest(orderId, payload);
+      await refreshCurrentDeliveryOrders(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1451,13 +1493,51 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  refreshDeliveryOrders: async (query) => {
+  refreshDeliveryOrders: async (query, force = false) => {
     try {
       const currentUser = get().currentUser;
       if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'waiter' && currentUser.role !== 'chef')) return;
       if (!hasModuleEnabled(get(), 'delivery')) return;
-      const deliveryOrders = await fetchDeliveryOrdersRequest(query ?? { limit: 200 });
-      set({ deliveryOrders });
+
+      const normalizedQuery = normalizeDeliveryQuery(query);
+      const key = deliveryQueryKey(normalizedQuery);
+      const state = get();
+      if (!force && state.deliveryOrdersQueryKey === key && isDeliveryQueryFresh(state.deliveryOrdersFetchedAt)) {
+        return;
+      }
+      const inFlight = deliveryInFlight.get(key);
+      if (inFlight && !force) {
+        return inFlight.promise;
+      }
+      if (force) {
+        deliveryInFlight.delete(key);
+      }
+
+      const requestId = ++deliveryRequestSequence;
+      const requestPromise = (async () => {
+        try {
+          const deliveryOrders = await fetchDeliveryOrdersRequest(normalizedQuery);
+          if (requestId !== deliveryRequestSequence) return;
+          set({
+            deliveryOrders,
+            deliveryOrdersQuery: normalizedQuery,
+            deliveryOrdersQueryKey: key,
+            deliveryOrdersFetchedAt: Date.now(),
+          });
+        } catch (err) {
+          if (requestId === deliveryRequestSequence) {
+            set({ error: handleActionError(err) });
+          }
+          throw err;
+        } finally {
+          if (deliveryInFlight.get(key)?.requestId === requestId) {
+            deliveryInFlight.delete(key);
+          }
+        }
+      })();
+
+      deliveryInFlight.set(key, { requestId, promise: requestPromise });
+      return requestPromise;
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1471,8 +1551,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo delivery disabilitato per questo tenant');
       }
       await updateDeliveryOrderStatusRequest(orderId, payload);
-      const deliveryOrders = await fetchDeliveryOrdersRequest({ limit: 200 });
-      set({ deliveryOrders });
+      await refreshCurrentDeliveryOrders(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -1486,8 +1565,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         throw new Error('Modulo delivery disabilitato per questo tenant');
       }
       await dispatchDeliveryOrderRequest(orderId);
-      const deliveryOrders = await fetchDeliveryOrdersRequest({ limit: 200 });
-      set({ deliveryOrders });
+      await refreshCurrentDeliveryOrders(get);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
