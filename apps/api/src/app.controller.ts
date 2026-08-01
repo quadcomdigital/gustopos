@@ -915,8 +915,9 @@ export class AppController {
       return await this.fiscalRepo.closeFiscalDay(parsed, actorStaffId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Fiscal close failed";
-      if (message.includes("already closed")) {
-        throw new ConflictException(message);
+      const isUniqueViolation = typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+      if (message.includes("already closed") || isUniqueViolation) {
+        throw new ConflictException("Fiscal day already closed");
       }
       throw new BadRequestException(message);
     }
@@ -937,6 +938,7 @@ export class AppController {
 
   @Get("fiscal/exports")
   @Roles("admin")
+  @RequiresPermissions("fiscal:export")
   @RequiresModule("fiscal_exports")
   listFiscalExports(@Query() query: Record<string, string | undefined>): Promise<FiscalExport[]> {
     const parsed = fiscalExportsQuerySchema.parse({
@@ -950,38 +952,25 @@ export class AppController {
 
   @Get("fiscal/exports/:id/download")
   @Roles("admin")
+  @RequiresPermissions("fiscal:export")
   @RequiresModule("fiscal_exports")
   async downloadFiscalExport(
     @Param("id") id: string,
-    @Req() request: AuthenticatedRequest,
     @Res() response: Response,
   ): Promise<void> {
-    const entry = await this.fiscalRepo.getFiscalExportById(id);
-    if (!entry) {
+    const generated = await this.fiscalRepo.getFiscalExportCsvById(id);
+    if (!generated) {
       throw new NotFoundException("Fiscal export not found");
     }
 
-    const dayStart = new Date(`${entry.businessDate}T00:00:00.000Z`);
-    const dayEnd = new Date(`${entry.businessDate}T23:59:59.999Z`);
-    const payments = await this.paymentsRepo.listPayments({ from: dayStart.toISOString(), to: dayEnd.toISOString(), limit: 500 });
-
-    const sales = payments.filter((payment) => payment.kind === "sale");
-    const refunds = payments.filter((payment) => payment.kind === "refund");
-    const gross = sales.reduce((sum, payment) => sum + payment.total, 0);
-    const refundsTotal = refunds.reduce((sum, payment) => sum + payment.total, 0);
-    const net = gross - refundsTotal;
-    const cash = sales.filter((payment) => payment.method === "cash").reduce((sum, payment) => sum + payment.total, 0);
-    const card = sales.filter((payment) => payment.method === "card").reduce((sum, payment) => sum + payment.total, 0);
-
-    const tenantId = request.user?.tenantId ?? "tenant_legacy";
-    const csv = [
-      "date;tenant_id;orders_count;gross;refunds;net;cash;card",
-      `${entry.businessDate};${tenantId};${sales.length};${gross.toFixed(2)};${refundsTotal.toFixed(2)};${net.toFixed(2)};${cash.toFixed(2)};${card.toFixed(2)}`,
-    ].join("\n");
+    if (generated.entry.checksum && generated.entry.checksum !== generated.checksum) {
+      throw new ConflictException("Fiscal export checksum mismatch");
+    }
 
     response.setHeader("Content-Type", "text/csv; charset=utf-8");
-    response.setHeader("Content-Disposition", `attachment; filename="fiscal_${entry.businessDate}.csv"`);
-    response.send(csv);
+    response.setHeader("Content-Disposition", `attachment; filename="fiscal_${generated.entry.businessDate}.csv"`);
+    response.setHeader("X-Fiscal-Checksum", generated.checksum);
+    response.send(generated.csv);
   }
 
   @Get("customers/:id")

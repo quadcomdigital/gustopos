@@ -11,6 +11,9 @@ const journalSource = readFileSync(join(__dirname, "..", "..", "drizzle", "meta"
 const idempotencySource = readFileSync(join(__dirname, "..", "tenant", "idempotency.middleware.ts"), "utf8");
 const paymentsSource = readFileSync(join(__dirname, "..", "repository", "payments.repository.ts"), "utf8");
 const inventorySource = readFileSync(join(__dirname, "..", "repository", "inventory.repository.ts"), "utf8");
+const fiscalSource = readFileSync(join(__dirname, "..", "repository", "fiscal.repository.ts"), "utf8");
+const fiscalMigrationSource = readFileSync(join(__dirname, "..", "..", "drizzle", "0059_crazy_masked_marvel.sql"), "utf8");
+const fiscalUniqueIndexMigrationSource = readFileSync(join(__dirname, "..", "..", "drizzle", "0046_add_unique_indexes.sql"), "utf8");
 
 function sectionBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start);
@@ -88,4 +91,33 @@ test("idempotency middleware releases failed-request locks", () => {
   assert.match(responseSection, /this\.redis\.del\(lockKey\)/);
   assert.match(responseSection, /res\.once\("finish"/);
   assert.match(responseSection, /res\.once\("close"/);
+});
+
+test("fiscal exports require export permission and preserve content integrity", () => {
+  const listSection = sectionBetween(controllerSource, '  @Get("fiscal/exports")', '  @Get("fiscal/exports/:id/download")');
+  const downloadSection = sectionBetween(controllerSource, '  @Get("fiscal/exports/:id/download")', '  @Get("customers/:id")');
+
+  assert.match(listSection, /@RequiresPermissions\("fiscal:export"\)/);
+  assert.match(downloadSection, /@RequiresPermissions\("fiscal:export"\)/);
+  assert.match(downloadSection, /getFiscalExportCsvById\(id\)/);
+  assert.match(downloadSection, /X-Fiscal-Checksum/);
+  assert.match(fiscalSource, /return withTenantTx\(async \(tx\) =>/);
+  assert.match(fiscalSource, /createHash\("sha256"\)/);
+  assert.match(fiscalSource, /checksum:\s*`sha256:/);
+  assert.match(fiscalSource, /checksum:\s*row\.checksum/);
+  assert.match(fiscalSource, /csvContent: csv/);
+  assert.match(fiscalSource, /row\.csvContent !== null/);
+  assert.match(fiscalMigrationSource, /CREATE TABLE(?: IF NOT EXISTS)? "fiscal_closures_archive"/);
+  assert.match(fiscalMigrationSource, /DROP INDEX IF EXISTS "fiscal_closures_tenant_date_idx"/);
+  assert.match(fiscalMigrationSource, /ROW_NUMBER\(\) OVER/);
+  assert.match(fiscalMigrationSource, /closed_at.*DESC NULLS LAST/);
+  assert.match(fiscalMigrationSource, /INSERT INTO "fiscal_closures_archive"/);
+  assert.match(fiscalMigrationSource, /DELETE FROM "fiscal_closures"/);
+  assert.match(fiscalMigrationSource, /CREATE UNIQUE INDEX IF NOT EXISTS/);
+  assert.match(fiscalMigrationSource, /fiscal_closures_tenant_date_idx/);
+  assert.match(fiscalMigrationSource, /fiscal_closures_tenant_business_date_idx/);
+  assert.match(fiscalUniqueIndexMigrationSource, /CREATE TABLE IF NOT EXISTS "fiscal_closures_archive"/);
+  assert.match(fiscalUniqueIndexMigrationSource, /DROP INDEX IF EXISTS "fiscal_closures_tenant_date_idx"/);
+  assert.match(fiscalUniqueIndexMigrationSource, /ROW_NUMBER\(\) OVER/);
+  assert.match(fiscalUniqueIndexMigrationSource, /CREATE UNIQUE INDEX IF NOT EXISTS "fiscal_closures_tenant_date_idx"/);
 });

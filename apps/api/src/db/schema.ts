@@ -632,17 +632,37 @@ export const timeEntries = pgTable("time_entries", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const fiscalClosures = pgTable("fiscal_closures", {
+export const fiscalClosures = pgTable(
+  "fiscal_closures",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    businessDate: date("business_date").notNull(),
+    closedByStaffId: text("closed_by_staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "restrict" }),
+    totalsJson: text("totals_json").notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+    notes: text("notes"),
+  },
+  (table) => ({
+    tenantBusinessDateIdx: uniqueIndex("fiscal_closures_tenant_date_idx").on(table.tenantId, table.businessDate),
+  }),
+);
+
+export const fiscalClosuresArchive = pgTable("fiscal_closures_archive", {
   id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  tenantId: text("tenant_id").notNull(),
   businessDate: date("business_date").notNull(),
-  closedByStaffId: text("closed_by_staff_id")
-    .notNull()
-    .references(() => staff.id, { onDelete: "restrict" }),
+  closedByStaffId: text("closed_by_staff_id").notNull(),
   totalsJson: text("totals_json").notNull(),
-  closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+  closedAt: timestamp("closed_at", { withTimezone: true }).notNull(),
   notes: text("notes"),
-});
+  archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),
+  archiveReason: text("archive_reason").notNull().default("duplicate_business_date"),
+}, (table) => [
+  index("fiscal_closures_archive_tenant_date_idx").on(table.tenantId, table.businessDate),
+]);
 
 export const fiscalExports = pgTable("fiscal_exports", {
   id: text("id").primaryKey(),
@@ -656,6 +676,7 @@ export const fiscalExports = pgTable("fiscal_exports", {
     .references(() => staff.id, { onDelete: "restrict" }),
   generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
   checksum: text("checksum"),
+  csvContent: text("csv_content"),
 });
 
 export const selfOrderSessions = pgTable("self_order_sessions", {
