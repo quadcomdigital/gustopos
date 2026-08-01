@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type {
   Ingredient,
   BomItem,
@@ -177,6 +178,7 @@ export default function InventoryTabs({
   onActiveTabChange,
   onOpenBomTab,
 }: InventoryTabsProps) {
+  const navigate = useNavigate();
   const tabs = simpleCatalogMode ? SIMPLE_TABS : TABS;
   const [activeTab, setActiveTab] = useState<InventoryTabKey>(simpleCatalogMode ? 'menu' : 'stock');
   const [cardsHidden, setCardsHidden] = useState(true);
@@ -269,10 +271,7 @@ export default function InventoryTabs({
                 preferredSupplierName: i.supplierName ?? undefined,
                 lastUnitCost: i.unitCost ?? undefined,
               }))}
-            onCreateOrder={(items) => {
-              // TODO: navigate to PurchasingView with pre-filled data
-              console.log('Create order for:', items);
-            }}
+            onOpenPurchasing={() => navigate('../purchasing')}
           />
         )}
       </div>

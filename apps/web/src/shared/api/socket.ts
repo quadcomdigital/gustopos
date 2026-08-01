@@ -1,5 +1,6 @@
 import { io, type Socket } from 'socket.io-client';
 import { API_URL, getAccessToken, refreshSession } from './client';
+import { logger } from '../../lib/logger';
 
 let socket: Socket | null = null;
 
@@ -16,16 +17,8 @@ export function getSocket() {
       timeout: 10000,
     });
 
-    socket.on('connect', () => {
-      console.log('[socket] connected');
-    });
-
-    socket.on('disconnect', (reason) => {
-      console.log('[socket] disconnected:', reason);
-    });
-
     socket.on('connect_error', async (err) => {
-      console.warn('[socket] connect_error:', err.message);
+      logger.warn('Realtime socket connection failed', { message: err.message });
       // Try to refresh the access token before the next reconnect attempt
       const refreshed = await refreshSession();
       if (refreshed) {

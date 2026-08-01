@@ -15,10 +15,10 @@ interface ReorderSuggestion {
 
 interface LowStockAlertProps {
   suggestions: ReorderSuggestion[];
-  onCreateOrder?: (items: ReorderSuggestion[]) => void;
+  onOpenPurchasing?: () => void;
 }
 
-export default function LowStockAlert({ suggestions, onCreateOrder }: LowStockAlertProps) {
+export default function LowStockAlert({ suggestions, onOpenPurchasing }: LowStockAlertProps) {
   const [expanded, setExpanded] = useState(false);
 
   if (suggestions.length === 0) return null;
@@ -79,13 +79,13 @@ export default function LowStockAlert({ suggestions, onCreateOrder }: LowStockAl
             </div>
           )}
 
-          {onCreateOrder && (
+          {onOpenPurchasing && (
             <button
-              onClick={() => onCreateOrder(suggestions)}
+              onClick={onOpenPurchasing}
               className="w-full mt-2 min-h-[44px] px-4 py-2 rounded-lg bg-accent text-white text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2"
             >
               <ShoppingCart size={14} />
-              Crea Ordine Acquisto
+              Apri Acquisti
             </button>
           )}
         </div>

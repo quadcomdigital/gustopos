@@ -252,6 +252,7 @@ import jwt from "jsonwebtoken";
 import { getJwtSecret } from "./auth/jwt-secret";
 import type { JwtPayload } from "./auth/jwt.types";
 import { TenantService } from "./tenant/tenant.service";
+import { runWithBridgeAuthContext, runWithTenantContext } from "./tenant/tenant-context.store";
 import type { ModuleKey } from "@gustopos/shared";
 
 @Controller("api")
@@ -1204,7 +1205,8 @@ export class AppController {
   }
 
   @Post("print-jobs/:id/complete")
-  @Public()
+  @Roles("admin", "chef")
+  @RequiresPermissions("printing:dispatch")
   @RequiresModule("printing")
   async completePrintJob(@Param("id") id: string): Promise<PrintJob> {
     const result = await this.printJobsRepo.completePrintJob(id);
@@ -2475,10 +2477,13 @@ export class AppController {
   // The certificate must be served as a static file from /signing/digital-certificate.txt
 
   @Get("sign")
-  @Public()
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @RequiresModule("printing")
   async signQzRequest(@Query("request") request: string): Promise<string> {
-    if (!request) {
-      throw new BadRequestException("Missing 'request' query parameter");
+    // QZ Tray sends the lowercase SHA-256 hex digest of its canonical request.
+    // Never allow this public fallback to become an arbitrary signing oracle.
+    if (!request || !/^[a-f0-9]{64}$/.test(request)) {
+      throw new BadRequestException("'request' must be a SHA-256 hex digest");
     }
 
     const fs = await import("fs");
@@ -2692,7 +2697,9 @@ export class AppController {
 
     if (providedStr) {
       if (this.isShortCode(providedStr)) {
-        const resolved = await this.printBridgeRepo.resolveOnboardingSecretByShortCode(providedStr);
+        const resolved = await runWithBridgeAuthContext(() =>
+          this.printBridgeRepo.resolveOnboardingSecretByShortCode(providedStr),
+        );
         if (resolved) {
           if (resolved.revokedAt) {
             throw new UnauthorizedException("Onboarding secret has been revoked");
@@ -2705,7 +2712,9 @@ export class AppController {
           };
         }
       } else {
-        const resolved = await this.printBridgeRepo.resolveOnboardingSecret(providedStr);
+        const resolved = await runWithBridgeAuthContext(() =>
+          this.printBridgeRepo.resolveOnboardingSecret(providedStr),
+        );
         if (resolved) {
           if (resolved.revokedAt) {
             throw new UnauthorizedException("Onboarding secret has been revoked");
@@ -2731,63 +2740,83 @@ export class AppController {
     return { tenantId: bridgeTenantId || fallbackTenantId, path: "legacy", expectedBridgeId: "" };
   }
 
+  private async withBridgeTenantContext<T>(tenantId: string, work: () => Promise<T>): Promise<T> {
+    const tenant = await this.tenantService.getTenantById(tenantId);
+    if (!tenant || !tenant.isActive) {
+      throw new UnauthorizedException("Invalid or inactive bridge tenant");
+    }
+    return runWithTenantContext(
+      {
+        tenantId: tenant.id,
+        tenantSlug: tenant.slug,
+        resolutionSource: "header",
+        enabledModules: [],
+      },
+      work,
+    );
+  }
+
   @Post("print-bridge/heartbeat")
   @Public()
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
   async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string }> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
-    const payload = printBridgeHeartbeatRequestSchema.parse(raw);
-    let bridge;
-    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    try {
-      bridge = await this.printBridgeRepo.upsertPrintBridge(payload as any, instanceId, auth.tenantId);
-    } catch (e) {
-      if (e instanceof Error && e.message.includes("already used by another tenant")) {
-        throw new ConflictException(e.message);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeHeartbeatRequestSchema.parse(raw);
+      let bridge;
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+      try {
+        bridge = await this.printBridgeRepo.upsertPrintBridge(payload as any, instanceId, auth.tenantId);
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("already used by another tenant")) {
+          throw new ConflictException(e.message);
+        }
+        throw e;
       }
-      throw e;
-    }
 
-    if (auth.path === "onboarding" && auth.plaintext) {
-      const { firstBind } = await this.printBridgeRepo.markOnboardingSecretUsed(auth.plaintext, bridge.id);
-      if (firstBind) {
-        try {
-          this.auditLogService.log("print_bridge.first_bind", {
-            targetId: bridge.id,
-            details: { tenantId: bridge.tenantId, authPath: "long-secret" },
-          });
-        } catch {}
+      if (auth.path === "onboarding" && auth.plaintext) {
+        const { firstBind } = await this.printBridgeRepo.markOnboardingSecretUsed(auth.plaintext, bridge.id);
+        if (firstBind) {
+          try {
+            this.auditLogService.log("print_bridge.first_bind", {
+              targetId: bridge.id,
+              details: { tenantId: bridge.tenantId, authPath: "long-secret" },
+            });
+          } catch {}
+        }
+      } else if (auth.path === "onboarding-short-code" && auth.plaintext) {
+        const bindResult = await this.printBridgeRepo.markShortCodeFirstBind(auth.plaintext, bridge.id);
+        if (bindResult?.firstBind) {
+          try {
+            this.auditLogService.log("print_bridge.first_bind", {
+              targetId: bridge.id,
+              details: { tenantId: bridge.tenantId, authPath: "short-code" },
+            });
+          } catch {}
+        }
       }
-    } else if (auth.path === "onboarding-short-code" && auth.plaintext) {
-      const bindResult = await this.printBridgeRepo.markShortCodeFirstBind(auth.plaintext, bridge.id);
-      if (bindResult?.firstBind) {
-        try {
-          this.auditLogService.log("print_bridge.first_bind", {
-            targetId: bridge.id,
-            details: { tenantId: bridge.tenantId, authPath: "short-code" },
-          });
-        } catch {}
-      }
-    }
 
-    void this.realtimeGateway.emit(socketEvents.bridgeStatus, bridge, bridge.tenantId).catch((err) => console.warn('[realtime] bridge:status emit failed:', err));
-    return { bridge, serverTime: new Date().toISOString() };
+      void this.realtimeGateway.emit(socketEvents.bridgeStatus, bridge, bridge.tenantId).catch((err) => console.warn('[realtime] bridge:status emit failed:', err));
+      return { bridge, serverTime: new Date().toISOString() };
+    });
   }
 
   @Post("print-bridge/claim")
   @Public()
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   async bridgeClaim(@Body() raw: unknown, @Req() req: any): Promise<{ jobs: PrintJob[] }> {
-        const auth = await this.verifyBridgeOrOnboardingSecret(req);
-    const payload = printBridgeClaimRequestSchema.parse(raw);
-    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    const jobs: PrintJob[] = await this.printBridgeRepo.claimPrintJobsForBridge(payload.bridgeId, payload.limit ?? 50, instanceId, auth.tenantId);
-    for (const job of jobs) {
-      if (job.bridgeId) {
-        void this.realtimeGateway.emit(socketEvents.jobClaimed, job).catch((err) => console.warn('[realtime] job:claimed emit failed:', err));
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeClaimRequestSchema.parse(raw);
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+      const jobs: PrintJob[] = await this.printBridgeRepo.claimPrintJobsForBridge(payload.bridgeId, payload.limit ?? 50, instanceId, auth.tenantId);
+      for (const job of jobs) {
+        if (job.bridgeId) {
+          void this.realtimeGateway.emit(socketEvents.jobClaimed, job, auth.tenantId).catch((err) => console.warn('[realtime] job:claimed emit failed:', err));
+        }
       }
-    }
-    return { jobs };
+      return { jobs };
+    });
   }
 
   @Post("print-bridge/jobs/:id/complete")
@@ -2797,15 +2826,17 @@ export class AppController {
     @Body() raw: unknown,
     @Req() req: any,
   ): Promise<{ job: PrintJob } | { success: false }> {
-        const auth = await this.verifyBridgeOrOnboardingSecret(req);
-    const payload = printBridgeJobCompleteRequestSchema.parse(raw);
-    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    const job = await this.printBridgeRepo.completeBridgeJob(payload.bridgeId, id, payload.notes, instanceId, auth.tenantId);
-    if (!job) {
-      return { success: false };
-    }
-    void this.realtimeGateway.emit(socketEvents.jobCompleted, job).catch((err) => console.warn('[realtime] job:completed emit failed:', err));
-    return { job };
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeJobCompleteRequestSchema.parse(raw);
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+      const job = await this.printBridgeRepo.completeBridgeJob(payload.bridgeId, id, payload.notes, instanceId, auth.tenantId);
+      if (!job) {
+        return { success: false };
+      }
+      void this.realtimeGateway.emit(socketEvents.jobCompleted, job, auth.tenantId).catch((err) => console.warn('[realtime] job:completed emit failed:', err));
+      return { job };
+    });
   }
 
   @Post("print-bridge/jobs/:id/fail")
@@ -2815,15 +2846,17 @@ export class AppController {
     @Body() raw: unknown,
     @Req() req: any,
   ): Promise<{ job: PrintJob } | { success: false }> {
-        const auth = await this.verifyBridgeOrOnboardingSecret(req);
-    const payload = printBridgeJobFailRequestSchema.parse(raw);
-    const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
-    const job = await this.printBridgeRepo.failBridgeJob(payload.bridgeId, id, payload.error, instanceId, auth.tenantId);
-    if (!job) {
-      return { success: false };
-    }
-    void this.realtimeGateway.emit(socketEvents.jobFailed, job).catch((err) => console.warn('[realtime] job:failed emit failed:', err));
-    return { job };
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeJobFailRequestSchema.parse(raw);
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+      const job = await this.printBridgeRepo.failBridgeJob(payload.bridgeId, id, payload.error, instanceId, auth.tenantId);
+      if (!job) {
+        return { success: false };
+      }
+      void this.realtimeGateway.emit(socketEvents.jobFailed, job, auth.tenantId).catch((err) => console.warn('[realtime] job:failed emit failed:', err));
+      return { job };
+    });
   }
 
   @Get("print-bridge/onboarding-secret")

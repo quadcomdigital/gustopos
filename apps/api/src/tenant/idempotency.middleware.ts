@@ -81,18 +81,43 @@ export class IdempotencyMiddleware implements NestMiddleware {
         throw new ConflictException("Duplicate idempotent request");
       }
 
-      const originalJson = res.json.bind(res);
-      res.json = ((body: unknown) => {
-        if (res.statusCode < 500) {
+      let responseBody: unknown;
+      let finalized = false;
+      const releaseLock = () => {
+        if (finalized) return;
+        finalized = true;
+        if (res.statusCode < 500 && res.writableFinished) {
           void this.redis.set(
             responseKey,
-            JSON.stringify({ statusCode: res.statusCode, body }),
+            JSON.stringify({ statusCode: res.statusCode, body: responseBody }),
             "EX",
             120,
           );
+        } else {
+          // A failed or aborted request must not poison a retry with the same
+          // key. The response cache is intentionally not written for 5xx.
+          void this.redis.del(lockKey);
         }
+      };
+
+      const originalJson = res.json.bind(res);
+      res.json = ((body: unknown) => {
+        responseBody = body;
         return originalJson(body);
       }) as Response["json"];
+
+      const originalSend = res.send.bind(res);
+      res.send = ((body?: unknown) => {
+        responseBody = body;
+        return originalSend(body);
+      }) as Response["send"];
+
+      res.once("finish", releaseLock);
+      res.once("close", () => {
+        if (!res.writableFinished) {
+          releaseLock();
+        }
+      });
 
       next();
     } catch (error) {

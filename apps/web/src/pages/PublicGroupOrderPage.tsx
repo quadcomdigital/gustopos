@@ -58,7 +58,7 @@ export default function PublicGroupOrderPage() {
   useEffect(() => {
     if (!identity?.sessionId) return;
     const socket: Socket = io(API_URL, {
-      auth: { participantToken: identity.participantToken },
+      auth: { participantToken: identity.participantToken, sessionId: identity.sessionId, tenantSlug },
     });
     socket.emit('group_order_join_room', { sessionId: identity.sessionId, participantToken: identity.participantToken });
     socket.on(socketEvents.groupOrderCartUpdated, (payload: { session: GroupOrderSession }) => {

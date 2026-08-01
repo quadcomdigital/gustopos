@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { and, desc, eq, gte, lte, SQL } from "drizzle-orm";
+import crypto from "node:crypto";
 import { db, withTenantTx } from "../db/client";
 import { payments } from "../db/schema";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
@@ -94,7 +95,8 @@ export class PaymentsRepository {
         .select()
         .from(payments)
         .where(and(eq(payments.tenantId, tenantId), eq(payments.id, paymentId)))
-        .limit(1);
+        .limit(1)
+        .for("update");
       const original = paymentRows[0];
       if (!original) {
         return null;
@@ -132,7 +134,7 @@ export class PaymentsRepository {
       const [refundRow] = await tx
         .insert(payments)
         .values({
-          id: `ref_${Date.now().toString(36)}`,
+          id: `ref_${crypto.randomUUID()}`,
           tenantId,
           tableId: original.tableId,
           tableNumber: original.tableNumber,

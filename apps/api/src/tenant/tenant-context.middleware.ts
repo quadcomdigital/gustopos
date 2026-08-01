@@ -45,18 +45,19 @@ export class TenantContextMiddleware implements NestMiddleware {
         throw new ForbiddenException("Tenant not found or inactive");
       }
 
-      const enabledModules = await this.tenantService.getEnabledModulesForTenant(tenant.id);
-
       const context: TenantContext = {
         tenantId: tenant.id,
         tenantSlug: tenant.slug,
         resolutionSource: identity.source,
-        enabledModules,
+        enabledModules: [],
       };
 
       req.tenant = context;
 
-      runWithTenantContext(context, () => next());
+      await runWithTenantContext(context, async () => {
+        context.enabledModules = await this.tenantService.getEnabledModulesForTenant(tenant.id);
+        next();
+      });
     } catch (error) {
       next(error);
     }

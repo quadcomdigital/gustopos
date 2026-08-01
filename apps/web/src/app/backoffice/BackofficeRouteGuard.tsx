@@ -17,7 +17,8 @@ interface BackofficeRouteGuardProps {
 
 export default function BackofficeRouteGuard({ routeKey, children }: BackofficeRouteGuardProps) {
   const location = useLocation();
-  const { currentUser, enabledModules } = useAppStore();
+  const currentUser = useAppStore((state) => state.currentUser);
+  const enabledModules = useAppStore((state) => state.enabledModules);
   if (!currentUser) {
     return <Navigate to="/" replace />;
   }

@@ -9,6 +9,8 @@ import type { JwtPayload } from "./auth/jwt.types";
 import { AppRepository } from "./repository/app.repository";
 import { StaffRepository } from "./repository/staff.repository";
 import { getJwtSecret } from "./auth/jwt-secret";
+import { getTenantContext, runWithTenantContext } from "./tenant/tenant-context.store";
+import { TenantService } from "./tenant/tenant.service";
 import type { ModuleKey } from "@gustopos/shared";
 
 const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
@@ -44,6 +46,7 @@ export class RealtimeGateway implements OnModuleInit {
     @Inject(RealtimePubSubService) private readonly pubSubService: RealtimePubSubService,
     @Inject(AppRepository) private readonly appRepository: AppRepository,
     @Inject(StaffRepository) private readonly staffRepo: StaffRepository,
+    @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
 
   @WebSocketServer()
@@ -52,11 +55,49 @@ export class RealtimeGateway implements OnModuleInit {
   onModuleInit(): void {
     this.server.use(async (socket, next) => {
       const token = socket.handshake.auth?.token;
-      console.log(`[realtime] middleware: socket ${socket.id} token=${token ? token.substring(0, 20) + '...' : 'NONE'}`);
+      const participantToken = socket.handshake.auth?.participantToken;
+      console.log(`[realtime] middleware: socket ${socket.id} token=${token ? token.substring(0, 20) + "..." : "NONE"}`);
+
       if (!token || typeof token !== "string") {
-        socket.data.tenantId = null;
+        // Public group-order clients do not have staff JWTs. They may connect
+        // with a participant token, but can receive events only after the room
+        // join handler validates that token against the requested session.
+        const sessionId = socket.handshake.auth?.sessionId;
+        const tenantSlug = socket.handshake.auth?.tenantSlug;
+        if (
+          !participantToken || typeof participantToken !== "string" ||
+          !sessionId || typeof sessionId !== "string" ||
+          !tenantSlug || typeof tenantSlug !== "string"
+        ) {
+          next(new Error("Authentication required"));
+          return;
+        }
+
+        const tenant = await this.tenantService.resolveTenantBySlug(tenantSlug);
+        if (!tenant || !tenant.isActive) {
+          next(new Error("Invalid group-order tenant"));
+          return;
+        }
+        const participant = await runWithTenantContext(
+          {
+            tenantId: tenant.id,
+            tenantSlug: tenant.slug,
+            resolutionSource: "slug",
+            enabledModules: [],
+          },
+          () => this.appRepository.findGroupOrderParticipantByToken(sessionId, participantToken),
+        );
+        if (!participant) {
+          next(new Error("Invalid group-order participant"));
+          return;
+        }
+
+        socket.data.authenticated = false;
+        socket.data.isGroupOrder = true;
+        socket.data.groupOrderSessionId = sessionId;
+        socket.data.groupOrderParticipantToken = participantToken;
+        socket.data.tenantId = tenant.id;
         socket.data.enabledModules = [];
-        console.log(`[realtime] middleware: no token, allowing with empty modules`);
         next();
         return;
       }
@@ -64,32 +105,35 @@ export class RealtimeGateway implements OnModuleInit {
       try {
         const payload = jwt.verify(token, this.jwtSecret) as JwtPayload;
         if (payload.tokenType !== "access" || !payload.sessionId || !payload.sub || !payload.tenantId) {
-          console.log(`[realtime] middleware: invalid token type`);
           next(new Error("Invalid socket token type"));
           return;
         }
 
-        const activeSession = await this.staffRepo.findActiveSessionById(payload.sessionId, payload.sub, payload.tenantId);
+        const tenantContext = {
+          tenantId: payload.tenantId,
+          resolutionSource: "jwt" as const,
+          enabledModules: [] as ModuleKey[],
+        };
+        const { activeSession, enabledModules } = await runWithTenantContext(tenantContext, async () => ({
+          activeSession: await this.staffRepo.findActiveSessionById(payload.sessionId!, payload.sub!, payload.tenantId!),
+          enabledModules: await this.staffRepo.getEnabledModulesForTenant(payload.tenantId!),
+        }));
         if (!activeSession) {
-          console.log(`[realtime] middleware: session expired or revoked`);
           next(new Error("Socket session expired or revoked"));
           return;
         }
 
         if (activeSession.tenantId !== payload.tenantId) {
-          console.log(`[realtime] middleware: tenant mismatch`);
           next(new Error("Socket tenant mismatch"));
           return;
         }
 
+        socket.data.authenticated = true;
+        socket.data.isGroupOrder = false;
         socket.data.tenantId = payload.tenantId;
-        const latestEnabledModules = await this.staffRepo.getEnabledModulesForTenant(payload.tenantId);
-        socket.data.enabledModules = latestEnabledModules;
-        console.log(`[realtime] middleware: socket ${socket.id} connected tenant=${payload.tenantId} modules=${JSON.stringify(latestEnabledModules)}`);
-
+        socket.data.enabledModules = enabledModules;
         next();
-      } catch (err) {
-        console.log(`[realtime] middleware: token verification failed: ${err instanceof Error ? err.message : err}`);
+      } catch {
         next(new Error("Invalid socket token"));
       }
     });
@@ -99,8 +143,28 @@ export class RealtimeGateway implements OnModuleInit {
       const tenantId = isScoped ? (payload as Record<string, unknown>).__tenantId as string : null;
       const actualPayload = isScoped ? (payload as Record<string, unknown>).payload : payload;
 
+      // Room events are published with a namespaced event so public group-order
+      // sockets work across API instances without being exposed to global events.
+      if (event.startsWith("groupOrder:")) {
+        const separator = event.lastIndexOf(":");
+        if (separator > "groupOrder:".length) {
+          const room = event.slice(0, separator);
+          const roomEvent = event.slice(separator + 1);
+          for (const socket of this.server.sockets.sockets.values()) {
+            if (socket.rooms.has(room) && (!tenantId || socket.data.tenantId === tenantId)) {
+              socket.emit(roomEvent, actualPayload);
+            }
+          }
+        }
+        return;
+      }
+
       for (const socket of this.server.sockets.sockets.values()) {
-        if (tenantId && socket.data.tenantId && socket.data.tenantId !== tenantId) {
+        // Public sockets are intentionally excluded from global pub/sub events.
+        if (socket.data.authenticated !== true) {
+          continue;
+        }
+        if (tenantId && socket.data.tenantId !== tenantId) {
           continue;
         }
         if (canReceiveEvent(socket.data.enabledModules as ModuleKey[] | undefined, event)) {
@@ -114,23 +178,27 @@ export class RealtimeGateway implements OnModuleInit {
     const sockets = [...this.server.sockets.sockets.values()];
     console.log(`[realtime] emit "${event}" to ${sockets.length} socket(s) tenant=${tenantId ?? "all"}`);
     for (const socket of sockets) {
-      if (tenantId && socket.data.tenantId && socket.data.tenantId !== tenantId) {
+      if (socket.data.authenticated !== true) {
+        continue;
+      }
+      if (tenantId && socket.data.tenantId !== tenantId) {
         continue;
       }
       const modules = socket.data.enabledModules as ModuleKey[] | undefined;
-      const allowed = canReceiveEvent(modules, event);
-      console.log(`[realtime]   socket ${socket.id} modules=${JSON.stringify(modules)} allowed=${allowed}`);
-      if (allowed) {
+      if (canReceiveEvent(modules, event)) {
         socket.emit(event, payload);
       }
     }
-    const pubsubPayload = tenantId ? { __tenantId: tenantId, payload } : payload;
+
+    const scopedTenantId = tenantId ?? getTenantContext()?.tenantId;
+    const pubsubPayload = scopedTenantId ? { __tenantId: scopedTenantId, payload } : payload;
     await this.pubSubService.publish(event, pubsubPayload);
   }
 
   async emitToRoom<T>(room: string, event: string, payload: T): Promise<void> {
+    const tenantId = getTenantContext()?.tenantId;
     this.server.to(room).emit(event, payload);
-    await this.pubSubService.publish(`${room}:${event}`, payload);
+    await this.pubSubService.publish(`${room}:${event}`, tenantId ? { __tenantId: tenantId, payload } : payload);
   }
 
   @SubscribeMessage("group_order_join_room")
@@ -138,6 +206,12 @@ export class RealtimeGateway implements OnModuleInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() payload: { sessionId?: string; participantToken?: string },
   ): Promise<{ ok: boolean; error?: string }> {
+    if (!socket.data.isGroupOrder) {
+      return { ok: false, error: "Only group-order sockets may join group-order rooms" };
+    }
+    if (payload.sessionId !== socket.data.groupOrderSessionId || payload.participantToken !== socket.data.groupOrderParticipantToken) {
+      return { ok: false, error: "Group-order identity mismatch" };
+    }
     if (!payload?.sessionId || typeof payload.sessionId !== "string") {
       return { ok: false, error: "Missing sessionId" };
     }
@@ -145,9 +219,13 @@ export class RealtimeGateway implements OnModuleInit {
       return { ok: false, error: "Missing participantToken" };
     }
 
-    const participant = await this.appRepository.findGroupOrderParticipantByToken(
-      payload.sessionId,
-      payload.participantToken,
+    const participant = await runWithTenantContext(
+      {
+        tenantId: socket.data.tenantId as string,
+        resolutionSource: "slug",
+        enabledModules: [],
+      },
+      () => this.appRepository.findGroupOrderParticipantByToken(payload.sessionId!, payload.participantToken!),
     );
     if (!participant) {
       return { ok: false, error: "Invalid participant token" };
@@ -162,7 +240,7 @@ export class RealtimeGateway implements OnModuleInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() payload: { sessionId?: string },
   ): { ok: boolean } {
-    if (!payload?.sessionId || typeof payload.sessionId !== "string") {
+    if (!socket.data.isGroupOrder || !payload?.sessionId || typeof payload.sessionId !== "string") {
       return { ok: false };
     }
     socket.leave(`groupOrder:${payload.sessionId}`);

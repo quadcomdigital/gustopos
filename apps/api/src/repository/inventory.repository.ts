@@ -527,6 +527,9 @@ return true;
   }
 
   async adjustInventoryItem(id: string, deltaQuantity: number, notes?: string, staffId?: string): Promise<{ id: string; name: string; quantity: number; unit: string; minThreshold: number; unitCost: number; salePrice: number | null; isActive: boolean; isContainer: number; sku?: string | null | undefined; categoryId?: string | undefined; supplierName?: string | null | undefined; brandName?: string | null | undefined; }> {
+if (!Number.isFinite(deltaQuantity) || deltaQuantity === 0) {
+  throw new Error("Inventory adjustment must be a finite non-zero number");
+}
 const tenantId = getTenantIdOrDefault();
 
 return withTenantTx(async (tx) => {
@@ -534,7 +537,8 @@ return withTenantTx(async (tx) => {
     .select()
     .from(inventory)
     .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, id)))
-    .limit(1);
+    .limit(1)
+    .for("update");
   const row = rows[0];
   if (!row) {
     throw new Error("Ingredient not found");
@@ -907,15 +911,26 @@ await db.delete(prepItems).where(and(eq(prepItems.tenantId, tenantId), eq(prepIt
   }
 
   async preparePrepItem(id: string, quantity: number): Promise<{ prepItemId: string; name: string; previousStock: number; newStock: number; ingredientsDeducted: { name: string; id: string; quantity: number; unit: string; }[]; }> {
-return db.transaction(async (tx) => {
+if (!Number.isFinite(quantity) || quantity <= 0) {
+  throw new Error("Prepared quantity must be a finite positive number");
+}
+return withTenantTx(async (tx) => {
   const tenantId = getTenantIdOrDefault();
-  const prep = await tx.query.prepItems.findFirst({
-    where: and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)),
-  });
+  const prepRows = await tx
+    .select()
+    .from(prepItems)
+    .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)))
+    .limit(1)
+    .for("update");
+  const prep = prepRows[0];
   if (!prep) throw new Error(`Prep item ${id} not found`);
-  const ing = await tx.query.inventory.findFirst({
-    where: and(eq(inventory.tenantId, tenantId), eq(inventory.id, prep.ingredientId)),
-  });
+  const ingredientRows = await tx
+    .select()
+    .from(inventory)
+    .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, prep.ingredientId)))
+    .limit(1)
+    .for("update");
+  const ing = ingredientRows[0];
   if (!ing) throw new Error(`Ingredient ${prep.ingredientId} not found`);
   const rawNeeded = Number(prep.quantityPerUnit) * quantity;
   const prevIngQty = Number(ing.quantity);

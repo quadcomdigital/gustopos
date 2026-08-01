@@ -167,15 +167,11 @@ export default function POSView({
 
   const filteredMenu = useMemo(() => {
     let items = data.menu;
-    console.log('[POS DEBUG] data.menu total items:', data.menu.length);
-    console.log('[POS DEBUG] data.menu categories:', [...new Set(data.menu.map(i => i.category))]);
-    console.log('[POS DEBUG] data.menu Birre:', data.menu.filter(i => i.category === 'Birre').map(i => i.name));
     if (selectedCategory !== 'Tutti') items = items.filter((item) => item.category === selectedCategory);
     if (menuSearch.trim()) {
       const q = menuSearch.trim().toLowerCase();
       items = items.filter((item) => item.name.toLowerCase().includes(q));
     }
-    console.log('[POS DEBUG] filteredMenu count:', items.length, 'category:', selectedCategory);
     return items;
   }, [data.menu, selectedCategory, menuSearch]);
 

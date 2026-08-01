@@ -1,4 +1,4 @@
-import { fetchQzTrayConfig, type QzTrayConfig } from './api/client';
+import { fetchQzTrayConfig, getAccessToken, type QzTrayConfig } from './api/client';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,12 @@ async function fetchSigningText(url: string, timeoutMs = 2500): Promise<string> 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+    const token = url.startsWith('/api/') ? getAccessToken() : null;
+    const res = await fetch(url, {
+      cache: "no-store",
+      signal: ctrl.signal,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.text();
   } finally {
