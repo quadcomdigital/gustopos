@@ -171,6 +171,8 @@ export default function SuperadminPage() {
   const [success, setSuccess] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [impersonatingTenantId, setImpersonatingTenantId] = useState<string | null>(null);
+  // UX-005: contextual action menu on the mobile tenant cards (kebab → sheet).
+  const [cardMenuTenantId, setCardMenuTenantId] = useState<string | null>(null);
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
   const [criticalToggle, setCriticalToggle] = useState<{ tenantId: string; moduleKey: ModuleKey; enabled: boolean; label: string } | null>(null);
 
@@ -1147,53 +1149,117 @@ export default function SuperadminPage() {
                       <p className="text-sm font-bold text-slate-800">{tenant.name}</p>
                       <p className="text-xs text-slate-500">{tenant.slug} • {tenant.subdomain ?? '-'}</p>
                     </div>
-                    <span className={`text-xs font-semibold ${tenant.isActive ? 'text-emerald-600' : 'text-red-600'}`}>
-                      {tenant.isActive ? 'active' : 'inactive'}
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-xs font-semibold ${tenant.isActive ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {tenant.isActive ? 'active' : 'inactive'}
+                      </span>
+                      <button
+                        onClick={() => setCardMenuTenantId(cardMenuTenantId === tenant.id ? null : tenant.id)}
+                        aria-label={`Azioni per ${tenant.name}`}
+                        className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50"
+                      >
+                        <span className="text-lg font-bold leading-none">⋯</span>
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xs text-slate-600">Moduli ON: {enabledCount}/{MODULES.length}</p>
+                  {/* Quick primary actions stay visible for one-tap tasks */}
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => {
                         setSelectedTenantId(tenant.id);
                         setIsDrawerOpen(true);
                       }}
-                      className="px-2 py-2 rounded border border-slate-300 bg-white text-slate-700 font-semibold text-xs"
+                      className="px-2 py-2 rounded border border-slate-300 bg-white text-slate-700 font-semibold text-xs min-h-[44px]"
                     >
                       Moduli
                     </button>
                     <button
                       onClick={() => void openMenuBuilder(tenant.id)}
-                      className="px-2 py-2 rounded border border-amber-300 bg-amber-50 text-amber-700 font-semibold text-xs"
+                      className="px-2 py-2 rounded border border-amber-300 bg-amber-50 text-amber-700 font-semibold text-xs min-h-[44px]"
                       disabled={isBusy}
                     >
                       Menu Builder
                     </button>
                     <button
-                      type="button"
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void impersonateTenant(tenant.id);
-                      }}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void impersonateTenant(tenant.id);
-                      }}
-                      className="px-2 py-2 rounded border border-indigo-300 bg-indigo-50 text-indigo-700 font-semibold text-xs"
-                      disabled={Boolean(impersonatingTenantId)}
-                    >
-                      {impersonatingTenantId === tenant.id ? 'Accesso...' : 'Entra tenant'}
-                    </button>
-                    <button
                       onClick={() => void setTenantActive(tenant, !tenant.isActive)}
-                      className="px-2 py-2 rounded bg-slate-900 text-white font-semibold text-xs"
+                      className="px-2 py-2 rounded bg-slate-900 text-white font-semibold text-xs min-h-[44px] col-span-2"
                       disabled={isBusy}
                     >
-                      {tenant.isActive ? 'Disattiva' : 'Attiva'}
+                      {tenant.isActive ? 'Disattiva tenant' : 'Attiva tenant'}
                     </button>
                   </div>
+                  {/* Contextual action sheet (UX-005): full actions in an overlay */}
+                  {cardMenuTenantId === tenant.id && (
+                    <div className="fixed inset-0 z-[1200] flex items-end">
+                      <button
+                        className="absolute inset-0 bg-black/40"
+                        onClick={() => setCardMenuTenantId(null)}
+                        aria-label="Chiudi azioni"
+                      />
+                      <div className="relative w-full bg-white rounded-t-2xl border-t border-slate-200 shadow-2xl p-4 pb-6 space-y-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-sm font-bold text-slate-800">{tenant.name}</p>
+                          <button
+                            onClick={() => setCardMenuTenantId(null)}
+                            className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg border border-slate-200"
+                            aria-label="Chiudi"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onPointerDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setCardMenuTenantId(null);
+                            void impersonateTenant(tenant.id);
+                          }}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setCardMenuTenantId(null);
+                            void impersonateTenant(tenant.id);
+                          }}
+                          className="w-full px-3 py-3.5 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-700 font-semibold text-xs min-h-[48px]"
+                          disabled={Boolean(impersonatingTenantId)}
+                        >
+                          {impersonatingTenantId === tenant.id ? 'Accesso...' : 'Entra tenant'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setCardMenuTenantId(null);
+                            setSelectedTenantId(tenant.id);
+                            setIsDrawerOpen(true);
+                          }}
+                          className="w-full px-3 py-3.5 rounded-lg border border-slate-300 bg-white text-slate-700 font-semibold text-xs min-h-[48px]"
+                        >
+                          Gestisci moduli
+                        </button>
+                        <button
+                          onClick={() => {
+                            setCardMenuTenantId(null);
+                            void openMenuBuilder(tenant.id);
+                          }}
+                          className="w-full px-3 py-3.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-700 font-semibold text-xs min-h-[48px]"
+                          disabled={isBusy}
+                        >
+                          Menu Builder
+                        </button>
+                        <button
+                          onClick={() => {
+                            setCardMenuTenantId(null);
+                            void setTenantActive(tenant, !tenant.isActive);
+                          }}
+                          className="w-full px-3 py-3.5 rounded-lg border border-red-300 bg-red-50 text-red-700 font-semibold text-xs min-h-[48px]"
+                          disabled={isBusy}
+                        >
+                          {tenant.isActive ? 'Disattiva tenant' : 'Attiva tenant'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

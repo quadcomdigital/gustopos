@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';
+import { cn } from '../lib/utils';
 import ConfirmDialog from './ConfirmDialog';
 
 function escapeHtml(str: string): string {
@@ -27,6 +28,8 @@ export default function FiscalExportsView() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [confirmCloseOpen, setConfirmCloseOpen] = useState(false);
+  // UX-004: mobile task split — Genera / Chiudi / Storico, one action per screen.
+  const [mobileTab, setMobileTab] = useState<'generate' | 'close' | 'history'>('generate');
 
   const mapError = (value: unknown) => {
     const message = value instanceof Error ? value.message : 'Errore modulo fiscale';
@@ -208,6 +211,28 @@ export default function FiscalExportsView() {
 
   return (
     <div className="space-y-4">
+      {/* Mobile tab switcher (UX-004) */}
+      <div role="tablist" aria-label="Sezioni fiscali" className="md:hidden grid grid-cols-3 gap-1 bg-white border border-border rounded-xl p-1.5">
+        {([
+          { key: 'generate' as const, label: 'Genera' },
+          { key: 'close' as const, label: 'Chiudi' },
+          { key: 'history' as const, label: 'Storico' },
+        ]).map((tab) => (
+          <button
+            key={tab.key}
+            role="tab"
+            aria-selected={mobileTab === tab.key}
+            onClick={() => setMobileTab(tab.key)}
+            className={cn(
+              'px-2 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all min-h-[44px]',
+              mobileTab === tab.key ? 'bg-primary text-white shadow-sm' : 'bg-bg/50 text-text-muted',
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       <div className="bg-white border border-border rounded-xl p-4 space-y-3">
         <h2 className="text-lg font-bold text-primary uppercase tracking-wide">Fiscal Exports (CSV)</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
@@ -217,10 +242,12 @@ export default function FiscalExportsView() {
             onChange={(event) => setBusinessDate(event.target.value)}
             className="px-3 py-2 rounded border border-border text-sm"
           />
-          <button onClick={() => setConfirmCloseOpen(true)} disabled={loading} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50">Chiudi giornata</button>
-          <button onClick={() => void generateExport()} disabled={loading} className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50">Genera CSV</button>
-          <button onClick={() => void load(true)} disabled={loading} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50">{loading ? '...' : 'Aggiorna'}</button>
-          <button onClick={printDailyReport} className="px-4 py-2 rounded bg-accent text-white text-xs font-bold uppercase tracking-wider">Stampa Report</button>
+          {/* Mobile: these two primaries live in the sticky CTAs below; the
+              grid keeps them desktop-only to avoid duplicate actions. */}
+          <button onClick={() => setConfirmCloseOpen(true)} disabled={loading} className="hidden md:block px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50">Chiudi giornata</button>
+          <button onClick={() => void generateExport()} disabled={loading} className="hidden md:block px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50">Genera CSV</button>
+          <button onClick={() => void load(true)} disabled={loading} className={cn('px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50', mobileTab !== 'history' && 'hidden md:block')}>{loading ? '...' : 'Aggiorna'}</button>
+          <button onClick={printDailyReport} className={cn('px-4 py-2 rounded bg-accent text-white text-xs font-bold uppercase tracking-wider', mobileTab !== 'history' && 'hidden md:block')}>Stampa Report</button>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Stato export:</span>
@@ -244,7 +271,27 @@ export default function FiscalExportsView() {
         {success && <p className="text-xs text-emerald-600 font-semibold">{success}</p>}
       </div>
 
-      <div className="bg-white border border-border rounded-xl p-4 space-y-2">
+      {/* Mobile sticky primary CTA (UX-004) */}
+      {mobileTab === 'generate' && (
+        <button
+          onClick={() => void generateExport()}
+          disabled={loading}
+          className="md:hidden w-full px-4 py-3.5 rounded-lg bg-primary text-white text-xs font-bold uppercase tracking-wider min-h-[48px] shadow-md disabled:opacity-50"
+        >
+          Genera CSV per {businessDate}
+        </button>
+      )}
+      {mobileTab === 'close' && (
+        <button
+          onClick={() => setConfirmCloseOpen(true)}
+          disabled={loading}
+          className="md:hidden w-full px-4 py-3.5 rounded-lg border-2 border-amber-500 text-amber-700 text-xs font-bold uppercase tracking-wider min-h-[48px] shadow-md disabled:opacity-50"
+        >
+          Chiudi giornata fiscale
+        </button>
+      )}
+
+      <div className={cn('bg-white border border-border rounded-xl p-4 space-y-2', mobileTab !== 'history' && 'hidden md:block')}>
         {items.map((item) => (
           <div key={item.id} className="border border-border rounded p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>

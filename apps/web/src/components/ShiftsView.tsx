@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Shift, ShiftStatus, TimeEntry } from '@gustopos/shared';
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
+import { cn } from '../lib/utils';
 import ConfirmDialog from './ConfirmDialog';
 
 const statuses: ShiftStatus[] = ['scheduled', 'completed', 'cancelled'];
@@ -30,6 +31,9 @@ export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
   const [success, setSuccess] = useState('');
   const [reportHours, setReportHours] = useState(0);
   const [pendingStatusUpdate, setPendingStatusUpdate] = useState<{ id: string; status: ShiftStatus } | null>(null);
+  // UX-003: mobile task split — 'clock' (Timbra) is the default daily action;
+  // 'plan' (Pianifica) holds shift creation and the schedule board.
+  const [mobileTab, setMobileTab] = useState<'clock' | 'plan'>('clock');
 
   const mapError = (value: unknown) => {
     const message = value instanceof Error ? value.message : 'Errore operazione turni';
@@ -188,26 +192,58 @@ export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
 
   return (
     <div className="space-y-4">
+      {/* Mobile tab switcher (UX-003) */}
+      <div role="tablist" aria-label="Sezioni turni" className="md:hidden grid grid-cols-2 gap-1 bg-white border border-border rounded-xl p-1.5">
+        <button
+          role="tab"
+          aria-selected={mobileTab === 'clock'}
+          onClick={() => setMobileTab('clock')}
+          className={cn(
+            'px-3 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all min-h-[44px]',
+            mobileTab === 'clock' ? 'bg-primary text-white shadow-sm' : 'bg-bg/50 text-text-muted',
+          )}
+        >
+          Timbra
+        </button>
+        <button
+          role="tab"
+          aria-selected={mobileTab === 'plan'}
+          onClick={() => setMobileTab('plan')}
+          className={cn(
+            'px-3 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all min-h-[44px]',
+            mobileTab === 'plan' ? 'bg-primary text-white shadow-sm' : 'bg-bg/50 text-text-muted',
+          )}
+        >
+          Pianifica
+        </button>
+      </div>
+
       <div className="bg-white border border-border rounded-xl p-4 space-y-3">
         <h2 className="text-lg font-bold text-primary uppercase tracking-wide">Shifts & Timeclock</h2>
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-          <input value={staffId} onChange={(event) => setStaffId(event.target.value)} placeholder="Staff ID" className="px-3 py-2 rounded border border-border text-sm" />
-          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="px-3 py-2 rounded border border-border text-sm" />
-          <input type="time" value={startAt} onChange={(event) => setStartAt(event.target.value)} className="px-3 py-2 rounded border border-border text-sm" />
-          <input type="time" value={endAt} onChange={(event) => setEndAt(event.target.value)} className="px-3 py-2 rounded border border-border text-sm" />
-          <button onClick={() => void createShiftHandler()} className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider min-h-10">Crea turno</button>
+        {/* Mobile: Timbra section (clock-in/out CTA) */}
+        <div className={cn('space-y-3', mobileTab !== 'clock' && 'hidden md:block')}>
+          <input value={staffId} onChange={(event) => setStaffId(event.target.value)} placeholder="Staff ID" className="px-3 py-2 rounded border border-border text-sm w-full" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button onClick={() => void doClockIn()} disabled={hasOpenEntryForStaff} className="px-4 py-3.5 rounded-lg bg-emerald-600 text-white text-xs font-bold uppercase tracking-wider min-h-[48px] disabled:opacity-50 shadow-sm">Clock-in</button>
+            <button onClick={() => void doClockOut()} disabled={!hasOpenEntryForStaff} className="px-4 py-3.5 rounded-lg border-2 border-amber-500 text-amber-700 text-xs font-bold uppercase tracking-wider min-h-[48px] disabled:opacity-50">Clock-out</button>
+          </div>
+          <button onClick={() => void load()} className="w-full px-4 py-2.5 rounded border border-border text-xs font-bold uppercase tracking-wider min-h-[44px]">Aggiorna</button>
+          <div className="text-xs font-semibold text-text-muted">Ore giornaliere: {reportHours.toFixed(2)}</div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <button onClick={() => void doClockIn()} disabled={hasOpenEntryForStaff} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider min-h-10 disabled:opacity-50">Clock-in</button>
-          <button onClick={() => void doClockOut()} disabled={!hasOpenEntryForStaff} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider min-h-10 disabled:opacity-50">Clock-out</button>
-          <button onClick={() => void load()} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider min-h-10">Aggiorna</button>
+        {/* Mobile: Pianifica section (shift creation) */}
+        <div className={cn('space-y-3', mobileTab !== 'plan' && 'hidden md:block')}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="px-3 py-2 rounded border border-border text-sm" />
+            <input type="time" value={startAt} onChange={(event) => setStartAt(event.target.value)} className="px-3 py-2 rounded border border-border text-sm" />
+            <input type="time" value={endAt} onChange={(event) => setEndAt(event.target.value)} className="px-3 py-2 rounded border border-border text-sm" />
+          </div>
+          <button onClick={() => void createShiftHandler()} className="w-full px-4 py-3.5 rounded-lg bg-primary text-white text-xs font-bold uppercase tracking-wider min-h-[48px] shadow-sm">Crea turno</button>
         </div>
-        <div className="text-xs font-semibold text-text-muted">Ore giornaliere: {reportHours.toFixed(2)}</div>
         {error && <p className="text-xs text-danger">{error}</p>}
         {success && <p className="text-xs text-emerald-600 font-semibold">{success}</p>}
       </div>
 
-      <div className="bg-white border border-border rounded-xl p-4 space-y-3">
+      <div className={cn('bg-white border border-border rounded-xl p-4 space-y-3', mobileTab !== 'plan' && 'hidden md:block')}>
         {statuses.map((status) => (
           <div key={status} className="border border-border rounded p-3">
             <p className="text-[11px] font-bold uppercase tracking-wider text-text-muted mb-2">{status} ({(grouped.get(status) ?? []).length})</p>
@@ -230,7 +266,7 @@ export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
       </div>
 
       {entries.length > 0 && (
-        <div className="bg-white border border-border rounded-xl p-4 space-y-2">
+        <div className={cn('bg-white border border-border rounded-xl p-4 space-y-2', mobileTab !== 'clock' && 'hidden md:block')}>
           <p className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Ultime timbrature</p>
           {entries.map((entry) => (
             <div key={entry.id} className="flex items-center justify-between gap-3 text-xs text-text-muted border border-border rounded px-3 py-2">

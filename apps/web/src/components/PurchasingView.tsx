@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PurchaseOrder, PurchaseOrderStatus, SupplierIngredient } from '@gustopos/shared';
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
+import { cn } from '../lib/utils';
 import ConfirmDialog from './ConfirmDialog';
 
 const statusOrder: PurchaseOrderStatus[] = ['draft', 'sent', 'partial_received', 'received', 'cancelled'];
@@ -29,6 +30,9 @@ export default function PurchasingView() {
   const [success, setSuccess] = useState('');
   const [pendingReceiptOrderId, setPendingReceiptOrderId] = useState<string | null>(null);
   const [pendingAdvance, setPendingAdvance] = useState<{ order: PurchaseOrder; target: PurchaseOrderStatus } | null>(null);
+  // UX-002: mobile task-first stepper (Fornitore -> PO -> Ricezione). Desktop
+  // keeps the single stacked layout; mobile shows one step at a time.
+  const [mobileStep, setMobileStep] = useState(0);
 
   // Supplier ingredients state
   const inventoryItems = useAppStore((state) => state.inventoryItems);
@@ -321,9 +325,34 @@ export default function PurchasingView() {
 
   const pendingReceiptOrder = pendingReceiptOrderId ? orders.find((entry) => entry.id === pendingReceiptOrderId) ?? null : null;
 
+  const purchaseSteps = [
+    { key: 'supplier', label: 'Fornitore' },
+    { key: 'po', label: 'PO' },
+    { key: 'receive', label: 'Ricezione' },
+  ] as const;
+
   return (
     <div className="space-y-4">
-      <div className="bg-white border border-border rounded-xl p-4 space-y-3">
+      {/* Mobile stepper (UX-002): sticky top, one step at a time */}
+      <div role="tablist" aria-label="Passaggi acquisti" className="md:hidden sticky top-0 z-30 bg-white border border-border rounded-xl p-2 shadow-sm flex gap-1">
+        {purchaseSteps.map((step, index) => (
+          <button
+            key={step.key}
+            role="tab"
+            aria-selected={mobileStep === index}
+            onClick={() => setMobileStep(index)}
+            className={cn(
+              'flex-1 px-2 py-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all',
+              mobileStep === index ? 'bg-primary text-white shadow-sm' : 'bg-bg/50 text-text-muted',
+            )}
+          >
+            <span className="block text-[9px] opacity-70">{index + 1}</span>
+            {step.label}
+          </button>
+        ))}
+      </div>
+
+      <div className={cn('bg-white border border-border rounded-xl p-4 space-y-3', mobileStep !== 0 && 'hidden md:block')}>
         <h2 className="text-lg font-bold text-primary uppercase tracking-wide">Purchasing & Suppliers</h2>
         <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
           <input
@@ -351,7 +380,7 @@ export default function PurchasingView() {
           </select>
         </div>
 
-        <div className="border border-border rounded-lg overflow-x-auto">
+        <div className={cn('border border-border rounded-lg overflow-x-auto', mobileStep !== 1 && 'hidden md:block')}>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-bg/50">
@@ -439,7 +468,7 @@ export default function PurchasingView() {
             </tbody>
           </table>
         </div>
-        <div className="flex items-center gap-2">
+        <div className={cn('flex items-center gap-2', mobileStep !== 1 && 'hidden md:flex')}>
           <button
             onClick={() => setPoItems([...poItems, { ingredientId: '', itemName: '', brandName: '', unit: 'kg', orderedQty: 0, unitCost: 0 }])}
             className="min-h-[44px] px-3 py-2 rounded border border-border text-xs font-bold uppercase"
@@ -449,18 +478,29 @@ export default function PurchasingView() {
           <button
             onClick={() => void createOrderHandler()}
             disabled={loadingPoItems}
-            className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider min-h-[44px]"
+            className="hidden md:inline-flex px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider min-h-[44px]"
           >
             Crea PO
           </button>
         </div>
+
+        {/* Mobile sticky quick action (UX-002) */}
+        {mobileStep === 1 && (
+          <button
+            onClick={() => void createOrderHandler()}
+            disabled={loadingPoItems}
+            className="md:hidden w-full px-4 py-3.5 rounded-lg bg-primary text-white text-xs font-bold uppercase tracking-wider min-h-[48px] shadow-md"
+          >
+            Crea ordine acquisto
+          </button>
+        )}
 
         {error && <p className="text-xs text-danger">{error}</p>}
         {success && <p className="text-xs text-emerald-600 font-semibold">{success}</p>}
       </div>
 
       {selectedSupplierId && (
-        <div className="bg-white border border-border rounded-xl p-4 space-y-3">
+        <div className={cn('bg-white border border-border rounded-xl p-4 space-y-3', mobileStep !== 0 && 'hidden md:block')}>
           <div className="flex items-center justify-between">
             <p className="text-sm font-bold uppercase tracking-wider text-text-muted">Ingredienti Fornitore</p>
             <button onClick={() => void loadSupplierIngredients(selectedSupplierId)} className="min-h-[44px] px-3 py-2 rounded border border-border text-xs font-bold uppercase" disabled={loadingIngredients}>
@@ -608,7 +648,7 @@ export default function PurchasingView() {
         </div>
       )}
 
-      <div className="bg-white border border-border rounded-xl p-4 space-y-3">
+      <div className={cn('bg-white border border-border rounded-xl p-4 space-y-3', mobileStep !== 2 && 'hidden md:block')}>
         <div className="flex items-center justify-between">
           <p className="text-sm font-bold uppercase tracking-wider text-text-muted">Ordini Acquisto</p>
           <button onClick={() => void load()} className="min-h-[44px] px-3 py-2 rounded border border-border text-xs font-bold uppercase" disabled={loading}>{loading ? '...' : 'Aggiorna'}</button>

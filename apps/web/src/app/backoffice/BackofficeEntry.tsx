@@ -9,6 +9,7 @@ import {
   getDefaultRoute,
   getRouteByPath,
   getTenantRoutePath,
+  rememberLastModule,
   resolveTenantSlugFromPath,
   normalizeEffectiveModules,
 } from './route-guards';
@@ -132,7 +133,10 @@ export default function BackofficeEntry() {
           analyticsEnabled={enabledModules.includes('analytics') && currentUser.role === 'admin'}
           routes={accessibleRoutes}
           activeRouteKey={(activeRoute?.key ?? defaultRoute?.key ?? 'dashboard') as BackofficeRouteKey}
-          onNavigate={(routeKey) => navigate(getTenantRoutePath(routeKey, tenantSlug))}
+          onNavigate={(routeKey) => {
+            rememberLastModule(routeKey);
+            navigate(getTenantRoutePath(routeKey, tenantSlug));
+          }}
           reservationsPending={reservationsSummary?.pending ?? 0}
           deliveryActive={deliverySummary?.active ?? 0}
         >
@@ -196,7 +200,10 @@ export default function BackofficeEntry() {
         analyticsEnabled={enabledModules.includes('analytics') && currentUser.role === 'admin'}
         routes={accessibleRoutes}
         activeRouteKey={(activeRoute?.key ?? defaultRoute?.key ?? 'dashboard') as BackofficeRouteKey}
-        onNavigate={(routeKey) => navigate(getTenantRoutePath(routeKey, tenantSlug))}
+        onNavigate={(routeKey) => {
+          rememberLastModule(routeKey);
+          navigate(getTenantRoutePath(routeKey, tenantSlug));
+        }}
         reservationsPending={reservationsSummary?.pending ?? 0}
         deliveryActive={deliverySummary?.active ?? 0}
       />

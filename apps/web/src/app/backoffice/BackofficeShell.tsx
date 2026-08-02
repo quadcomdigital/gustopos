@@ -26,7 +26,15 @@ import { cn } from '../../lib/utils';
 import ToastHost from '../../components/ToastHost';
 import PwaInstallPrompt from '../../components/PwaInstallPrompt';
 import { useAppStore } from '../../store/app-store';
-import type { BackofficeRouteKey, BackofficeRouteMeta } from './route-guards';
+import type { BackofficeRouteKey, BackofficeRouteMeta, RouteDomain } from './route-guards';
+
+const DOMAIN_LABELS: Record<RouteDomain, string> = {
+  operations: 'Operazioni',
+  finance: 'Finanza',
+  admin: 'Amministrazione',
+};
+
+const DOMAIN_ORDER: RouteDomain[] = ['operations', 'finance', 'admin'];
 
 const ICONS: Record<BackofficeRouteKey, LucideIcon> = {
   dashboard: BarChart3,
@@ -356,37 +364,52 @@ export default function BackofficeShell(props: BackofficeShellProps) {
                 <X size={16} />
               </button>
             </div>
-            <div className="grid grid-cols-1 gap-2">
-              {mobileExtraRoutes.map((route) => {
-                const Icon = ICONS[route.key];
-                const isActive = activeRouteKey === route.key;
+            <div className="grid grid-cols-1 gap-4">
+              {DOMAIN_ORDER.map((domain) => {
+                const domainRoutes = mobileExtraRoutes.filter((route) => route.domain === domain);
+                if (domainRoutes.length === 0) {
+                  return null;
+                }
                 return (
-                  <button
-                    key={`more-${route.key}`}
-                    onClick={() => {
-                      onNavigate(route.key);
-                      setIsMoreOpen(false);
-                    }}
-                    className={cn(
-                      'w-full px-3 py-3 rounded-lg border text-left flex items-center justify-between gap-3',
-                      isActive ? 'bg-accent/10 border-accent text-accent' : 'bg-white border-border text-text-main',
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <Icon size={16} />
-                      <span className="text-sm font-semibold">{route.label}</span>
-                    </span>
-                    {renderRouteBadge(route.key)}
-                  </button>
+                  <div key={domain} className="space-y-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted px-1">{DOMAIN_LABELS[domain]}</p>
+                    <div className="grid grid-cols-1 gap-2">
+                      {domainRoutes.map((route) => {
+                        const Icon = ICONS[route.key];
+                        const isActive = activeRouteKey === route.key;
+                        return (
+                          <button
+                            key={`more-${route.key}`}
+                            onClick={() => {
+                              onNavigate(route.key);
+                              setIsMoreOpen(false);
+                            }}
+                            className={cn(
+                              'w-full px-3 py-3 rounded-lg border text-left flex items-center justify-between gap-3',
+                              isActive ? 'bg-accent/10 border-accent text-accent' : 'bg-white border-border text-text-main',
+                            )}
+                          >
+                            <span className="flex items-center gap-2">
+                              <Icon size={16} />
+                              <span className="text-sm font-semibold">{route.label}</span>
+                            </span>
+                            {renderRouteBadge(route.key)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 );
               })}
-              <button
-                onClick={onLogout}
-                className="w-full px-3 py-3 rounded-lg border border-red-300 bg-red-50 text-red-700 text-left flex items-center gap-2"
-              >
-                <LogOut size={16} />
-                <span className="text-sm font-semibold">Esci</span>
-              </button>
+              <div className="pt-2 border-t border-border">
+                <button
+                  onClick={onLogout}
+                  className="w-full px-3 py-3 rounded-lg border border-red-300 bg-red-50 text-red-700 text-left flex items-center gap-2"
+                >
+                  <LogOut size={16} />
+                  <span className="text-sm font-semibold">Esci</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
