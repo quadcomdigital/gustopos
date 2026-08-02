@@ -414,6 +414,13 @@
       "when": 1785675639588,
       "tag": "0061_perpetual_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1785678207626,
+      "tag": "0062_fancy_spyke",
+      "breakpoints": true
     }
   ]
 }

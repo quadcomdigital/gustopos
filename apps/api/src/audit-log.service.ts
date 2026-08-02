@@ -24,7 +24,7 @@ type AuditEvent =
   | "reservation.no_show"
   | "delivery.upserted"
   | "delivery.status.updated"
-  | "delivery.dispatched" | "print_bridge.first_bind" | "print_bridge.onboarding_secret.created" | "print_bridge.onboarding_secret.revoked" | "print_bridge.deleted";
+  | "delivery.dispatched" | "print_bridge.first_bind" | "print_bridge.onboarding_secret.created" | "print_bridge.onboarding_secret.revoked" | "print_bridge.deleted" | "fiscal.export.retried" | "timeclock.entry.resolved";
 
 interface AuditPayload {
   actorStaffId?: string;

@@ -701,6 +701,7 @@ export const fiscalExports = pgTable("fiscal_exports", {
   generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
   checksum: text("checksum"),
   csvContent: text("csv_content"),
+  error: text("error"),
 });
 
 export const selfOrderSessions = pgTable("self_order_sessions", {

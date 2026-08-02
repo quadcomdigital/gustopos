@@ -158,6 +158,7 @@ export class FiscalRepository {
       generatedByStaffId: row.generatedByStaffId,
       generatedAt: row.generatedAt.toISOString(),
       checksum: row.checksum ?? undefined,
+      error: row.error ?? undefined,
     });
   }
 
@@ -167,26 +168,77 @@ export class FiscalRepository {
     return withTenantTx(async (tx) => {
       const now = new Date();
       const id = `fx_${crypto.randomUUID()}`;
-      const { csv, checksum } = await this.buildFiscalCsv(tx, tenantId, parsed.businessDate);
       const path = `/exports/${tenantId}/fiscal_${parsed.businessDate}.csv`;
+      try {
+        const { csv, checksum } = await this.buildFiscalCsv(tx, tenantId, parsed.businessDate);
+        const inserted = await tx
+          .insert(fiscalExports)
+          .values({
+            id,
+            tenantId,
+            businessDate: parsed.businessDate,
+            format: parsed.format,
+            status: "ready",
+            path,
+            generatedByStaffId: actorStaffId,
+            generatedAt: now,
+            checksum,
+            csvContent: csv,
+          })
+          .returning();
+        return this.mapFiscalExport(inserted[0]);
+      } catch (error) {
+        // Persist the failure as a job row so the UI can surface it and offer a
+        // retry, instead of losing the request in a 500 with no trace.
+        const inserted = await tx
+          .insert(fiscalExports)
+          .values({
+            id,
+            tenantId,
+            businessDate: parsed.businessDate,
+            format: parsed.format,
+            status: "failed",
+            path,
+            generatedByStaffId: actorStaffId,
+            generatedAt: now,
+            error: error instanceof Error ? error.message : "Export generation failed",
+          })
+          .returning();
+        return this.mapFiscalExport(inserted[0]);
+      }
+    });
+  }
 
-      const inserted = await tx
-        .insert(fiscalExports)
-        .values({
-          id,
-          tenantId,
-          businessDate: parsed.businessDate,
-          format: parsed.format,
+  async retryFiscalExport(id: string, actorStaffId: string): Promise<FiscalExport | null> {
+    const tenantId = getTenantIdOrDefault();
+    return withTenantTx(async (tx) => {
+      const existing = await tx
+        .select()
+        .from(fiscalExports)
+        .where(and(eq(fiscalExports.tenantId, tenantId), eq(fiscalExports.id, id)))
+        .limit(1);
+      const row = existing[0];
+      if (!row) {
+        return null;
+      }
+      if (row.status !== "failed") {
+        throw new Error("Only failed exports can be retried");
+      }
+      const now = new Date();
+      const { csv, checksum } = await this.buildFiscalCsv(tx, tenantId, row.businessDate);
+      const updated = await tx
+        .update(fiscalExports)
+        .set({
           status: "ready",
-          path,
-          generatedByStaffId: actorStaffId,
-          generatedAt: now,
           checksum,
           csvContent: csv,
+          error: null,
+          generatedAt: now,
+          generatedByStaffId: actorStaffId,
         })
+        .where(and(eq(fiscalExports.tenantId, tenantId), eq(fiscalExports.id, id)))
         .returning();
-
-      return this.mapFiscalExport(inserted[0]);
+      return this.mapFiscalExport(updated[0]);
     });
   }
 

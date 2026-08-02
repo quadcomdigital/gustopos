@@ -1,0 +1,1 @@
+ALTER TABLE "fiscal_exports" ADD COLUMN "error" text;

@@ -578,7 +578,10 @@ export class AppController {
     @Body() payload: ReservationNoShowRequest,
   ): Promise<Reservation> {
     const parsed = reservationNoShowRequestSchema.parse(payload);
-    const updated = await this.tablesRepo.updateReservation(id, { status: "no_show", noShowReason: parsed.reason });
+    // Persist the enumerated code; keep an optional free-text note alongside it
+    // so reporting can group causes without losing operator detail.
+    const noShowReason = parsed.note ? `${parsed.reason} — ${parsed.note}` : parsed.reason;
+    const updated = await this.tablesRepo.updateReservation(id, { status: "no_show", noShowReason });
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
@@ -606,15 +609,23 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresPermissions("delivery:manage")
   @RequiresModule("delivery")
-  upsertDeliveryOrder(@Param("orderId") orderId: string, @Body() payload: DeliveryUpsertRequest): Promise<DeliveryOrder> {
+  async upsertDeliveryOrder(@Param("orderId") orderId: string, @Body() payload: DeliveryUpsertRequest): Promise<DeliveryOrder> {
     const parsed = deliveryUpsertRequestSchema.parse(payload);
-    return this.tablesRepo.upsertDeliveryOrder(orderId, parsed).then((deliveryOrder) => {
-      this.auditLogService.log("delivery.upserted", {
-        targetId: orderId,
-        details: { status: deliveryOrder.status, deliveryFee: deliveryOrder.deliveryFee },
-      });
-      return deliveryOrder;
+    let deliveryOrder: DeliveryOrder;
+    try {
+      deliveryOrder = await this.tablesRepo.upsertDeliveryOrder(orderId, parsed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Delivery upsert failed";
+      if (message.includes("Delivery transition not allowed")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
+    this.auditLogService.log("delivery.upserted", {
+      targetId: orderId,
+      details: { status: deliveryOrder.status, deliveryFee: deliveryOrder.deliveryFee },
     });
+    return deliveryOrder;
   }
 
   @Patch("delivery/orders/:orderId/status")
@@ -626,7 +637,16 @@ export class AppController {
     @Body() payload: DeliveryStatusUpdateRequest,
   ): Promise<DeliveryOrder> {
     const parsed = deliveryStatusUpdateRequestSchema.parse(payload);
-    const updated = await this.tablesRepo.updateDeliveryStatus(orderId, parsed);
+    let updated: DeliveryOrder | null;
+    try {
+      updated = await this.tablesRepo.updateDeliveryStatus(orderId, parsed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Delivery update failed";
+      if (message.includes("Delivery transition not allowed")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
     if (!updated) {
       throw new NotFoundException("Delivery order not found");
     }
@@ -642,7 +662,16 @@ export class AppController {
   @RequiresPermissions("delivery:manage")
   @RequiresModule("delivery")
   async dispatchDeliveryOrder(@Param("orderId") orderId: string): Promise<DeliveryOrder> {
-    const updated = await this.tablesRepo.updateDeliveryStatus(orderId, { status: "out_for_delivery" });
+    let updated: DeliveryOrder | null;
+    try {
+      updated = await this.tablesRepo.updateDeliveryStatus(orderId, { status: "out_for_delivery" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Delivery dispatch failed";
+      if (message.includes("Delivery transition not allowed")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
     if (!updated) {
       throw new NotFoundException("Delivery order not found");
     }
@@ -889,6 +918,33 @@ export class AppController {
     }
   }
 
+  @Post("timeclock/entries/:id/resolve")
+  @Roles("admin")
+  @RequiresPermissions("shifts:manage")
+  @RequiresModule("staff_shifts_timeclock")
+  async resolveTimeEntry(@Param("id") id: string, @Req() request: AuthenticatedRequest): Promise<TimeEntry> {
+    const actorStaffId = request.user?.sub;
+    let resolved: TimeEntry | null;
+    try {
+      resolved = await this.shiftsRepo.resolveTimeEntry(id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Entry resolve failed";
+      if (message.includes("Only open or anomaly entries")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
+    if (!resolved) {
+      throw new NotFoundException("Time entry not found");
+    }
+    this.auditLogService.log("timeclock.entry.resolved", {
+      actorStaffId,
+      targetId: id,
+      details: { status: resolved.status },
+    });
+    return resolved;
+  }
+
   @Get("timeclock/report")
   @Roles("admin")
   @RequiresModule("staff_shifts_timeclock")
@@ -934,6 +990,36 @@ export class AppController {
       throw new UnauthorizedException("Missing authenticated user");
     }
     return this.fiscalRepo.createFiscalExport(parsed, actorStaffId);
+  }
+
+  @Post("fiscal/exports/:id/retry")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  async retryFiscalExport(@Param("id") id: string, @Req() request: AuthenticatedRequest): Promise<FiscalExport> {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+    let updated: FiscalExport | null;
+    try {
+      updated = await this.fiscalRepo.retryFiscalExport(id, actorStaffId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Export retry failed";
+      if (message.includes("Only failed exports can be retried")) {
+        throw new ConflictException(message);
+      }
+      throw new BadRequestException(message);
+    }
+    if (!updated) {
+      throw new NotFoundException("Fiscal export not found");
+    }
+    this.auditLogService.log("fiscal.export.retried", {
+      actorStaffId,
+      targetId: id,
+      details: { status: updated.status },
+    });
+    return updated;
   }
 
   @Get("fiscal/exports")

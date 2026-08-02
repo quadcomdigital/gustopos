@@ -296,6 +296,48 @@ export class ShiftsRepository {
     });
   }
 
+  // Admin-only: force-close a stuck open/anomaly entry (e.g. staff forgot to
+  // clock out). The entry must still be open/anomaly; already-closed entries
+  // are rejected so the policy stays explicit.
+  async resolveTimeEntry(id: string): Promise<TimeEntry | null> {
+    const tenantId = getTenantIdOrDefault();
+    const rows = await db
+      .select()
+      .from(timeEntries)
+      .where(and(eq(timeEntries.tenantId, tenantId), eq(timeEntries.id, id)))
+      .limit(1);
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+    if (row.status !== "open" && row.status !== "anomaly") {
+      throw new Error("Only open or anomaly entries can be resolved");
+    }
+    const now = new Date();
+    const updated = await db
+      .update(timeEntries)
+      .set({
+        clockOutAt: row.clockOutAt ?? now,
+        status: "closed",
+        updatedAt: now,
+      })
+      .where(and(eq(timeEntries.tenantId, tenantId), eq(timeEntries.id, id)))
+      .returning();
+    const closed = updated[0];
+    return timeEntrySchema.parse({
+      id: closed.id,
+      staffId: closed.staffId,
+      shiftId: closed.shiftId ?? undefined,
+      clockInAt: closed.clockInAt.toISOString(),
+      clockOutAt: closed.clockOutAt ? closed.clockOutAt.toISOString() : null,
+      status: timeEntryStatusSchema.parse(closed.status),
+      source: timeEntrySourceSchema.parse(closed.source),
+      notes: closed.notes,
+      createdAt: closed.createdAt.toISOString(),
+      updatedAt: closed.updatedAt.toISOString(),
+    });
+  }
+
   // ─── Time Report ─────────────────────────────────────────────────────
 
   async timeReport(query: TimeReportQuery): Promise<TimeReportResponse> {

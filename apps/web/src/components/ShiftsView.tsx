@@ -18,6 +18,7 @@ export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
   const updateShift = useAppStore((state) => state.updateShift);
   const clockIn = useAppStore((state) => state.clockIn);
   const clockOut = useAppStore((state) => state.clockOut);
+  const resolveTimeEntry = useAppStore((state) => state.resolveTimeEntry);
   const refreshTimeReport = useAppStore((state) => state.refreshTimeReport);
   const storeTimeEntries = useAppStore((state) => state.timeEntries);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
@@ -232,8 +233,29 @@ export default function ShiftsView({ currentUserId }: ShiftsViewProps) {
         <div className="bg-white border border-border rounded-xl p-4 space-y-2">
           <p className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Ultime timbrature</p>
           {entries.map((entry) => (
-            <div key={entry.id} className="text-xs text-text-muted border border-border rounded px-3 py-2">
-              {entry.staffId} • in: {new Date(entry.clockInAt).toLocaleString()} • out: {entry.clockOutAt ? new Date(entry.clockOutAt).toLocaleString() : '-'} • {entry.status}
+            <div key={entry.id} className="flex items-center justify-between gap-3 text-xs text-text-muted border border-border rounded px-3 py-2">
+              <span>
+                {entry.staffId} • in: {new Date(entry.clockInAt).toLocaleString()} • out: {entry.clockOutAt ? new Date(entry.clockOutAt).toLocaleString() : '-'} • {entry.status}
+              </span>
+              {(entry.status === 'open' || entry.status === 'anomaly') && (
+                <button
+                  onClick={() => {
+                    setLoading(true);
+                    setError('');
+                    void resolveTimeEntry(entry.id)
+                      .then(() => {
+                        setSuccess('Timbratura risolta correttamente.');
+                        setEntries((previous) => previous.filter((e) => e.id !== entry.id));
+                        return load();
+                      })
+                      .catch((err) => setError(mapError(err)))
+                      .finally(() => setLoading(false));
+                  }}
+                  className="shrink-0 px-3 py-1.5 rounded border border-amber-500 text-amber-700 text-[11px] font-bold uppercase tracking-wider min-h-8 hover:bg-amber-50 transition-colors"
+                >
+                  Risolvi
+                </button>
+              )}
             </div>
           ))}
         </div>

@@ -5,6 +5,16 @@ import { trackUxMetric } from '../shared/ux/metrics';
 
 const statusOptions: ReservationStatus[] = ['pending', 'confirmed', 'seated', 'cancelled', 'no_show'];
 
+const noShowReasonOptions: Array<{ value: string; label: string }> = [
+  { value: 'no_call', label: 'Non ha risposto' },
+  { value: 'late_cancel', label: 'Cancellazione tardiva' },
+  { value: 'wrong_phone', label: 'Telefono errato' },
+  { value: 'double_booking', label: 'Doppia prenotazione' },
+  { value: 'other', label: 'Altro' },
+];
+
+const NO_SHOW_REASON_CODES = new Set(noShowReasonOptions.map((option) => option.value));
+
 export default function ReservationsView() {
   const items = useAppStore((state) => state.reservations);
   const refreshReservations = useAppStore((state) => state.refreshReservations);
@@ -120,8 +130,8 @@ export default function ReservationsView() {
     setRowErrorById((prev) => ({ ...prev, [id]: '' }));
     if (status === 'no_show') {
       const reason = (noShowReasonById[id] ?? '').trim();
-      if (reason.length < 3) {
-        const message = 'Motivazione no-show obbligatoria (min 3 caratteri)';
+      if (!NO_SHOW_REASON_CODES.has(reason)) {
+        const message = 'Seleziona un motivo no-show';
         setError(message);
         setRowErrorById((prev) => ({ ...prev, [id]: message }));
         return;
@@ -183,7 +193,7 @@ export default function ReservationsView() {
           ))}
         </select>
         {(statusDraftById[item.id] ?? item.status) === 'no_show' && (
-          <input
+          <select
             value={noShowReasonById[item.id] ?? ''}
             onChange={(event) =>
               setNoShowReasonById((prev) => ({
@@ -191,10 +201,14 @@ export default function ReservationsView() {
                 [item.id]: event.target.value,
               }))
             }
-            placeholder="Motivo no-show"
-            className="px-3 py-2 rounded border border-border text-xs w-full"
+            className="px-3 py-2 rounded border border-border text-xs w-full min-h-10"
             aria-label={`Motivazione no-show per ${item.customerName}`}
-          />
+          >
+            <option value="">Seleziona motivo...</option>
+            {noShowReasonOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
         )}
         <button
           onClick={() => void updateStatus(item.id)}

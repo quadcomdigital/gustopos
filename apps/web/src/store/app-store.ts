@@ -44,6 +44,10 @@ import {
   type SupplierCreateRequest,
   type SupplierUpdateRequest,
   type SuppliersQuery,
+  type SupplierIngredient,
+  type SupplierIngredientCreate,
+  type SupplierIngredientUpdate,
+  type SupplierPoItem,
   type PurchaseOrder,
   type PurchaseOrderCreateRequest,
   type PurchaseOrderStatusUpdateRequest,
@@ -210,6 +214,11 @@ import {
   fetchSuppliers,
   createSupplier as createSupplierRequest,
   updateSupplier as updateSupplierRequest,
+  fetchSupplierIngredients,
+  createSupplierIngredient as createSupplierIngredientRequest,
+  updateSupplierIngredient as updateSupplierIngredientRequest,
+  deleteSupplierIngredient as deleteSupplierIngredientRequest,
+  fetchSupplierPoItems,
   fetchPurchaseOrders,
   createPurchaseOrder as createPurchaseOrderRequest,
   updatePurchaseOrderStatus as updatePurchaseOrderStatusRequest,
@@ -219,10 +228,12 @@ import {
   updateShift as updateShiftRequest,
   clockIn as clockInRequest,
   clockOut as clockOutRequest,
+  resolveTimeEntry as resolveTimeEntryRequest,
   fetchTimeReport,
   fetchFiscalExports,
   closeFiscalDay as closeFiscalDayRequest,
   createFiscalExport as createFiscalExportRequest,
+  retryFiscalExport as retryFiscalExportRequest,
   downloadFiscalExportCsv,
   fetchLoyaltyBalance,
   earnLoyaltyPoints,
@@ -264,6 +275,8 @@ import {
   normalizePurchaseOrdersQuery,
   normalizeSuppliersQuery,
   purchaseOrdersQueryKey,
+  supplierIngredientsQueryKey,
+  isSupplierIngredientsQueryFresh,
   suppliersQueryKey,
 } from './purchasing-cache';
 import {
@@ -288,6 +301,8 @@ let suppliersRequestSequence = 0;
 const suppliersInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 let purchaseOrdersRequestSequence = 0;
 const purchaseOrdersInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
+let supplierIngredientsRequestSequence = 0;
+const supplierIngredientsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 let shiftsRequestSequence = 0;
 const shiftsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 let timeReportRequestSequence = 0;
@@ -327,11 +342,13 @@ async function refreshCurrentDeliveryOrders(get: () => AppState): Promise<void> 
   await state.refreshDeliveryOrders(state.deliveryOrdersQuery ?? { limit: 200 }, true);
 }
 
-function invalidatePurchasingCache(): Pick<AppState, 'suppliers' | 'suppliersQuery' | 'suppliersQueryKey' | 'suppliersFetchedAt' | 'purchaseOrders' | 'purchaseOrdersQuery' | 'purchaseOrdersQueryKey' | 'purchaseOrdersFetchedAt'> {
+function invalidatePurchasingCache(): Pick<AppState, 'suppliers' | 'suppliersQuery' | 'suppliersQueryKey' | 'suppliersFetchedAt' | 'purchaseOrders' | 'purchaseOrdersQuery' | 'purchaseOrdersQueryKey' | 'purchaseOrdersFetchedAt' | 'supplierIngredients' | 'supplierIngredientsSupplierId' | 'supplierIngredientsQueryKey' | 'supplierIngredientsFetchedAt'> {
   suppliersRequestSequence += 1;
   purchaseOrdersRequestSequence += 1;
+  supplierIngredientsRequestSequence += 1;
   suppliersInFlight.clear();
   purchaseOrdersInFlight.clear();
+  supplierIngredientsInFlight.clear();
   return {
     suppliers: [],
     suppliersQuery: null,
@@ -341,6 +358,10 @@ function invalidatePurchasingCache(): Pick<AppState, 'suppliers' | 'suppliersQue
     purchaseOrdersQuery: null,
     purchaseOrdersQueryKey: null,
     purchaseOrdersFetchedAt: null,
+    supplierIngredients: [],
+    supplierIngredientsSupplierId: null,
+    supplierIngredientsQueryKey: null,
+    supplierIngredientsFetchedAt: null,
   };
 }
 
@@ -352,6 +373,10 @@ async function refreshCurrentSuppliers(get: () => AppState): Promise<void> {
 async function refreshCurrentPurchaseOrders(get: () => AppState): Promise<void> {
   const state = get();
   await state.refreshPurchaseOrders(state.purchaseOrdersQuery ?? { limit: 200 }, true);
+}
+
+async function refreshCurrentSupplierIngredients(get: () => AppState, supplierId: string): Promise<void> {
+  await get().refreshSupplierIngredients(supplierId, true);
 }
 
 function invalidateShiftsCache(): Pick<AppState, 'shifts' | 'shiftsQuery' | 'shiftsQueryKey' | 'shiftsFetchedAt' | 'timeEntries' | 'timeReport' | 'timeReportQuery' | 'timeReportQueryKey' | 'timeReportFetchedAt'> {
@@ -686,6 +711,10 @@ interface AppState {
   suppliersQuery: SuppliersQuery | null;
   suppliersQueryKey: string | null;
   suppliersFetchedAt: number | null;
+  supplierIngredients: SupplierIngredient[];
+  supplierIngredientsSupplierId: string | null;
+  supplierIngredientsQueryKey: string | null;
+  supplierIngredientsFetchedAt: number | null;
   purchaseOrders: PurchaseOrder[];
   purchaseOrdersQuery: PurchaseOrdersQuery | null;
   purchaseOrdersQueryKey: string | null;
@@ -799,7 +828,7 @@ interface AppState {
   updateReservation: (id: string, payload: ReservationUpdateRequest) => Promise<void>;
   confirmReservation: (id: string) => Promise<void>;
   cancelReservation: (id: string) => Promise<void>;
-  markReservationNoShow: (id: string, reason: string) => Promise<void>;
+  markReservationNoShow: (id: string, reason: string, note?: string) => Promise<void>;
   refreshDeliveryOrders: (query?: DeliveryOrdersQuery, force?: boolean) => Promise<void>;
   updateDeliveryOrderStatus: (orderId: string, payload: DeliveryStatusUpdateRequest) => Promise<void>;
   dispatchDeliveryOrder: (orderId: string) => Promise<void>;
@@ -807,6 +836,11 @@ interface AppState {
   refreshSuppliers: (query?: SuppliersQuery, force?: boolean) => Promise<void>;
   createSupplier: (payload: SupplierCreateRequest) => Promise<void>;
   updateSupplier: (id: string, payload: SupplierUpdateRequest) => Promise<void>;
+  refreshSupplierIngredients: (supplierId: string, force?: boolean) => Promise<void>;
+  createSupplierIngredient: (payload: SupplierIngredientCreate) => Promise<void>;
+  updateSupplierIngredient: (supplierId: string, ingredientId: string, payload: SupplierIngredientUpdate) => Promise<void>;
+  deleteSupplierIngredient: (supplierId: string, ingredientId: string) => Promise<void>;
+  refreshSupplierPoItems: (supplierId: string) => Promise<SupplierPoItem[]>;
   refreshPurchaseOrders: (query?: PurchaseOrdersQuery, force?: boolean) => Promise<void>;
   createPurchaseOrder: (payload: PurchaseOrderCreateRequest) => Promise<void>;
   updatePurchaseOrderStatus: (id: string, payload: PurchaseOrderStatusUpdateRequest) => Promise<void>;
@@ -816,10 +850,12 @@ interface AppState {
   updateShift: (id: string, payload: ShiftUpdateRequest) => Promise<void>;
   clockIn: (payload: ClockInRequest) => Promise<TimeEntry>;
   clockOut: (payload: ClockOutRequest) => Promise<TimeEntry>;
+  resolveTimeEntry: (id: string) => Promise<TimeEntry>;
   refreshTimeReport: (query: TimeReportQuery, force?: boolean) => Promise<TimeReportResponse>;
   refreshFiscalExports: (query?: FiscalExportsQuery, force?: boolean) => Promise<void>;
   closeFiscalDay: (payload: FiscalCloseRequest) => Promise<FiscalClosure>;
   createFiscalExport: (payload: FiscalExportCreateRequest) => Promise<FiscalExport>;
+  retryFiscalExport: (id: string) => Promise<FiscalExport>;
   downloadFiscalExportCsv: (id: string) => Promise<string>;
   refreshLoyaltyBalance: (customerId: string) => Promise<void>;
   redeemLoyaltyPoints: (customerId: string, points: number, orderId?: string) => Promise<void>;
@@ -983,6 +1019,12 @@ export function replayOfflineQueue(): void {
               await state.createSupplier(action.payload as SupplierCreateRequest);
             } else if (action.action === 'updateSupplier') {
               await state.updateSupplier(action.id as string, action.payload as SupplierUpdateRequest);
+            } else if (action.action === 'createSupplierIngredient') {
+              await state.createSupplierIngredient(action.payload as SupplierIngredientCreate);
+            } else if (action.action === 'updateSupplierIngredient') {
+              await state.updateSupplierIngredient(action.supplierId as string, action.ingredientId as string, action.payload as SupplierIngredientUpdate);
+            } else if (action.action === 'deleteSupplierIngredient') {
+              await state.deleteSupplierIngredient(action.supplierId as string, action.ingredientId as string);
             } else if (action.action === 'createPurchaseOrder') {
               await state.createPurchaseOrder(action.payload as PurchaseOrderCreateRequest);
             } else if (action.action === 'updatePurchaseOrderStatus') {
@@ -1005,6 +1047,15 @@ export function replayOfflineQueue(): void {
           case 'printing':
             if (action.action === 'dispatchPrintJob') {
               await state.dispatchPrintJob(action.id as string, action.payload as DispatchPrintJobRequest | undefined);
+            }
+            break;
+          case 'fiscal_exports':
+            if (action.action === 'closeFiscalDay') {
+              await state.closeFiscalDay(action.payload as FiscalCloseRequest);
+            } else if (action.action === 'createFiscalExport') {
+              await state.createFiscalExport(action.payload as FiscalExportCreateRequest);
+            } else if (action.action === 'retryFiscalExport') {
+              await state.retryFiscalExport(action.id as string);
             }
             break;
           default:
@@ -1108,6 +1159,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   suppliersQuery: null,
   suppliersQueryKey: null,
   suppliersFetchedAt: null,
+  supplierIngredients: [],
+  supplierIngredientsSupplierId: null,
+  supplierIngredientsQueryKey: null,
+  supplierIngredientsFetchedAt: null,
   purchaseOrders: [],
   purchaseOrdersQuery: null,
   purchaseOrdersQueryKey: null,
@@ -1673,12 +1728,12 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  markReservationNoShow: async (id, reason) => {
+  markReservationNoShow: async (id, reason, note) => {
     try {
       if (!hasModuleEnabled(get(), 'reservations')) {
         throw new Error('Modulo reservations disabilitato per questo tenant');
       }
-      await markReservationNoShowRequest(id, reason);
+      await markReservationNoShowRequest(id, reason, note);
       await refreshCurrentReservations(get);
     } catch (err) {
       set({ error: handleActionError(err) });
@@ -2840,6 +2895,89 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
+  refreshSupplierIngredients: async (supplierId, force = false) => {
+    try {
+      if (!hasModuleEnabled(get(), 'purchasing_suppliers')) return;
+      if (!supplierId) return;
+      const key = supplierIngredientsQueryKey(supplierId);
+      const state = get();
+      if (!force && state.supplierIngredientsQueryKey === key && isSupplierIngredientsQueryFresh(state.supplierIngredientsFetchedAt)) return;
+      const inFlight = supplierIngredientsInFlight.get(key);
+      if (inFlight && !force) return inFlight.promise;
+      if (force) supplierIngredientsInFlight.delete(key);
+      const requestId = ++supplierIngredientsRequestSequence;
+      const requestPromise = (async () => {
+        try {
+          const supplierIngredients = await fetchSupplierIngredients(supplierId);
+          if (requestId !== supplierIngredientsRequestSequence) return;
+          set({ supplierIngredients, supplierIngredientsSupplierId: supplierId, supplierIngredientsQueryKey: key, supplierIngredientsFetchedAt: Date.now() });
+        } catch (err) {
+          if (requestId === supplierIngredientsRequestSequence) set({ error: handleActionError(err) });
+          throw err;
+        } finally {
+          if (supplierIngredientsInFlight.get(key)?.requestId === requestId) supplierIngredientsInFlight.delete(key);
+        }
+      })();
+      supplierIngredientsInFlight.set(key, { requestId, promise: requestPromise });
+      return requestPromise;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  createSupplierIngredient: async (payload) => {
+    try {
+      if (!hasModuleEnabled(get(), 'purchasing_suppliers')) {
+        enqueueBlockedAction(set as StoreSet, 'purchasing_suppliers', { action: 'createSupplierIngredient', payload });
+        throw new Error('Modulo purchasing_suppliers disabilitato per questo tenant');
+      }
+      await createSupplierIngredientRequest(payload);
+      if (payload.supplierId) await refreshCurrentSupplierIngredients(get, payload.supplierId);
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  updateSupplierIngredient: async (supplierId, ingredientId, payload) => {
+    try {
+      if (!hasModuleEnabled(get(), 'purchasing_suppliers')) {
+        enqueueBlockedAction(set as StoreSet, 'purchasing_suppliers', { action: 'updateSupplierIngredient', supplierId, ingredientId, payload });
+        throw new Error('Modulo purchasing_suppliers disabilitato per questo tenant');
+      }
+      await updateSupplierIngredientRequest(supplierId, ingredientId, payload);
+      await refreshCurrentSupplierIngredients(get, supplierId);
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  deleteSupplierIngredient: async (supplierId, ingredientId) => {
+    try {
+      if (!hasModuleEnabled(get(), 'purchasing_suppliers')) {
+        enqueueBlockedAction(set as StoreSet, 'purchasing_suppliers', { action: 'deleteSupplierIngredient', supplierId, ingredientId });
+        throw new Error('Modulo purchasing_suppliers disabilitato per questo tenant');
+      }
+      await deleteSupplierIngredientRequest(supplierId, ingredientId);
+      await refreshCurrentSupplierIngredients(get, supplierId);
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  refreshSupplierPoItems: async (supplierId) => {
+    if (!hasModuleEnabled(get(), 'purchasing_suppliers')) return [];
+    try {
+      return await fetchSupplierPoItems(supplierId);
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
   refreshPurchaseOrders: async (query, force = false) => {
     try {
       const currentUser = get().currentUser;
@@ -3015,6 +3153,25 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
+  resolveTimeEntry: async (id) => {
+    try {
+      if (!hasModuleEnabled(get(), 'staff_shifts_timeclock')) {
+        enqueueBlockedAction(set as StoreSet, 'staff_shifts_timeclock', { action: 'resolveTimeEntry', id });
+        throw new Error('Modulo staff_shifts_timeclock disabilitato per questo tenant');
+      }
+      const entry = await resolveTimeEntryRequest(id);
+      set((state) => ({
+        timeEntries: state.timeEntries.map((e) => (e.id === entry.id ? entry : e)),
+      }));
+      await refreshCurrentShifts(get);
+      await refreshCurrentTimeReport(get);
+      return entry;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
   refreshTimeReport: async (query, force = false) => {
     try {
       const currentUser = get().currentUser;
@@ -3129,6 +3286,25 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const result = await createFiscalExportRequest(payload);
       // Invalidate the query cache so the view's follow-up load() refetches.
+      set(invalidateFiscalExportsCache());
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  retryFiscalExport: async (id) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'fiscal_exports')) {
+        enqueueBlockedAction(set as StoreSet, 'fiscal_exports', { action: 'retryFiscalExport', id });
+        throw new Error('Modulo fiscal_exports disabilitato per questo tenant');
+      }
+      if (!hasPermission(state, uiActionPolicyMatrix.fiscalExport.permission)) {
+        throw new Error('Permessi insufficienti per export fiscale');
+      }
+      const result = await retryFiscalExportRequest(id);
       set(invalidateFiscalExportsCache());
       return result;
     } catch (err) {

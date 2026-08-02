@@ -21,6 +21,7 @@ export default function FiscalExportsView() {
   const refreshFiscalExports = useAppStore((state) => state.refreshFiscalExports);
   const closeFiscalDay = useAppStore((state) => state.closeFiscalDay);
   const createFiscalExport = useAppStore((state) => state.createFiscalExport);
+  const retryFiscalExport = useAppStore((state) => state.retryFiscalExport);
   const downloadFiscalExportCsv = useAppStore((state) => state.downloadFiscalExportCsv);
   const [csvPreview, setCsvPreview] = useState('');
   const [error, setError] = useState('');
@@ -78,14 +79,44 @@ export default function FiscalExportsView() {
     setSuccess('');
     setExportJobStatus('pending');
     try {
-      await createFiscalExport({ businessDate, format: 'csv' });
+      const result = await createFiscalExport({ businessDate, format: 'csv' });
       await load();
+      // Generation failures are persisted server-side as a status:'failed'
+      // row and returned (not thrown), so the view must inspect the status
+      // instead of assuming any response means success.
+      if (result.status === 'failed') {
+        setExportJobStatus('failed');
+        const message = result.error ?? 'Generazione export fallita.';
+        setError(message);
+        pushToast('error', message);
+        return;
+      }
       setExportJobStatus('success');
       setSuccess('Export CSV generato.');
       pushToast('success', 'Export CSV generato.');
     } catch (genError) {
       setExportJobStatus('failed');
       const message = mapError(genError);
+      setError(message);
+      pushToast('error', message);
+    }
+  };
+
+  const retryExport = async (id: string) => {
+    setError('');
+    setSuccess('');
+    try {
+      const result = await retryFiscalExport(id);
+      await load();
+      if (result.status === 'failed') {
+        setError(result.error ?? 'Nuovo tentativo fallito.');
+        pushToast('error', result.error ?? 'Nuovo tentativo fallito.');
+        return;
+      }
+      setSuccess('Export rigenerato con successo.');
+      pushToast('success', 'Export rigenerato con successo.');
+    } catch (retryError) {
+      const message = mapError(retryError);
       setError(message);
       pushToast('error', message);
     }
@@ -205,7 +236,7 @@ export default function FiscalExportsView() {
               disabled={loading}
               className="px-2 py-1 rounded border border-border text-xs font-bold disabled:opacity-50"
             >
-              Retry export
+              Riprova
             </button>
           )}
         </div>
@@ -219,10 +250,16 @@ export default function FiscalExportsView() {
             <div>
               <p className="text-sm font-bold text-secondary">{item.businessDate} • {item.status}</p>
               <p className="text-xs text-text-muted">{item.path}</p>
+              {item.status === 'failed' && item.error && (
+                <p className="text-[11px] text-danger mt-1">{item.error}</p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-2 w-full sm:w-auto">
-              <button onClick={() => void previewCsv(item.id)} className="px-2 py-2 rounded border border-border text-xs font-bold min-h-10">Preview</button>
-              <button onClick={() => void downloadCsv(item.id, item.businessDate)} className="px-2 py-2 rounded border border-border text-xs font-bold min-h-10">Download</button>
+              {item.status === 'failed' && (
+                <button onClick={() => void retryExport(item.id)} disabled={loading} className="px-2 py-2 rounded border border-amber-500 text-amber-700 text-xs font-bold min-h-10 disabled:opacity-50">Riprova</button>
+              )}
+              <button onClick={() => void previewCsv(item.id)} disabled={item.status !== 'ready'} className="px-2 py-2 rounded border border-border text-xs font-bold min-h-10 disabled:opacity-40">Preview</button>
+              <button onClick={() => void downloadCsv(item.id, item.businessDate)} disabled={item.status !== 'ready'} className="px-2 py-2 rounded border border-border text-xs font-bold min-h-10 disabled:opacity-40">Download</button>
             </div>
           </div>
         ))}

@@ -3,13 +3,6 @@ import type { PurchaseOrder, PurchaseOrderStatus, SupplierIngredient } from '@gu
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
 import ConfirmDialog from './ConfirmDialog';
-import {
-  fetchSupplierIngredients,
-  createSupplierIngredient,
-  updateSupplierIngredient,
-  deleteSupplierIngredient,
-  fetchSupplierPoItems,
-} from '../shared/api/client';
 
 const statusOrder: PurchaseOrderStatus[] = ['draft', 'sent', 'partial_received', 'received', 'cancelled'];
 
@@ -20,6 +13,11 @@ export default function PurchasingView() {
   const refreshSuppliers = useAppStore((state) => state.refreshSuppliers);
   const refreshPurchaseOrders = useAppStore((state) => state.refreshPurchaseOrders);
   const createSupplier = useAppStore((state) => state.createSupplier);
+  const refreshSupplierIngredients = useAppStore((state) => state.refreshSupplierIngredients);
+  const createSupplierIngredient = useAppStore((state) => state.createSupplierIngredient);
+  const updateSupplierIngredient = useAppStore((state) => state.updateSupplierIngredient);
+  const deleteSupplierIngredient = useAppStore((state) => state.deleteSupplierIngredient);
+  const refreshSupplierPoItems = useAppStore((state) => state.refreshSupplierPoItems);
   const createPurchaseOrder = useAppStore((state) => state.createPurchaseOrder);
   const updatePurchaseOrderStatus = useAppStore((state) => state.updatePurchaseOrderStatus);
   const createGoodsReceipt = useAppStore((state) => state.createGoodsReceipt);
@@ -34,7 +32,9 @@ export default function PurchasingView() {
 
   // Supplier ingredients state
   const inventoryItems = useAppStore((state) => state.inventoryItems);
-  const [supplierIngredients, setSupplierIngredients] = useState<SupplierIngredient[]>([]);
+  const storeSupplierIngredients = useAppStore((state) => state.supplierIngredients);
+  const storeSupplierIngredientsSupplierId = useAppStore((state) => state.supplierIngredientsSupplierId);
+  const supplierIngredients = storeSupplierIngredientsSupplierId === selectedSupplierId ? storeSupplierIngredients : [];
   const [loadingIngredients, setLoadingIngredients] = useState(false);
   const [newIngredientId, setNewIngredientId] = useState('');
   const [newBrandName, setNewBrandName] = useState('');
@@ -77,19 +77,18 @@ export default function PurchasingView() {
 
   const loadSupplierIngredients = useCallback(async (supplierId: string) => {
     if (!supplierId) {
-      setSupplierIngredients([]);
       return;
     }
     setLoadingIngredients(true);
     try {
-      const ingredients = await fetchSupplierIngredients(supplierId);
-      setSupplierIngredients(ingredients);
+      await refreshSupplierIngredients(supplierId);
     } catch {
-      setSupplierIngredients([]);
+      // The store already surfaces the mapped error; never let a failed
+      // ingredients fetch become an unhandled rejection from the mount effect.
     } finally {
       setLoadingIngredients(false);
     }
-  }, []);
+  }, [refreshSupplierIngredients]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- [indirect-setstate] loadSupplierIngredients calls store set() internally via async callback
@@ -103,7 +102,7 @@ export default function PurchasingView() {
     }
     let cancelled = false;
     setLoadingPoItems(true);
-    fetchSupplierPoItems(selectedSupplierId)
+    refreshSupplierPoItems(selectedSupplierId)
       .then((items) => {
         if (cancelled) return;
         setPoItems(items.map((item) => ({
@@ -123,7 +122,7 @@ export default function PurchasingView() {
         if (!cancelled) setLoadingPoItems(false);
       });
     return () => { cancelled = true; };
-  }, [selectedSupplierId]);
+  }, [selectedSupplierId, refreshSupplierPoItems]);
 
   const createSupplierHandler = async () => {
     if (supplierName.trim().length < 2) {

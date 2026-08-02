@@ -36,3 +36,17 @@ export function isSuppliersQueryFresh(fetchedAt: number | null, now = Date.now()
 export function isPurchaseOrdersQueryFresh(fetchedAt: number | null, now = Date.now()): boolean {
   return fetchedAt !== null && fetchedAt <= now && now - fetchedAt < PURCHASE_ORDERS_CACHE_TTL_MS;
 }
+
+export const SUPPLIER_INGREDIENTS_CACHE_TTL_MS = 30_000;
+
+export function normalizeSupplierIngredientsQuery(supplierId: string): { supplierId: string } {
+  return { supplierId };
+}
+
+export function supplierIngredientsQueryKey(supplierId: string): string {
+  return JSON.stringify(normalizeSupplierIngredientsQuery(supplierId));
+}
+
+export function isSupplierIngredientsQueryFresh(fetchedAt: number | null, now = Date.now()): boolean {
+  return fetchedAt !== null && fetchedAt <= now && now - fetchedAt < SUPPLIER_INGREDIENTS_CACHE_TTL_MS;
+}

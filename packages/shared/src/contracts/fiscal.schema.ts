@@ -36,6 +36,7 @@ export const fiscalExportSchema = z.object({
   generatedByStaffId: z.string(),
   generatedAt: z.string(),
   checksum: z.string().optional(),
+  error: z.string().optional(),
 });
 
 export const fiscalExportCreateRequestSchema = z.object({

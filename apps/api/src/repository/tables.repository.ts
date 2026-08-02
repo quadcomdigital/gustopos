@@ -8,6 +8,7 @@ import { tables, orders, orderItems, payments, paymentItems,
 import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull, type SQL } from "drizzle-orm";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight, buildCashierReceiptPayload } from "./utils/escpos-builder";
+import { deliveryTransitions } from "./utils/state-machines";
 import crypto from "node:crypto";
 import {
   closeTableRequestSchema, closeTableResponseSchema,
@@ -46,14 +47,6 @@ const reservationTransitions: Record<ReservationStatus, ReservationStatus[]> = {
   seated: ["cancelled"],
   cancelled: [],
   no_show: [],
-};
-const deliveryTransitions: Record<DeliveryStatus, DeliveryStatus[]> = {
-  new: ["preparing", "cancelled"],
-  preparing: ["ready", "cancelled"],
-  ready: ["out_for_delivery", "cancelled"],
-  out_for_delivery: ["delivered", "cancelled"],
-  delivered: [],
-  cancelled: [],
 };
 
 @Injectable()

@@ -1486,11 +1486,11 @@ export async function cancelReservation(id: string): Promise<Reservation> {
   return readJson(response, reservationSchema);
 }
 
-export async function markReservationNoShow(id: string, reason: string): Promise<Reservation> {
+export async function markReservationNoShow(id: string, reason: string, note?: string): Promise<Reservation> {
   const response = await authorizedFetch(`${API_URL}/api/reservations/${id}/no-show`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify(note ? { reason, note } : { reason }),
   });
   return readJson(response, reservationSchema);
 }
@@ -1735,6 +1735,13 @@ export async function clockOut(payload: ClockOutRequest): Promise<TimeEntry> {
   return readJson(response, timeEntrySchema);
 }
 
+export async function resolveTimeEntry(id: string): Promise<TimeEntry> {
+  const response = await authorizedFetch(`${API_URL}/api/timeclock/entries/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST',
+  });
+  return readJson(response, timeEntrySchema);
+}
+
 export async function fetchTimeReport(queryPayload: TimeReportQuery): Promise<TimeReportResponse> {
   const parsed = timeReportQuerySchema.parse(queryPayload);
   const query = new URLSearchParams();
@@ -1765,6 +1772,13 @@ export async function createFiscalExport(payload: FiscalExportCreateRequest): Pr
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(request),
+  });
+  return readJson(response, fiscalExportSchema);
+}
+
+export async function retryFiscalExport(id: string): Promise<FiscalExport> {
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/exports/${id}/retry`, {
+    method: 'POST',
   });
   return readJson(response, fiscalExportSchema);
 }
