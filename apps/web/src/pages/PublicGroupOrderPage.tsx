@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { io, type Socket } from 'socket.io-client';
-import { socketEvents, type GroupOrderSession, type PublicMenuResponse } from '@gustopos/shared';
+import { socketEvents, onSocketEvent, type GroupOrderSession, type PublicMenuResponse } from '@gustopos/shared';
 import {
   API_URL,
   createPublicGroupOrderSession,
@@ -61,13 +61,13 @@ export default function PublicGroupOrderPage() {
       auth: { participantToken: identity.participantToken, sessionId: identity.sessionId, tenantSlug },
     });
     socket.emit('group_order_join_room', { sessionId: identity.sessionId, participantToken: identity.participantToken });
-    socket.on(socketEvents.groupOrderCartUpdated, (payload: { session: GroupOrderSession }) => {
+    onSocketEvent(socket, socketEvents.groupOrderCartUpdated, (payload) => {
       setSession(payload.session);
     });
-    socket.on(socketEvents.groupOrderJoined, (payload: { session: GroupOrderSession }) => {
+    onSocketEvent(socket, socketEvents.groupOrderJoined, (payload) => {
       setSession(payload.session);
     });
-    socket.on(socketEvents.groupOrderSubmitted, (payload: { session: GroupOrderSession }) => {
+    onSocketEvent(socket, socketEvents.groupOrderSubmitted, (payload) => {
       setSession(payload.session);
     });
     return () => {

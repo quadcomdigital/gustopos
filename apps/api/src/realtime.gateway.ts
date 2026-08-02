@@ -11,7 +11,7 @@ import { StaffRepository } from "./repository/staff.repository";
 import { getJwtSecret } from "./auth/jwt-secret";
 import { getTenantContext, runWithTenantContext } from "./tenant/tenant-context.store";
 import { TenantService } from "./tenant/tenant.service";
-import type { ModuleKey } from "@gustopos/shared";
+import { isSocketEventName, parseSocketEventPayload, type ModuleKey, type SocketEventName } from "@gustopos/shared";
 
 const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
   "order:new": ["kitchen"],
@@ -172,7 +172,15 @@ export class RealtimeGateway implements OnModuleInit {
     return requiredModules.map((module) => `${baseRoom}:${module}`);
   }
 
-  async emit<T>(event: string, payload: T, tenantId?: string): Promise<void> {
+  async emit(event: string, payload: unknown, tenantId?: string): Promise<void> {
+    // Epic 7: no event is fanned out without payload validation. A contract
+    // drift is logged loudly and the event is skipped — deliberately NOT
+    // thrown, because several emit sites run after the DB transaction already
+    // committed (e.g. createOrder) and a throw would surface a 500 for a
+    // mutation that actually succeeded.
+    if (!this.isValidPayload(event, payload)) {
+      return;
+    }
     const scopedTenantId = tenantId ?? getTenantContext()?.tenantId ?? null;
     this.server.to(this.roomsForEvent(event, scopedTenantId)).emit(event, payload);
 
@@ -180,10 +188,29 @@ export class RealtimeGateway implements OnModuleInit {
     await this.pubSubService.publish(event, pubsubPayload);
   }
 
-  async emitToRoom<T>(room: string, event: string, payload: T): Promise<void> {
+  async emitToRoom(room: string, event: string, payload: unknown): Promise<void> {
+    // Group-order events carry the full session; validate before fan-out too.
+    if (!this.isValidPayload(event, payload)) {
+      return;
+    }
     const tenantId = getTenantContext()?.tenantId;
     this.server.to(room).emit(event, payload);
     await this.pubSubService.publish(`${room}:${event}`, tenantId ? { __tenantId: tenantId, payload } : payload);
+  }
+
+  // Validates an event payload against the shared contract. Unknown events are
+  // allowed through (forward compatibility); known events must match exactly.
+  // Returns false (and logs) when a known event carries a mismatched payload.
+  private isValidPayload(event: string, payload: unknown): boolean {
+    if (!isSocketEventName(event)) {
+      return true;
+    }
+    const parsed = parseSocketEventPayload(event, payload);
+    if (parsed === null) {
+      console.error(`[realtime] dropped event "${event}": payload failed contract validation`);
+      return false;
+    }
+    return true;
   }
 
   @SubscribeMessage("group_order_join_room")

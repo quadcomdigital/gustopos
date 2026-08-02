@@ -3,6 +3,7 @@ import { authorizedFetch, API_URL } from '../shared/api/client';
 import { persist } from 'zustand/middleware';
 import {
   socketEvents,
+  onSocketEvent,
   type OrdersUpdatePatch,
   type Table,
   type AppData,
@@ -453,6 +454,9 @@ function createEmptyAppData(): AppData {
 function attachSocketListeners(set: StoreSet, get: () => AppState) {
   const socket = getSocket();
 
+  // Typed listeners (Epic 7): every handler receives a payload already
+  // validated against the shared contract, so malformed events are dropped
+  // with a console warning instead of reaching the store state.
   socket.off(socketEvents.orderNew);
   socket.off(socketEvents.orderUpdate);
   socket.off(socketEvents.ordersUpdate);
@@ -466,7 +470,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   socket.off(socketEvents.jobCompleted);
   socket.off(socketEvents.jobFailed);
 
-  socket.on(socketEvents.orderNew, (newOrder: Order) => {
+  onSocketEvent(socket, socketEvents.orderNew, (newOrder: Order) => {
     if (!hasModuleEnabled(get(), 'kitchen')) {
       return;
     }
@@ -493,7 +497,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     );
   });
 
-  socket.on(socketEvents.orderUpdate, (updatedOrder: Order) => {
+  onSocketEvent(socket, socketEvents.orderUpdate, (updatedOrder: Order) => {
     if (!hasModuleEnabled(get(), 'kitchen')) {
       return;
     }
@@ -520,7 +524,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   });
 
   // Targeted order patches (set_paid / move) — sostituiscono il full data:update.
-  socket.on(socketEvents.ordersUpdate, (patch: OrdersUpdatePatch) => {
+  onSocketEvent(socket, socketEvents.ordersUpdate, (patch: OrdersUpdatePatch) => {
     if (!hasModuleEnabled(get(), 'kitchen')) {
       return;
     }
@@ -553,7 +557,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     });
   });
 
-  socket.on(socketEvents.tablesUpdate, (tables: Table[]) => {
+  onSocketEvent(socket, socketEvents.tablesUpdate, (tables: Table[]) => {
     if (!hasModuleEnabled(get(), 'kitchen')) {
       return;
     }
@@ -562,7 +566,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     );
   });
 
-  socket.on(socketEvents.inventoryUpdate, (inventory) => {
+  onSocketEvent(socket, socketEvents.inventoryUpdate, (inventory) => {
     if (!hasModuleEnabled(get(), 'inventory')) {
       return;
     }
@@ -574,11 +578,11 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   // Compatibility fallback: the API no longer emits full data:update snapshots
   // (mutations now send targeted orders:update/tables:update), but keep this
   // handler so a mixed-version deployment never leaves a client stale.
-  socket.on(socketEvents.dataUpdate, (payload: AppData) => {
+  onSocketEvent(socket, socketEvents.dataUpdate, (payload: AppData) => {
     set({ data: payload, inventoryItems: payload.inventory });
   });
 
-  socket.on(socketEvents.settingsUpdate, (payload: UiSettings) => {
+  onSocketEvent(socket, socketEvents.settingsUpdate, (payload: UiSettings) => {
     const parsed = updateUiSettingsRequestSchema.parse(payload);
     applyUiTheme(parsed);
     set({ uiSettings: parsed });
@@ -588,38 +592,33 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   // The server emits fully-typed PrintBridge / PrintJob on these events.
   // We narrow with an explicit runtime id guard so the helpers can accept
   // the full types and the spread in printJobUpsert is type-safe end-to-end.
-  socket.on(socketEvents.bridgeStatus, (incoming: PrintBridge | undefined | null) => {
-    if (!incoming || typeof incoming.id !== 'string') return;
+  onSocketEvent(socket, socketEvents.bridgeStatus, (incoming: PrintBridge) => {
     set((state: AppState) => ({
       printBridges: printBridgesUpsert(state.printBridges, incoming),
       printBridgesLastFetchedAt: new Date().toISOString(),
     }));
   });
 
-  socket.on(socketEvents.bridgeRemoved, (incoming: { id?: string } | undefined | null) => {
-    if (!incoming || typeof incoming.id !== 'string') return;
+  onSocketEvent(socket, socketEvents.bridgeRemoved, (incoming: { id: string }) => {
     set((state: AppState) => ({
       printBridges: state.printBridges.filter((b) => b.id !== incoming.id),
       printBridgesLastFetchedAt: new Date().toISOString(),
     }));
   });
 
-  socket.on(socketEvents.jobClaimed, (incoming: PrintJob | undefined | null) => {
-    if (!incoming || typeof incoming.id !== 'string') return;
+  onSocketEvent(socket, socketEvents.jobClaimed, (incoming: PrintJob) => {
     set((state: AppState) => ({
       printJobs: printJobUpsert(state.printJobs, incoming),
     }));
   });
 
-  socket.on(socketEvents.jobCompleted, (incoming: PrintJob | undefined | null) => {
-    if (!incoming || typeof incoming.id !== 'string') return;
+  onSocketEvent(socket, socketEvents.jobCompleted, (incoming: PrintJob) => {
     set((state: AppState) => ({
       printJobs: printJobUpsert(state.printJobs, { ...incoming, status: 'completed' }),
     }));
   });
 
-  socket.on(socketEvents.jobFailed, (incoming: PrintJob | undefined | null) => {
-    if (!incoming || typeof incoming.id !== 'string') return;
+  onSocketEvent(socket, socketEvents.jobFailed, (incoming: PrintJob) => {
     set((state: AppState) => ({
       printJobs: printJobUpsert(state.printJobs, { ...incoming, status: 'failed' }),
     }));
