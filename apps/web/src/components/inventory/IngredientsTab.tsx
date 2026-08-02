@@ -889,7 +889,7 @@ export default function IngredientsTab({
                       <p className="font-medium text-secondary text-sm">€{(item.unitCost ?? 0).toFixed(2)}</p>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <Button variant="secondary" onClick={() => openMovements(item.id)}>
                       Movimenti
                     </Button>
@@ -906,6 +906,12 @@ export default function IngredientsTab({
                     <Button variant="secondary" onClick={() => setSelectedIngredientId(item.id)}>
                       Modifica
                     </Button>
+                    {onCreateVariant && (
+                      <Button variant="secondary" onClick={() => onCreateVariant(item.id)}>
+                        <ChefHat size={14} className="inline mr-1" />
+                        Variante
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       onClick={() => void toggleIngredientActive(item)}
@@ -916,6 +922,10 @@ export default function IngredientsTab({
                         <ToggleLeft size={14} className="text-text-muted" />
                       )}
                       {item.isActive ? 'Attivo' : 'Inattivo'}
+                    </Button>
+                    <Button variant="danger" onClick={() => void removeIngredient(item.id)}>
+                      <Trash2 size={14} className="inline mr-1" />
+                      Elimina
                     </Button>
                   </div>
                 </div>

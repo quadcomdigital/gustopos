@@ -182,10 +182,18 @@ export default function InventoryTabs({
   const tabs = simpleCatalogMode ? SIMPLE_TABS : TABS;
   const [activeTab, setActiveTab] = useState<InventoryTabKey>(simpleCatalogMode ? 'menu' : 'stock');
   const [cardsHidden, setCardsHidden] = useState(true);
+  // Ingredient → prep quick-link: switch to the Preparazioni tab and open the
+  // create modal pre-selected for that ingredient (works on mobile + desktop).
+  const [variantIngredientId, setVariantIngredientId] = useState<string | null>(null);
 
   const handleTabSwitch = (tab: InventoryTabKey) => {
     setActiveTab(tab);
     onActiveTabChange?.(tab);
+  };
+
+  const handleCreateVariant = (ingredientId: string) => {
+    setVariantIngredientId(ingredientId);
+    handleTabSwitch('prep');
   };
 
   const lowStockCount = simpleCatalogMode ? 0 : inventory.filter((i) => i.quantity <= i.minThreshold && i.isActive).length;
@@ -348,6 +356,7 @@ export default function InventoryTabs({
             onAdjust={onAdjustIngredient}
             onFetchMovements={onFetchMovements}
             onCreateCategory={onCreateCategory}
+            onCreateVariant={handleCreateVariant}
           />
         )}
 
@@ -373,6 +382,8 @@ export default function InventoryTabs({
             bomItems={bomItems}
             prepItems={prepItems}
             onRefresh={onRefreshPrepItems}
+            initialIngredientId={variantIngredientId}
+            onClearInitial={() => setVariantIngredientId(null)}
           />
         )}
 

@@ -142,13 +142,13 @@ export default function CategoryPoolEditor({
 
       <div className="rounded border border-border bg-white p-3 space-y-2">
         <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Categorie del pool</p>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5">
           {menuCategories.map((cat) => (
             <button
               key={cat.id}
               type="button"
               onClick={() => toggleCategory(cat.id)}
-              className={`px-2 py-1 rounded text-[10px] font-bold border transition-all ${
+              className={`px-3 py-1.5 min-h-[40px] rounded text-[10px] font-bold border transition-all ${
                 selectedCategoryIds.includes(cat.id)
                   ? 'bg-accent text-white border-accent'
                   : 'bg-bg text-secondary border-border hover:border-accent'
@@ -159,18 +159,18 @@ export default function CategoryPoolEditor({
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
           <input
             value={newPoolName}
             onChange={(e) => setNewPoolName(e.target.value)}
             placeholder="Nome pool (es: Extra, Salse)"
-            className="flex-1 px-3 py-2 rounded border border-border text-sm"
+            className="w-full sm:flex-1 px-3 py-2 rounded border border-border text-sm"
           />
           <button
             type="button"
             onClick={() => void handleCreatePool()}
             disabled={saving || selectedCategoryIds.length === 0 || !newPoolName.trim()}
-            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded bg-accent text-white text-[10px] font-bold uppercase tracking-wider disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-1 w-full sm:w-auto px-4 py-2 min-h-[44px] rounded bg-accent text-white text-[10px] font-bold uppercase tracking-wider disabled:opacity-60"
           >
             <Save size={12} />
             {saving ? 'Creazione...' : 'Crea Pool'}
@@ -194,49 +194,54 @@ export default function CategoryPoolEditor({
                         if (first) updateNewPoolOption(idx, 'name', first.name);
                       }
                     }}
-                    className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                    className={`px-3 py-1.5 min-h-[40px] rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
                   >
                     {isIngredientMode ? 'Ingrediente' : 'Testo libero'}
                   </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  {isIngredientMode ? (
-                    <SearchableSelect
-                      items={inventory}
-                      getLabel={(inv) => `${inv.name} (${inv.unit})`}
-                      getValue={(inv) => inv.id}
-                      selectedValue={opt.inventoryItemId}
-                      onSelect={(invId) => {
-                        const invItem = inventory.find((i) => i.id === invId);
-                        updateNewPoolOption(idx, 'inventoryItemId', invId);
-                        if (invItem) updateNewPoolOption(idx, 'name', invItem.name);
-                      }}
-                      placeholder="Seleziona ingrediente..."
-                      className="flex-1"
-                    />
-                  ) : (
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    {isIngredientMode ? (
+                      <SearchableSelect
+                        items={inventory}
+                        getLabel={(inv) => `${inv.name} (${inv.unit})`}
+                        getValue={(inv) => inv.id}
+                        selectedValue={opt.inventoryItemId}
+                        onSelect={(invId) => {
+                          const invItem = inventory.find((i) => i.id === invId);
+                          updateNewPoolOption(idx, 'inventoryItemId', invId);
+                          if (invItem) updateNewPoolOption(idx, 'name', invItem.name);
+                        }}
+                        placeholder="Seleziona ingrediente..."
+                        className="w-full"
+                      />
+                    ) : (
+                      <input
+                        value={opt.name ?? ''}
+                        onChange={(e) => updateNewPoolOption(idx, 'name', e.target.value)}
+                        className="w-full px-3 py-2 rounded border border-border text-xs"
+                        placeholder="Nome opzione (es: Formato grande)"
+                      />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
                     <input
-                      value={opt.name ?? ''}
-                      onChange={(e) => updateNewPoolOption(idx, 'name', e.target.value)}
-                      className="flex-1 px-2 py-1 rounded border border-border text-xs"
-                      placeholder="Nome opzione (es: Formato grande)"
+                      type="number"
+                      value={opt.priceDelta}
+                      onChange={(e) => updateNewPoolOption(idx, 'priceDelta', Number(e.target.value) || 0)}
+                      step="0.5"
+                      placeholder="Prezzo"
+                      className="flex-1 sm:flex-none px-3 py-2 rounded border border-border text-xs w-20"
                     />
-                  )}
-                  <input
-                    type="number"
-                    value={opt.priceDelta}
-                    onChange={(e) => updateNewPoolOption(idx, 'priceDelta', Number(e.target.value) || 0)}
-                    step="0.5"
-                    placeholder="Prezzo"
-                    className="px-2 py-1 rounded border border-border text-xs w-20"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeNewPoolOption(idx)}
-                    className="px-1 py-1 rounded border border-danger text-danger"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => removeNewPoolOption(idx)}
+                      className="px-3 py-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded border border-danger text-danger"
+                      aria-label="Rimuovi opzione"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -244,7 +249,7 @@ export default function CategoryPoolEditor({
           <button
             type="button"
             onClick={addOptionToNewPool}
-            className="px-2 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+            className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded border border-border text-[10px] font-bold uppercase tracking-wider"
           >
             + Aggiungi ingrediente al pool
           </button>
@@ -260,13 +265,13 @@ export default function CategoryPoolEditor({
                 <>
                   <div className="space-y-2">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Modifica pool</p>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-1.5">
                       {menuCategories.map((cat) => (
                         <button
                           key={cat.id}
                           type="button"
                           onClick={() => toggleEditCategory(cat.id)}
-                          className={`px-2 py-1 rounded text-[10px] font-bold border transition-all ${
+                          className={`px-3 py-1.5 min-h-[40px] rounded text-[10px] font-bold border transition-all ${
                             editCategoryIds.includes(cat.id)
                               ? 'bg-accent text-white border-accent'
                               : 'bg-bg text-secondary border-border hover:border-accent'
@@ -276,12 +281,12 @@ export default function CategoryPoolEditor({
                         </button>
                       ))}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                       <input
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
                         placeholder="Nome pool"
-                        className="flex-1 px-3 py-2 rounded border border-border text-sm"
+                        className="w-full sm:flex-1 px-3 py-2 rounded border border-border text-sm"
                       />
                     </div>
                     <div className="space-y-1">
@@ -301,49 +306,54 @@ export default function CategoryPoolEditor({
                                     if (first) updateEditPoolOption(idx, 'name', first.name);
                                   }
                                 }}
-                                className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                                className={`px-3 py-1.5 min-h-[40px] rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
                               >
                                 {isIngredientMode ? 'Ingrediente' : 'Testo libero'}
                               </button>
                             </div>
-                            <div className="flex items-center gap-2">
-                              {isIngredientMode ? (
-                                <SearchableSelect
-                                  items={inventory}
-                                  getLabel={(inv) => `${inv.name} (${inv.unit})`}
-                                  getValue={(inv) => inv.id}
-                                  selectedValue={opt.inventoryItemId}
-                                  onSelect={(invId) => {
-                                    const invItem = inventory.find((i) => i.id === invId);
-                                    updateEditPoolOption(idx, 'inventoryItemId', invId);
-                                    if (invItem) updateEditPoolOption(idx, 'name', invItem.name);
-                                  }}
-                                  placeholder="Seleziona ingrediente..."
-                                  className="flex-1"
-                                />
-                              ) : (
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                              <div className="flex-1 min-w-0">
+                                {isIngredientMode ? (
+                                  <SearchableSelect
+                                    items={inventory}
+                                    getLabel={(inv) => `${inv.name} (${inv.unit})`}
+                                    getValue={(inv) => inv.id}
+                                    selectedValue={opt.inventoryItemId}
+                                    onSelect={(invId) => {
+                                      const invItem = inventory.find((i) => i.id === invId);
+                                      updateEditPoolOption(idx, 'inventoryItemId', invId);
+                                      if (invItem) updateEditPoolOption(idx, 'name', invItem.name);
+                                    }}
+                                    placeholder="Seleziona ingrediente..."
+                                    className="w-full"
+                                  />
+                                ) : (
+                                  <input
+                                    value={opt.name ?? ''}
+                                    onChange={(e) => updateEditPoolOption(idx, 'name', e.target.value)}
+                                    className="w-full px-3 py-2 rounded border border-border text-xs"
+                                    placeholder="Nome opzione (es: Formato grande)"
+                                  />
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
                                 <input
-                                  value={opt.name ?? ''}
-                                  onChange={(e) => updateEditPoolOption(idx, 'name', e.target.value)}
-                                  className="flex-1 px-2 py-1 rounded border border-border text-xs"
-                                  placeholder="Nome opzione (es: Formato grande)"
+                                  type="number"
+                                  value={opt.priceDelta}
+                                  onChange={(e) => updateEditPoolOption(idx, 'priceDelta', Number(e.target.value) || 0)}
+                                  step="0.5"
+                                  placeholder="Prezzo"
+                                  className="flex-1 sm:flex-none px-3 py-2 rounded border border-border text-xs w-20"
                                 />
-                              )}
-                              <input
-                                type="number"
-                                value={opt.priceDelta}
-                                onChange={(e) => updateEditPoolOption(idx, 'priceDelta', Number(e.target.value) || 0)}
-                                step="0.5"
-                                placeholder="Prezzo"
-                                className="px-2 py-1 rounded border border-border text-xs w-20"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => removeEditPoolOption(idx)}
-                                className="px-1 py-1 rounded border border-danger text-danger"
-                              >
-                                <Trash2 size={12} />
-                              </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removeEditPoolOption(idx)}
+                                  className="px-3 py-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded border border-danger text-danger"
+                                  aria-label="Rimuovi opzione"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         );
@@ -351,18 +361,18 @@ export default function CategoryPoolEditor({
                       <button
                         type="button"
                         onClick={addOptionToEditPool}
-                        className="px-2 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+                        className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded border border-border text-[10px] font-bold uppercase tracking-wider"
                       >
                         + Aggiungi opzione al pool
                       </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     <button
                       type="button"
                       onClick={() => void handleUpdatePool()}
                       disabled={editSaving || editCategoryIds.length === 0 || !editName.trim()}
-                      className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded bg-accent text-white text-[10px] font-bold uppercase tracking-wider disabled:opacity-60"
+                      className="inline-flex items-center justify-center gap-1 w-full sm:w-auto px-4 py-2 min-h-[44px] rounded bg-accent text-white text-[10px] font-bold uppercase tracking-wider disabled:opacity-60"
                     >
                       <Save size={12} />
                       {editSaving ? 'Salvataggio...' : 'Salva modifiche'}
@@ -370,7 +380,7 @@ export default function CategoryPoolEditor({
                     <button
                       type="button"
                       onClick={cancelEditing}
-                      className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+                      className="inline-flex items-center justify-center gap-1 w-full sm:w-auto px-4 py-2 min-h-[44px] rounded border border-border text-[10px] font-bold uppercase tracking-wider"
                     >
                       <X size={12} />
                       Annulla
@@ -379,28 +389,29 @@ export default function CategoryPoolEditor({
                 </>
               ) : (
                 <>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <span className="text-sm font-bold text-secondary">{pool.name}</span>
                       <span className="text-[10px] text-text-muted">
                         {getCategoryNames(pool)}
                       </span>
                       <span className="text-[10px] text-text-muted">· {pool.options.length} opzioni</span>
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => startEditing(pool)}
-                        className="px-2 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+                        className="flex-1 sm:flex-none px-4 py-2.5 min-h-[44px] rounded border border-border text-[10px] font-bold uppercase tracking-wider"
                       >
                         Modifica
                       </button>
                       <button
                         type="button"
                         onClick={() => void onDeletePool(pool.id)}
-                        className="px-2 py-1 rounded border border-danger text-danger text-[10px]"
+                        className="px-4 py-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded border border-danger text-danger text-[10px]"
+                        aria-label="Elimina pool"
                       >
-                        <Trash2 size={12} />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </div>
