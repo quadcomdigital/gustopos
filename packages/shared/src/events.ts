@@ -11,6 +11,7 @@ export const socketEvents = {
   groupOrderMasterChanged: "group_order_master_changed",
   groupOrderSubmitted: "group_order_submitted",
   bridgeStatus: "bridge:status",
+  bridgeRemoved: "bridge:removed",
   jobClaimed: "job:claimed",
   jobCompleted: "job:completed",
   jobFailed: "job:failed",

@@ -33,11 +33,14 @@ export default function FiscalExportsView() {
     return message;
   };
 
-  const load = async () => {
+  // Query-aware TTL: refreshFiscalExports short-circuits when the same query
+  // was fetched within the last 30s, so navigating away and back does not
+  // refetch. The explicit "Aggiorna" button passes force to bypass the cache.
+  const load = async (force = false) => {
     setLoading(true);
     setError('');
     try {
-      await refreshFiscalExports({ limit: 200 });
+      await refreshFiscalExports({ limit: 200 }, force);
     } catch (loadError) {
       setError(mapError(loadError));
     } finally {
@@ -185,7 +188,7 @@ export default function FiscalExportsView() {
           />
           <button onClick={() => setConfirmCloseOpen(true)} disabled={loading} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50">Chiudi giornata</button>
           <button onClick={() => void generateExport()} disabled={loading} className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50">Genera CSV</button>
-          <button onClick={() => void load()} disabled={loading} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50">{loading ? '...' : 'Aggiorna'}</button>
+          <button onClick={() => void load(true)} disabled={loading} className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50">{loading ? '...' : 'Aggiorna'}</button>
           <button onClick={printDailyReport} className="px-4 py-2 rounded bg-accent text-white text-xs font-bold uppercase tracking-wider">Stampa Report</button>
         </div>
         <div className="flex items-center gap-2">

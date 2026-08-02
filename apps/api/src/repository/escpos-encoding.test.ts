@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   sanitizeForCp437,
   escPosEncode,
+  EscPosBuilder,
   padRight,
   padLeft,
   RECEIPT_WIDTH,
@@ -64,6 +65,27 @@ test("escPosEncode produces non-empty output", () => {
 test("escPosEncode empty string produces empty buffer", () => {
   const bytes = escPosEncode("");
   assert.equal(bytes.length, 0);
+});
+
+test("shared ESC/POS builder preserves large-item layout and reset commands", () => {
+  const payload = Buffer.from(
+    new EscPosBuilder().init().doubleWidth(true).line("2x BAR ITEM").doubleWidth(false).line("modifier").build(),
+    "base64",
+  );
+  const bytes = [...payload];
+  const enableIndex = bytes.findIndex((byte, index) => byte === 0x1d && bytes[index + 1] === 0x21 && bytes[index + 2] === 0x10);
+  const resetIndex = bytes.findIndex((byte, index) => byte === 0x1d && bytes[index + 1] === 0x21 && bytes[index + 2] === 0x00);
+  assert.ok(enableIndex >= 0, "payload should enable double width for the item");
+  assert.ok(resetIndex > enableIndex, "payload should reset double width after the item");
+});
+
+test("shared ESC/POS builder feeds before full cut", () => {
+  const payload = Buffer.from(new EscPosBuilder().init().line("ticket").feed(5).cut().build(), "base64");
+  const bytes = [...payload];
+  const feedIndex = bytes.findIndex((byte, index) => byte === 0x1b && bytes[index + 1] === 0x64 && bytes[index + 2] === 0x05);
+  const cutIndex = bytes.findIndex((byte, index) => byte === 0x1d && bytes[index + 1] === 0x56 && bytes[index + 2] === 0x30);
+  assert.ok(feedIndex >= 0, "payload should contain ESC d 5");
+  assert.ok(cutIndex > feedIndex, "full cut should follow the feed");
 });
 
 // ─── Padding tests ───────────────────────────────────────────────────────

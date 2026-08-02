@@ -6,6 +6,7 @@ import BindBridgeMappingModal from "./BindBridgeMappingModal";
 import ClaimedAreasModal from "./ClaimedAreasModal";
 import RegisterLocalBridgeModal from "./RegisterLocalBridgeModal";
 import PrintStationWizard from "./PrintStationWizard";
+import ConfirmDeleteBridgeModal from "./ConfirmDeleteBridgeModal";
 
 function isLocalBridge(host: string | null | undefined): boolean {
   if (!host) return false;
@@ -20,6 +21,7 @@ export default function PrintBridgesPanel() {
   const updateMappings = useAppStore((s) => s.updateBridgeMappings);
   const updateClaimedAreas = useAppStore((s) => s.updateBridgeClaimedAreas);
   const triggerTestPrint = useAppStore((s) => s.triggerBridgeTestPrint);
+  const deleteBridge = useAppStore((s) => s.deleteBridge);
   const lastFetchedAt = useAppStore((s) => s.printBridgesLastFetchedAt);
 
   // Browser-as-bridge slice (secondary method: printing from this browser tab).
@@ -42,6 +44,7 @@ export default function PrintBridgesPanel() {
 
   const [editingMappings, setEditingMappings] = useState<PrintBridge | null>(null);
   const [editingClaimedAreas, setEditingClaimedAreas] = useState<PrintBridge | null>(null);
+  const [deletingBridge, setDeletingBridge] = useState<PrintBridge | null>(null);
   const [testingByKey, setTestingByKey] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -192,6 +195,7 @@ export default function PrintBridgesPanel() {
                     isLocal={isLocalBridge(bridge.host)}
                     onEditMappings={setEditingMappings}
                     onEditClaimedAreas={setEditingClaimedAreas}
+                    onDelete={setDeletingBridge}
                     onTestPrint={handleTestPrint}
                     testingArea={
                       testingByKey?.startsWith(`${bridge.id}|`)
@@ -305,6 +309,16 @@ export default function PrintBridgesPanel() {
       {registerOpen && <RegisterLocalBridgeModal onClose={() => setRegisterOpen(false)} />}
 
       {wizardOpen && <PrintStationWizard onClose={() => setWizardOpen(false)} />}
+
+      {deletingBridge && (
+        <ConfirmDeleteBridgeModal
+          bridge={deletingBridge}
+          onClose={() => setDeletingBridge(null)}
+          onConfirm={async () => {
+            await deleteBridge(deletingBridge.id);
+          }}
+        />
+      )}
     </section>
   );
 }

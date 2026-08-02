@@ -22,8 +22,9 @@ var defaultAPIBase = "https://test.franksbar.it"
 
 func main() {
 	var (
-		apiBase     = flag.String("api", envOr("GUSTOPOS_API_URL", defaultAPIBase), "GustoPOS API base URL (https://...) — pre-filled in the pairing page")
-		versionFlag = flag.Bool("version", false, "print version and exit")
+		apiBase          = flag.String("api", envOr("GUSTOPOS_API_URL", defaultAPIBase), "GustoPOS API base URL (https://...) — pre-filled in the pairing page")
+		versionFlag      = flag.Bool("version", false, "print version and exit")
+		uninstallStartup = flag.Bool("uninstall-startup", false, "remove automatic startup registration and exit")
 	)
 	flag.Parse()
 
@@ -31,9 +32,26 @@ func main() {
 		fmt.Println("gustopos-print-agent", version)
 		return
 	}
+	if *uninstallStartup {
+		if err := removeStartup(); err != nil {
+			fatalExit(fmt.Sprintf("cannot remove automatic startup: %v", err))
+		}
+		fmt.Println("automatic startup removed")
+		return
+	}
 
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[print-agent] ")
+
+	releaseInstance, alreadyRunning, err := acquireSingleInstance()
+	if err != nil {
+		fatalExit(fmt.Sprintf("cannot acquire single-instance lock: %v", err))
+	}
+	if alreadyRunning {
+		log.Println("another print agent instance is already running")
+		return
+	}
+	defer releaseInstance()
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -48,6 +66,13 @@ func main() {
 		if cfg == nil {
 			os.Exit(1)
 		}
+	}
+	if err := ensureStartup(); err != nil {
+		// Startup registration is best-effort: a policy-restricted machine
+		// must still be able to run the agent manually.
+		log.Printf("could not register automatic startup: %v", err)
+	} else if runtime.GOOS == "windows" {
+		log.Println("automatic startup registered for the current Windows user")
 	}
 
 	// Re-pair loop: if the admin detaches the bridge in Settings, the API
@@ -80,6 +105,9 @@ func main() {
 				cfg = pairOnce(*apiBase, cfg)
 				if cfg == nil {
 					os.Exit(1)
+				}
+				if err := ensureStartup(); err != nil {
+					log.Printf("could not refresh automatic startup: %v", err)
 				}
 				continue
 			}

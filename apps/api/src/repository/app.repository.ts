@@ -158,6 +158,7 @@ import { ConsumerRepository } from "./consumer.repository";
 import { CustomerRepository } from "./customer.repository";
 import { PaymentsRepository } from "./payments.repository";
 import { PrintJobsRepository } from "./print-jobs.repository";
+import { EscPosBuilder, RECEIPT_WIDTH, padRight } from "./utils/escpos-builder";
 
 
 type InventoryRow = typeof inventory.$inferSelect;
@@ -273,95 +274,6 @@ export function parseIngredientOverrides(raw: string | null | undefined): Array<
   } catch {
     return [];
   }
-}
-
-// --- ESC/POS binary builder ---
-
-const ACCENT_MAP: Record<string, string> = {
-  "\u00E0": "a", "\u00E8": "e", "\u00E9": "e", "\u00EC": "i",
-  "\u00F2": "o", "\u00F3": "o", "\u00F9": "u", "\u00FC": "u",
-  "\u00E1": "a", "\u00E2": "a", "\u00E4": "a",
-  "\u00E7": "c", "\u00F1": "n",
-};
-
-function sanitizeForCp437(text: string): string {
-  return text.replace(/[\u00C0-\u024F]/g, (ch) => ACCENT_MAP[ch] ?? ch).replace(/\u20AC/g, "EUR");
-}
-
-function escPosEncode(text: string): Uint8Array {
-  return new TextEncoder().encode(sanitizeForCp437(text));
-}
-
-class EscPosBuilder {
-  private buf: number[] = [];
-
-  init() {
-    this.raw(0x1B, 0x40);
-    return this;
-  }
-
-  bold(on: boolean) {
-    this.raw(0x1B, 0x45, on ? 0x01 : 0x00);
-    return this;
-  }
-
-  align(mode: "left" | "center" | "right") {
-    const n = mode === "left" ? 0 : mode === "center" ? 1 : 2;
-    this.raw(0x1B, 0x61, n);
-    return this;
-  }
-
-  doubleWidth(on: boolean) {
-    this.raw(0x1D, 0x21, on ? 0x10 : 0x00);
-    return this;
-  }
-
-  doubleSize(on: boolean) {
-    this.raw(0x1D, 0x21, on ? 0x11 : 0x00);
-    return this;
-  }
-
-  text(t: string) {
-    const bytes = escPosEncode(t);
-    for (const b of bytes) this.buf.push(b);
-    return this;
-  }
-
-  line(t?: string) {
-    if (t !== undefined) this.text(t);
-    this.raw(0x0A);
-    return this;
-  }
-
-  cut() {
-    this.raw(0x1D, 0x56, 0x00);
-    return this;
-  }
-
-  raw(...bytes: number[]) {
-    this.buf.push(...bytes);
-    return this;
-  }
-
-  build(): string {
-    return Buffer.from(new Uint8Array(this.buf)).toString("base64");
-  }
-}
-
-function padRight(s: string, width: number): string {
-  if (s.length >= width) return s.slice(0, width);
-  return s + " ".repeat(width - s.length);
-}
-
-function padLeft(s: string, width: number): string {
-  if (s.length >= width) return s.slice(0, width);
-  return " ".repeat(width - s.length) + s;
-}
-
-const RECEIPT_WIDTH = 42;
-
-function encodeEscPosText(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64");
 }
 
 @Injectable()
@@ -683,7 +595,10 @@ export class AppRepository {
         const pad = RECEIPT_WIDTH - label.length - priceStr.length;
         ep.line(`${label}${" ".repeat(Math.max(1, pad))}${priceStr}`);
       } else {
-        ep.bold(true).line(label).bold(false);
+        // BAR and kitchen use the unified large-item layout. Modifiers,
+        // overrides and notes intentionally inherit this width until the
+        // item is complete, matching the established print-station format.
+        ep.doubleWidth(true).line(label);
       }
 
       for (let i = 0; i < item.modifiers.length; i++) {
@@ -702,6 +617,9 @@ export class AppRepository {
       if (item.notes) {
         ep.line(`  * ${item.notes}`);
       }
+      if (!showPrice) {
+        ep.doubleWidth(false);
+      }
       ep.line();
     }
 
@@ -718,6 +636,8 @@ export class AppRepository {
       }
     }
 
+    // Feed before a full cut so the last line and modifiers clear the platen.
+    ep.feed(5);
     ep.cut();
     return ep.build();
   }
@@ -1198,11 +1118,11 @@ export class AppRepository {
     return { ingredients, preps };
   }
 
-  private async mapBomItems(): Promise<BomItem[]> {
+  private async mapBomItems(executor: typeof db = db): Promise<BomItem[]> {
     const tenantId = getTenantIdOrDefault();
     const [bomRows, componentRows] = await Promise.all([
-      db.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
-      db.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
+      executor.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
+      executor.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
     ]);
 
     const componentsByBomId = new Map<string, typeof componentRows>();
@@ -1400,18 +1320,23 @@ export class AppRepository {
   async getPublicData(): Promise<AppData> {
     const tenantId = getTenantIdOrDefault();
     const [staffRows, tableRows, inventoryRows, menuRows, ingredientLinks, menuBomLinks, orderRows, orderItemRows, mappedBomItems, modifierGroupRows, modifierOptionRows, modifierOptionOverrideRows, catPoolRows, catPoolOptionRows, catPoolCategoryRows, menuItemModifierRows, categoryRows, deliveryOrderRows] =
-      await Promise.all([
-        db.select().from(staff).where(eq(staff.tenantId, tenantId)),
-        db.select().from(tables).where(eq(tables.tenantId, tenantId)),
-        db.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
-        db.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
-        db.select().from(menuItemIngredients).where(eq(menuItemIngredients.tenantId, tenantId)),
-        db.select().from(menuItemBomRequirements).where(eq(menuItemBomRequirements.tenantId, tenantId)),
-        db.select().from(orders).where(and(eq(orders.tenantId, tenantId), ne(orders.status, "paid"), ne(orders.status, "cancelled"))),
+      // Run the whole read set on ONE pooled connection inside a transaction
+      // with a single transaction-local RLS set_config. Previously each of the
+      // ~20 standalone queries paid connect + set_config + query + clear (4
+      // round trips), and the Promise.all needed ~20 concurrent pool
+      // connections while the pool max is 10, so bursts queued under load.
+      await withTenantTx(async (executor) => Promise.all([
+        executor.select().from(staff).where(eq(staff.tenantId, tenantId)),
+        executor.select().from(tables).where(eq(tables.tenantId, tenantId)),
+        executor.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
+        executor.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
+        executor.select().from(menuItemIngredients).where(eq(menuItemIngredients.tenantId, tenantId)),
+        executor.select().from(menuItemBomRequirements).where(eq(menuItemBomRequirements.tenantId, tenantId)),
+        executor.select().from(orders).where(and(eq(orders.tenantId, tenantId), ne(orders.status, "paid"), ne(orders.status, "cancelled"))),
         // Solo item degli ordini aperti (specchia il filtro su orders): gli item
         // degli ordini paid/cancelled non servono mai a getPublicData e, senza
         // questo filtro, si scaricavano TUTTI gli item storici del tenant.
-        db.select({
+        executor.select({
           id: orderItems.id,
           orderId: orderItems.orderId,
           menuItemId: orderItems.menuItemId,
@@ -1426,24 +1351,24 @@ export class AppRepository {
             eq(orderItems.tenantId, tenantId),
             inArray(
               orderItems.orderId,
-              db.select({ id: orders.id }).from(orders).where(and(
+              executor.select({ id: orders.id }).from(orders).where(and(
                 eq(orders.tenantId, tenantId),
                 ne(orders.status, "paid"),
                 ne(orders.status, "cancelled"),
               )),
             ),
           )),
-        this.mapBomItems(),
-        db.select().from(menuModifierGroups).where(eq(menuModifierGroups.tenantId, tenantId)),
-        db.select().from(menuModifierOptions).where(eq(menuModifierOptions.tenantId, tenantId)),
-        db.select().from(menuModifierOptionOverrides).where(eq(menuModifierOptionOverrides.tenantId, tenantId)),
-        db.select().from(categoryModifierPools).where(eq(categoryModifierPools.tenantId, tenantId)),
-        db.select().from(categoryModifierPoolOptions).where(eq(categoryModifierPoolOptions.tenantId, tenantId)),
-        db.select().from(categoryModifierPoolCategories).where(eq(categoryModifierPoolCategories.tenantId, tenantId)),
-        db.select().from(menuItemModifiers).where(eq(menuItemModifiers.tenantId, tenantId)),
-        db.select().from(categories).where(eq(categories.tenantId, tenantId)),
-        db.select({ orderId: deliveryOrders.orderId, eta: deliveryOrders.eta }).from(deliveryOrders).where(eq(deliveryOrders.tenantId, tenantId)),
-      ]);
+        this.mapBomItems(executor),
+        executor.select().from(menuModifierGroups).where(eq(menuModifierGroups.tenantId, tenantId)),
+        executor.select().from(menuModifierOptions).where(eq(menuModifierOptions.tenantId, tenantId)),
+        executor.select().from(menuModifierOptionOverrides).where(eq(menuModifierOptionOverrides.tenantId, tenantId)),
+        executor.select().from(categoryModifierPools).where(eq(categoryModifierPools.tenantId, tenantId)),
+        executor.select().from(categoryModifierPoolOptions).where(eq(categoryModifierPoolOptions.tenantId, tenantId)),
+        executor.select().from(categoryModifierPoolCategories).where(eq(categoryModifierPoolCategories.tenantId, tenantId)),
+        executor.select().from(menuItemModifiers).where(eq(menuItemModifiers.tenantId, tenantId)),
+        executor.select().from(categories).where(eq(categories.tenantId, tenantId)),
+        executor.select({ orderId: deliveryOrders.orderId, eta: deliveryOrders.eta }).from(deliveryOrders).where(eq(deliveryOrders.tenantId, tenantId)),
+      ]));
 
     const publicStaff: Staff[] = staffRows.map((row) => ({
       id: row.id,
@@ -4071,7 +3996,10 @@ export class AppRepository {
         bridgeId,
         protocol: "escpos",
         status: "pending",
-        payload: `Brigde: ${bridgeRow.name}\nArea: ${area}\nTest: ${message ?? "(nessun messaggio)"}`.replace(/\n/g, "\n"),
+        // Persist the encoded ESC/POS bytes built above. The previous
+        // diagnostic string was not printable data, although the job could
+        // still be acknowledged as completed by the transport.
+        payload: ep.build(),
         error: null,
         createdAt: now,
         updatedAt: now,

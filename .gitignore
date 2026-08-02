@@ -14,9 +14,15 @@ coverage/
 /BUILD_HASHES.txt
 /PLAN-*.md
 
+# API signing secret (provisioned by deployment; never commit or serve publicly):
+/apps/api/signing/
+
 # Print-agent release artifacts (generated — publish via make publish-downloads):
 /apps/print-agent-go/bin/
 /apps/web/public/downloads/
 
 # Graphify analysis output (regenerated tooling artifacts):
 /graphify-out/
+
+# Local DB dumps (never commit)
+/backups/

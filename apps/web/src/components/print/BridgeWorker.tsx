@@ -213,7 +213,7 @@ export default function BridgeWorker() {
             name: configRef.current?.deviceName,
             host,
             version: "browser-bridge",
-            areas: configRef.current?.areas,
+            areas: Array.isArray(configRef.current?.areas) ? configRef.current.areas : [],
             printers,
           }),
           signal: ctrl.signal,

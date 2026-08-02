@@ -34,8 +34,8 @@ interface PairingState {
  */
 export default function PrintStationWizard({ onClose }: { onClose: () => void }) {
   const createShortCodePairing = useAppStore((s) => s.createShortCodePairing);
-  const printBridges = useAppStore((s) => s.printBridges);
   const refreshPrintBridges = useAppStore((s) => s.refreshPrintBridges);
+  const refreshOnboardingSecrets = useAppStore((s) => s.refreshOnboardingSecrets);
 
   const [pairing, setPairing] = useState<PairingState | null>(null);
   const [timeLeftSec, setTimeLeftSec] = useState<number>(0);
@@ -114,23 +114,65 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
     };
   }, []);
 
-  // Poll printBridges every 3s; if a row's id matches our suggestedBridgeId
-  // AND its heartbeat was issued after our mintage, the remote PC has paired.
+  // Refresh the bridge pool while waiting. Merely inspecting printBridges here
+  // is insufficient because the parent pool may be stale after the remote agent
+  // consumes the code; the heartbeat can succeed in the API without a socket
+  // event reaching this modal.
   useEffect(() => {
     if (!pairing || bound) return;
-    const id = setInterval(() => {
-      const matched: PrintBridge | undefined = printBridges.find(
-        (b) => b.id === pairing.suggestedBridgeId,
-      );
-      if (!matched?.lastHeartbeatAt) return;
-      const hbMs = new Date(matched.lastHeartbeatAt).getTime();
-      if (Number.isFinite(hbMs) && hbMs >= pairing.issuedAt - 5000) {
-        setBound(true);
-        void refreshPrintBridges();
+
+    let cancelled = false;
+    let checkInFlight = false;
+    const checkPairing = async () => {
+      // Do not let a slow request overlap the next interval and overwrite a
+      // newer bridge list with an older response.
+      if (checkInFlight) return;
+      checkInFlight = true;
+      try {
+        await Promise.all([refreshPrintBridges(), refreshOnboardingSecrets()]);
+        if (cancelled) return;
+        const state = useAppStore.getState();
+        const currentBridges = state.printBridges;
+        const currentSecrets = state.onboardingSecrets;
+        const matched: PrintBridge | undefined = currentBridges.find(
+          (b) => b.id === pairing.suggestedBridgeId,
+        );
+        const secret = currentSecrets.find((item) => item.id === pairing.secretId);
+        // The API canonicalizes the onboarding bind and persists boundBridgeId.
+        // Check both signals: instance-based bridge reuse may intentionally keep
+        // an older bridge primary key while the new code points to it.
+        if (
+          (matched?.lastHeartbeatAt && matched.status === "active") ||
+          Boolean(secret?.boundBridgeId)
+        ) {
+          setBound(true);
+        }
+      } catch {
+        // Pairing remains pending: the next interval retries. Swallowing the
+        // fetch error prevents an unhandled rejection when the API briefly
+        // reconnects or the session refresh is in progress.
+      } finally {
+        checkInFlight = false;
       }
+    };
+
+    void checkPairing();
+    const id = setInterval(() => {
+      void checkPairing();
     }, 3000);
-    return () => clearInterval(id);
-  }, [pairing, bound, printBridges, refreshPrintBridges]);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [pairing, bound, refreshOnboardingSecrets, refreshPrintBridges]);
+
+  // Give the operator a visible success state, then close the wizard so the
+  // refreshed bridge is immediately visible in the Settings panel.
+  useEffect(() => {
+    if (!bound) return;
+    const id = window.setTimeout(onClose, 1200);
+    return () => window.clearTimeout(id);
+  }, [bound, onClose]);
 
   const handleCopy = useCallback(async () => {
     if (!pairing) return;

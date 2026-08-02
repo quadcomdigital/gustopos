@@ -15,15 +15,25 @@ import {
 import { hashPin } from "../auth/pin-hash";
 
 export async function seedInitialData(): Promise<void> {
+  const isProduction = process.env.NODE_ENV === "production";
+
   const existingSuperadmin = await db.select().from(superadminUsers).limit(1);
   if (existingSuperadmin.length === 0) {
-    const username = process.env.SUPERADMIN_USERNAME?.trim() || "superadmin";
-    const password = process.env.SUPERADMIN_PASSWORD?.trim() || "ChangeMe123!";
-    const passwordHash = await hashPin(password);
+    const username = process.env.SUPERADMIN_USERNAME?.trim();
+    const password = process.env.SUPERADMIN_PASSWORD?.trim();
+    // Never fall back to the well-known default password in production: a
+    // fresh database must fail boot with an explicit message instead of
+    // silently creating superadmin / ChangeMe123!.
+    if (isProduction && (!username || !password)) {
+      throw new Error(
+        "SUPERADMIN_USERNAME and SUPERADMIN_PASSWORD must be set in production before seeding; refusing to create default superadmin credentials",
+      );
+    }
+    const passwordHash = await hashPin(password || "ChangeMe123!");
 
     await db.insert(superadminUsers).values({
       id: "sa_1",
-      username,
+      username: username || "superadmin",
       passwordHash,
       isActive: 1,
     });
@@ -31,6 +41,16 @@ export async function seedInitialData(): Promise<void> {
 
   const existingStaff = await db.select().from(staff).limit(1);
   if (existingStaff.length > 0) {
+    return;
+  }
+
+  // Demo data below (staff PINs 1234/2222/3333, legacy tenant, inventory,
+  // menu, tables) is for local development only. A fresh production database
+  // must not silently receive accounts with publicly known PINs.
+  if (isProduction && process.env.GUSTOPOS_SEED_DEMO !== "1") {
+    console.warn(
+      "[seed] production boot with empty staff table: skipping demo data (set GUSTOPOS_SEED_DEMO=1 to force)",
+    );
     return;
   }
 

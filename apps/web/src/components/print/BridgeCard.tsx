@@ -8,6 +8,7 @@ interface BridgeCardProps {
   isLocal: boolean;
   onEditMappings: (bridge: PrintBridge) => void;
   onEditClaimedAreas: (bridge: PrintBridge) => void;
+  onDelete: (bridge: PrintBridge) => void;
   onTestPrint: (bridgeId: string, area: PrintArea) => Promise<void>;
   testingArea: PrintArea | null;
   isAreaCoolingDown?: (area: PrintArea) => boolean;
@@ -48,6 +49,7 @@ export default function BridgeCard({
   isLocal,
   onEditMappings,
   onEditClaimedAreas,
+  onDelete,
   onTestPrint,
   testingArea,
   isAreaCoolingDown,
@@ -122,6 +124,13 @@ export default function BridgeCard({
         >
           <span className={`w-1.5 h-1.5 rounded-full ${(bridge.mappings?.length ?? 0) > 0 ? 'bg-primary' : 'bg-gray-300'}`} />
           Mappings ({bridge.mappings?.length ?? 0})
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(bridge)}
+          className="px-2.5 py-1 rounded border border-red-300 text-red-700 text-[10px] font-bold uppercase tracking-wider hover:bg-red-50 flex items-center gap-1.5"
+        >
+          🗑 Rimuovi
         </button>
       </div>
 

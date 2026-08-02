@@ -242,7 +242,12 @@ export const orders = pgTable("orders", {
   staffId: text("staff_id")
     .notNull()
     .references(() => staff.id, { onDelete: "restrict" }),
-});
+}, (table) => [
+  // Open-order scan (getPublicData) filters on tenant + status; order history
+  // lists sort by tenant + timestamp. Both are hot read paths in POS/kitchen.
+  index("orders_tenant_status_idx").on(table.tenantId, table.status),
+  index("orders_tenant_timestamp_idx").on(table.tenantId, table.timestamp),
+]);
 
 export const orderItems = pgTable("order_items", {
   id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
@@ -257,7 +262,11 @@ export const orderItems = pgTable("order_items", {
   ingredientOverrides: text("ingredient_overrides").notNull().default("[]"),
   notes: text("notes"),
   selectedModifiers: text("selected_modifiers").notNull().default("[]"),
-});
+}, (table) => [
+  // Every items-by-order fetch (getPublicData subquery, getOrderById,
+  // takeaway, order history, BoM explosion) filters on tenant + orderId.
+  index("order_items_tenant_order_idx").on(table.tenantId, table.orderId),
+]);
 
 export const ordersRelations = relations(orders, ({ many }) => ({
   items: many(orderItems),
@@ -365,7 +374,12 @@ export const payments = pgTable("payments", {
     .notNull()
     .references(() => staff.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  // Payments list sorts by tenant + created_at DESC; refund aggregation
+  // scans tenant + refunded_payment_id to sum previous refunds.
+  index("payments_tenant_created_at_idx").on(table.tenantId, table.createdAt),
+  index("payments_tenant_refunded_payment_id_idx").on(table.tenantId, table.refundedPaymentId),
+]);
 
 export const paymentItems = pgTable("payment_items", {
   id: text("id").primaryKey(),
@@ -423,13 +437,20 @@ export const printJobs = pgTable("print_jobs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
-});
+}, (table) => [
+  // Bridge claim polling (tenant + status + area) runs every ~1s per bridge
+  // with SKIP LOCKED; stale-claim reclaim scans tenant + status + claimed_at.
+  index("print_jobs_tenant_status_area_idx").on(table.tenantId, table.status, table.area),
+  index("print_jobs_tenant_status_claimed_at_idx").on(table.tenantId, table.status, table.claimedAt),
+]);
 
 export const printBridges = pgTable(
   "print_bridges",
   {
     id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    // Stable machine identity sent by the Go agent. Nullable for legacy/browser bridges.
+    instanceId: text("instance_id"),
     name: text("name").notNull(),
     host: text("host"),
     version: text("version"),
@@ -445,6 +466,9 @@ export const printBridges = pgTable(
   (table) => [
     index("print_bridges_tenant_idx").on(table.tenantId),
     index("print_bridges_status_idx").on(table.status),
+    uniqueIndex("print_bridges_tenant_instance_idx")
+      .on(table.tenantId, table.instanceId)
+      .where(sql`${table.instanceId} IS NOT NULL`),
   ],
 );
 

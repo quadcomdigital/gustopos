@@ -145,4 +145,45 @@ describe("Print Bridge Server", () => {
       assert.ok(res.text.includes("GustoPOS Print Station"));
     });
   });
+
+  describe("QZ signing endpoint hardening", () => {
+    const validDigest = "a".repeat(64);
+    const allowedOrigin = "http://localhost:11900";
+    const foreignOrigin = "https://evil.example";
+
+    it("rejects requests without an allowed Origin (signing oracle closed)", async () => {
+      const noOrigin = await request(app)
+        .get(`/signing/sign-message?request=${validDigest}`);
+      assert.strictEqual(noOrigin.status, 403);
+
+      const foreign = await request(app)
+        .get(`/signing/sign-message?request=${validDigest}`)
+        .set("Origin", foreignOrigin);
+      assert.strictEqual(foreign.status, 403);
+      assert.notStrictEqual(foreign.headers["access-control-allow-origin"], "*");
+    });
+
+    it("rejects non-digest input even from an allowed origin", async () => {
+      const res = await request(app)
+        .get("/signing/sign-message?request=printers.find")
+        .set("Origin", allowedOrigin);
+      assert.strictEqual(res.status, 400);
+    });
+
+    it("signs a valid digest for an allowlisted browser origin", async () => {
+      const res = await request(app)
+        .get(`/signing/sign-message?request=${validDigest}`)
+        .set("Origin", allowedOrigin);
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers["access-control-allow-origin"], allowedOrigin);
+      assert.ok(res.text.length > 20, "signature should be a base64 blob");
+    });
+
+    it("hides debug/whitelist endpoints unless PRINT_BRIDGE_DEBUG_ENDPOINTS=true", async () => {
+      for (const route of ["/signing/debug", "/signing/verify-test", "/signing/whitelist-entry", "/signing/whitelist-entry.txt"]) {
+        const res = await request(app).get(route);
+        assert.strictEqual(res.status, 404, `${route} should be gated off`);
+      }
+    });
+  });
 });

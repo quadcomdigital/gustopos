@@ -2465,12 +2465,9 @@ export class AppController {
   // Signs requests for QZ Tray message signing (silent printing).
   // The certificate must be served as a static file from /signing/digital-certificate.txt
 
-  @Get("sign")
-  @Throttle({ default: { limit: 120, ttl: 60_000 } })
-  @RequiresModule("printing")
-  async signQzRequest(@Query("request") request: string): Promise<string> {
+  private async signQzDigest(request: string): Promise<string> {
     // QZ Tray sends the lowercase SHA-256 hex digest of its canonical request.
-    // Never allow this public fallback to become an arbitrary signing oracle.
+    // Never allow this endpoint to become an arbitrary signing oracle.
     if (!request || !/^[a-f0-9]{64}$/.test(request)) {
       throw new BadRequestException("'request' must be a SHA-256 hex digest");
     }
@@ -2478,8 +2475,13 @@ export class AppController {
     const fs = await import("fs");
     const path = await import("path");
     const crypto = await import("crypto");
-
-    const keyPath = path.join(process.cwd(), "public", "signing", "private-key.pem");
+    // Keep the private signing key outside every statically served directory.
+    // Deployments may provision it at an explicit path; the default resolves
+    // to apps/api/signing from both src (tests) and dist (production).
+    const configuredKeyPath = process.env.QZ_SIGNING_KEY_PATH?.trim();
+    const keyPath = configuredKeyPath
+      ? path.resolve(configuredKeyPath)
+      : path.join(__dirname, "..", "signing", "private-key.pem");
 
     let privateKey: string;
     try {
@@ -2491,9 +2493,24 @@ export class AppController {
     const sign = crypto.createSign("SHA512");
     sign.update(request);
     sign.end();
+    return sign.sign(privateKey, "base64");
+  }
 
-    const signature = sign.sign(privateKey, "base64");
-    return signature;
+  @Get("sign")
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @RequiresModule("printing")
+  async signQzRequest(@Query("request") request: string): Promise<string> {
+    return this.signQzDigest(request);
+  }
+
+  // Dedicated bridge-authenticated signing route for the Go agent. The
+  // browser/JWT route above remains unchanged; the Go agent cannot use JWT.
+  @Get("print-bridge/sign")
+  @Public()
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  async signQzRequestForBridge(@Query("request") request: string, @Req() req: any): Promise<string> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, () => this.signQzDigest(request));
   }
 
   // ─── Prep Items ────────────────────────────────────────────────────────
@@ -2747,15 +2764,47 @@ export class AppController {
 
   @Post("print-bridge/heartbeat")
   @Public()
-  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  // Bridge traffic is authenticated by verifyBridgeOrOnboardingSecret; the
+  // throttle is an abuse backstop, not a functional cap (a busy restaurant
+  // can run several bridges behind one NAT/IP).
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string }> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
     return this.withBridgeTenantContext(auth.tenantId, async () => {
-      const payload = printBridgeHeartbeatRequestSchema.parse(raw);
+      const heartbeatInput = raw && typeof raw === "object" && !Array.isArray(raw)
+        ? {
+            ...(raw as Record<string, unknown>),
+            // Older browser bridges persisted null for these collection fields.
+            // Normalize that legacy shape before strict contract validation.
+            areas: (raw as Record<string, unknown>).areas ?? [],
+            printers: (raw as Record<string, unknown>).printers ?? [],
+          }
+        : raw;
+      const payload = printBridgeHeartbeatRequestSchema.parse(heartbeatInput);
       let bridge;
       const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+      // Short-code pairing creates the bridge identity server-side. The Go
+      // agent generates a temporary local id before it knows the suggested id;
+      // canonicalize it here so the persisted bridge, onboarding record and
+      // frontend wizard all refer to the same id.
+      const bridgeId = auth.expectedBridgeId &&
+        (auth.path === "onboarding-short-code" || auth.path === "onboarding")
+        ? auth.expectedBridgeId
+        : payload.bridgeId;
       try {
-        bridge = await this.printBridgeRepo.upsertPrintBridge(payload as any, instanceId, auth.tenantId);
+        bridge = await this.printBridgeRepo.upsertPrintBridge(
+          {
+            ...payload,
+            bridgeId,
+            printers: payload.printers.map((printer) => ({
+              ...printer,
+              area: printer.area ?? "kitchen",
+              port: printer.port ?? undefined,
+            })),
+          },
+          instanceId,
+          auth.tenantId,
+        );
       } catch (e) {
         if (e instanceof Error && e.message.includes("already used by another tenant")) {
           throw new ConflictException(e.message);
@@ -2792,7 +2841,9 @@ export class AppController {
 
   @Post("print-bridge/claim")
   @Public()
-  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  // See bridgeHeartbeat: claim polls every ~3s per bridge and multiple
+  // bridges share the office IP; keep this a generous abuse backstop.
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
   async bridgeClaim(@Body() raw: unknown, @Req() req: any): Promise<{ jobs: PrintJob[] }> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
     return this.withBridgeTenantContext(auth.tenantId, async () => {
@@ -2953,6 +3004,33 @@ export class AppController {
       .emit(socketEvents.bridgeStatus, bridge, bridge.tenantId ?? "tenant_legacy")
       .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
     return { bridge };
+  }
+
+  @Delete("print-bridge/:id")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async deletePrintBridge(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<{ success: true; id: string }> {
+    const ok = await this.printBridgeRepo.deletePrintBridge(id);
+    if (!ok) {
+      throw new NotFoundException("Print bridge not found");
+    }
+    try {
+      this.auditLogService.log("print_bridge.deleted", {
+        actorStaffId: request.user?.sub ?? undefined,
+        targetId: id,
+        details: { tenantId: request.user?.tenantId },
+      });
+    } catch {}
+    // Keep other admin sessions in sync: the revoked agent will not heartbeat
+    // anymore, so without this event the pool would keep a stale offline card.
+    void this.realtimeGateway
+      .emit(socketEvents.bridgeRemoved, { id }, request.user?.tenantId)
+      .catch((err: unknown) => console.warn("[realtime] bridge:removed emit failed:", err));
+    return { success: true, id };
   }
 
   @Post("print-bridge/:id/test-print")

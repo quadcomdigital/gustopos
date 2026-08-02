@@ -161,6 +161,7 @@ import {
   paySelectedItems as paySelectedItemsRequest,
   markShareAsPaid as markShareAsPaidRequest,
   getTablePaymentStatus as getTablePaymentStatusRequest,
+  isDuplicateIdempotentError,
   transferTable as transferTableRequest,
   rotateSelfOrderQrSession,
   replaceBomComponents as replaceBomComponentsRequest,
@@ -240,6 +241,8 @@ import {
   updateBridgeClaimedAreas,
   listOnboardingSecrets as listOnboardingSecretsRequest,
   triggerBridgeTestPrint as triggerBridgeTestPrintRequest,
+  listPrintBridges as listPrintBridgesRequest,
+  deletePrintBridgeRequest,
 
 } from '../shared/api/client';
 import { disconnectSocket, getSocket } from '../shared/api/socket';
@@ -271,6 +274,11 @@ import {
   shiftsQueryKey,
   timeReportQueryKey,
 } from './shifts-cache';
+import {
+  fiscalExportsQueryKey,
+  isFiscalExportsQueryFresh,
+  normalizeFiscalExportsQuery,
+} from './fiscal-exports-cache';
 
 let reservationsRequestSequence = 0;
 const reservationsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
@@ -284,6 +292,8 @@ let shiftsRequestSequence = 0;
 const shiftsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 let timeReportRequestSequence = 0;
 const timeReportInFlight = new Map<string, { requestId: number; promise: Promise<TimeReportResponse> }>();
+let fiscalExportsRequestSequence = 0;
+const fiscalExportsInFlight = new Map<string, { requestId: number; promise: Promise<void> }>();
 
 function invalidateReservationsCache(): Pick<AppState, 'reservations' | 'reservationsQuery' | 'reservationsQueryKey' | 'reservationsFetchedAt'> {
   reservationsRequestSequence += 1;
@@ -373,6 +383,19 @@ async function refreshCurrentTimeReport(get: () => AppState): Promise<TimeReport
   return state.refreshTimeReport(state.timeReportQuery, true);
 }
 
+// Unlike the other module caches the exports list itself is kept: it is an
+// append-only journal, so clearing it on every mutation would flash the UI
+// empty. We only reset the freshness markers so the next load() refetches.
+function invalidateFiscalExportsCache(): Pick<AppState, 'fiscalExportsQuery' | 'fiscalExportsQueryKey' | 'fiscalExportsFetchedAt'> {
+  fiscalExportsRequestSequence += 1;
+  fiscalExportsInFlight.clear();
+  return {
+    fiscalExportsQuery: null,
+    fiscalExportsQueryKey: null,
+    fiscalExportsFetchedAt: null,
+  };
+}
+
 type StoreSet = (
   partial: Partial<AppState> | ((state: AppState) => Partial<AppState>),
   replace?: false | undefined,
@@ -413,6 +436,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   socket.off(socketEvents.dataUpdate);
   socket.off(socketEvents.settingsUpdate);
   socket.off(socketEvents.bridgeStatus);
+  socket.off(socketEvents.bridgeRemoved);
   socket.off(socketEvents.jobClaimed);
   socket.off(socketEvents.jobCompleted);
   socket.off(socketEvents.jobFailed);
@@ -547,6 +571,14 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     }));
   });
 
+  socket.on(socketEvents.bridgeRemoved, (incoming: { id?: string } | undefined | null) => {
+    if (!incoming || typeof incoming.id !== 'string') return;
+    set((state: AppState) => ({
+      printBridges: state.printBridges.filter((b) => b.id !== incoming.id),
+      printBridgesLastFetchedAt: new Date().toISOString(),
+    }));
+  });
+
   socket.on(socketEvents.jobClaimed, (incoming: PrintJob | undefined | null) => {
     if (!incoming || typeof incoming.id !== 'string') return;
     set((state: AppState) => ({
@@ -668,6 +700,9 @@ interface AppState {
   timeReportQueryKey: string | null;
   timeReportFetchedAt: number | null;
   fiscalExports: FiscalExport[];
+  fiscalExportsQuery: FiscalExportsQuery | null;
+  fiscalExportsQueryKey: string | null;
+  fiscalExportsFetchedAt: number | null;
   inventoryItems: Ingredient[];
   bomItems: BomItem[];
   bomStock: any[];
@@ -782,7 +817,7 @@ interface AppState {
   clockIn: (payload: ClockInRequest) => Promise<TimeEntry>;
   clockOut: (payload: ClockOutRequest) => Promise<TimeEntry>;
   refreshTimeReport: (query: TimeReportQuery, force?: boolean) => Promise<TimeReportResponse>;
-  refreshFiscalExports: (query?: FiscalExportsQuery) => Promise<void>;
+  refreshFiscalExports: (query?: FiscalExportsQuery, force?: boolean) => Promise<void>;
   closeFiscalDay: (payload: FiscalCloseRequest) => Promise<FiscalClosure>;
   createFiscalExport: (payload: FiscalExportCreateRequest) => Promise<FiscalExport>;
   downloadFiscalExportCsv: (id: string) => Promise<string>;
@@ -805,6 +840,7 @@ interface AppState {
   updateBridgeMappings: (bridgeId: string, mappings: PrintBridgePrinterMapping[]) => Promise<void>;
   updateBridgeClaimedAreas: (bridgeId: string, claimedAreas: LocalBridgeArea[]) => Promise<void>;
   triggerBridgeTestPrint: (bridgeId: string, area: LocalBridgeArea) => Promise<void>;
+  deleteBridge: (bridgeId: string) => Promise<void>;
   refreshOnboardingSecrets: () => Promise<void>;
   createOnboardingSecret: (hint?: { bridgeIdHint?: string }) => Promise<{ plaintext: string; suggestedBridgeId: string; bootstrapSnippet: string }>;
   createShortCodePairing: (input?: { bridgeIdHint?: string; publicBaseUrl?: string }) => Promise<PrintBridgeOnboardingSecretCreateCode6DigitResponse>;
@@ -993,6 +1029,10 @@ function handleActionError(error: unknown): string {
     if (error.message.includes('403') || error.message.toLowerCase().includes('forbidden') || error.message.toLowerCase().includes('permessi insufficienti')) {
       return 'Permessi insufficienti per questa operazione.';
     }
+    if (isDuplicateIdempotentError(error)) {
+      // Double-tap on a mutating action: the request was already submitted.
+      return 'Operazione già inviata.';
+    }
     return error.message;
   }
   return 'Errore sconosciuto. Riprova.';
@@ -1082,6 +1122,9 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   timeReportQueryKey: null,
   timeReportFetchedAt: null,
   fiscalExports: [],
+  fiscalExportsQuery: null,
+  fiscalExportsQueryKey: null,
+  fiscalExportsFetchedAt: null,
   inventoryItems: [],
   bomItems: [],
   bomStock: [],
@@ -1143,7 +1186,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const refreshed = await refreshSession();
       if (!refreshed) {
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), ...invalidateFiscalExportsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1152,7 +1195,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         // Refresh succeeded but user payload is missing/corrupted: this is a real auth-session corruption.
         clearAuthSession();
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), ...invalidateFiscalExportsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
         return;
       }
 
@@ -1169,6 +1212,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
           ...invalidateShiftsCache(),
+          ...invalidateFiscalExportsCache(),
           data: bootstrap.data,
           staff: bootstrap.staff,
           uiSettings: bootstrap.uiSettings,
@@ -1202,6 +1246,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
           ...invalidateShiftsCache(),
+          ...invalidateFiscalExportsCache(),
           data,
           staff: staffList,
           uiSettings,
@@ -1216,7 +1261,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
     } catch {
       disconnectSocket();
-      set({ ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), loading: false });
+      set({ ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateFiscalExportsCache(), loading: false });
     }
   },
 
@@ -1266,6 +1311,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const shiftsDisabled = previousModules.includes('staff_shifts_timeclock') && !activeModules.has('staff_shifts_timeclock');
       const shiftsCacheReset = tenantChanged || shiftsDisabled
         ? invalidateShiftsCache()
+        : null;
+      const fiscalDisabled = previousModules.includes('fiscal_exports') && !activeModules.has('fiscal_exports');
+      const fiscalCacheReset = tenantChanged || fiscalDisabled
+        ? invalidateFiscalExportsCache()
         : null;
 
       if (!areSameModules(previousModules, normalizedModules)) {
@@ -1317,7 +1366,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         timeReportQueryKey: shiftsCacheReset ? shiftsCacheReset.timeReportQueryKey : (activeModules.has('staff_shifts_timeclock') ? state.timeReportQueryKey : null),
         timeReportFetchedAt: shiftsCacheReset ? shiftsCacheReset.timeReportFetchedAt : (activeModules.has('staff_shifts_timeclock') ? state.timeReportFetchedAt : null),
         timeEntries: shiftsCacheReset ? shiftsCacheReset.timeEntries : (activeModules.has('staff_shifts_timeclock') ? state.timeEntries : []),
-        fiscalExports: activeModules.has('fiscal_exports') ? state.fiscalExports : [],
+        fiscalExports: fiscalCacheReset ? [] : (activeModules.has('fiscal_exports') ? state.fiscalExports : []),
+        fiscalExportsQuery: fiscalCacheReset ? null : (activeModules.has('fiscal_exports') ? state.fiscalExportsQuery : null),
+        fiscalExportsQueryKey: fiscalCacheReset ? null : (activeModules.has('fiscal_exports') ? state.fiscalExportsQueryKey : null),
+        fiscalExportsFetchedAt: fiscalCacheReset ? null : (activeModules.has('fiscal_exports') ? state.fiscalExportsFetchedAt : null),
         bomItems: activeModules.has('inventory') ? state.bomItems : [],
         bomStock: activeModules.has('inventory') ? state.bomStock : [],
         menuItemsAdmin: activeModules.has('inventory') || activeModules.has('simple_catalog') ? state.menuItemsAdmin : [],
@@ -1346,6 +1398,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
           ...invalidateShiftsCache(),
+          ...invalidateFiscalExportsCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1379,6 +1432,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
           ...invalidateShiftsCache(),
+          ...invalidateFiscalExportsCache(),
           currentUser: response.user,
           tenantContext: { tenantId: response.user.tenantId, tenantSlug: undefined },
           enabledModules: normalizedModules,
@@ -1420,6 +1474,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       purchaseOrders: [],
       shifts: [],
       timeEntries: [],
+      ...invalidateFiscalExportsCache(),
       fiscalExports: [],
       inventoryItems: [],
       bomItems: [],
@@ -2995,17 +3050,51 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  refreshFiscalExports: async (query) => {
-    try {
-      const currentUser = get().currentUser;
-      if (!currentUser || currentUser.role !== 'admin') return;
-      if (!hasModuleEnabled(get(), 'fiscal_exports')) return;
-      const fiscalExports = await fetchFiscalExports(query);
-      set({ fiscalExports });
-    } catch (err) {
-      set({ error: handleActionError(err) });
-      throw err;
+  refreshFiscalExports: async (query, force = false) => {
+    const currentUser = get().currentUser;
+    if (!currentUser || currentUser.role !== 'admin') return;
+    if (!hasModuleEnabled(get(), 'fiscal_exports')) return;
+
+    const normalizedQuery = normalizeFiscalExportsQuery(query);
+    const key = fiscalExportsQueryKey(normalizedQuery);
+    const state = get();
+    if (!force && state.fiscalExportsQueryKey === key && isFiscalExportsQueryFresh(state.fiscalExportsFetchedAt)) {
+      return;
     }
+    const inFlight = fiscalExportsInFlight.get(key);
+    if (inFlight && !force) {
+      return inFlight.promise;
+    }
+    if (force) {
+      fiscalExportsInFlight.delete(key);
+    }
+
+    const requestId = ++fiscalExportsRequestSequence;
+    const requestPromise = (async () => {
+      try {
+        const fiscalExports = await fetchFiscalExports(normalizedQuery);
+        // A newer query must win even if an older request resolves later.
+        if (requestId !== fiscalExportsRequestSequence) return;
+        set({
+          fiscalExports,
+          fiscalExportsQuery: normalizedQuery,
+          fiscalExportsQueryKey: key,
+          fiscalExportsFetchedAt: Date.now(),
+        });
+      } catch (err) {
+        if (requestId === fiscalExportsRequestSequence) {
+          set({ error: handleActionError(err) });
+        }
+        throw err;
+      } finally {
+        if (fiscalExportsInFlight.get(key)?.requestId === requestId) {
+          fiscalExportsInFlight.delete(key);
+        }
+      }
+    })();
+
+    fiscalExportsInFlight.set(key, { requestId, promise: requestPromise });
+    await requestPromise;
   },
 
   closeFiscalDay: async (payload) => {
@@ -3018,7 +3107,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (!hasPermission(state, uiActionPolicyMatrix.fiscalClose.permission)) {
         throw new Error('Permessi insufficienti per chiusura fiscale');
       }
-      return await closeFiscalDayRequest(payload);
+      const result = await closeFiscalDayRequest(payload);
+      // Invalidate the query cache so the view's follow-up load() refetches.
+      set(invalidateFiscalExportsCache());
+      return result;
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -3035,7 +3127,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (!hasPermission(state, uiActionPolicyMatrix.fiscalExport.permission)) {
         throw new Error('Permessi insufficienti per export fiscale');
       }
-      return await createFiscalExportRequest(payload);
+      const result = await createFiscalExportRequest(payload);
+      // Invalidate the query cache so the view's follow-up load() refetches.
+      set(invalidateFiscalExportsCache());
+      return result;
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -3177,7 +3272,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   },
   // ─── Print-bridge pool (Phase E) ──────────────────────────────
   refreshPrintBridges: async () => {
-    set({ printBridgesLastFetchedAt: new Date().toISOString() });
+    const bridges = await listPrintBridgesRequest();
+    set({ printBridges: bridges, printBridgesLastFetchedAt: new Date().toISOString() });
   },
   updateBridgeMappings: async (bridgeId, mappings) => {
     await updateBridgeMappings(bridgeId, mappings);
@@ -3190,6 +3286,13 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   triggerBridgeTestPrint: async (bridgeId, area) => {
     await triggerBridgeTestPrintRequest(bridgeId, area);
     set({ printBridgesLastFetchedAt: new Date().toISOString() });
+  },
+  deleteBridge: async (bridgeId) => {
+    await deletePrintBridgeRequest(bridgeId);
+    set((state) => ({
+      printBridges: state.printBridges.filter((b) => b.id !== bridgeId),
+      printBridgesLastFetchedAt: new Date().toISOString(),
+    }));
   },
   refreshOnboardingSecrets: async () => {
     const secrets = await listOnboardingSecretsRequest();

@@ -1,0 +1,2 @@
+ALTER TABLE "print_bridges" ADD COLUMN "instance_id" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "print_bridges_tenant_instance_idx" ON "print_bridges" USING btree ("tenant_id","instance_id") WHERE "print_bridges"."instance_id" IS NOT NULL;

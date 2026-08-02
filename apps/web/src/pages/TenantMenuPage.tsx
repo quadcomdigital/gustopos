@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { ShoppingBag, Plus, Minus, X, Search, ChevronRight, UtensilsCrossed, Wind, Wine, IceCream } from 'lucide-react';
@@ -10,7 +10,9 @@ import {
   getConsumerAccessToken,
   loginConsumer,
   logoutConsumer,
+  isDuplicateIdempotentError,
   registerConsumer,
+  resolveOrderIdempotencyKey,
   trackPublicFunnelEvent,
 } from '../shared/api/client';
 
@@ -85,6 +87,12 @@ export default function TenantMenuPage() {
   const [authPhone, setAuthPhone] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'customer' | 'confirm'>('cart');
+
+  // H2: one idempotency key per logical takeaway submission. A retry of the
+  // same cart (network blip after the server committed) reuses the key so the
+  // API middleware dedupes instead of creating a duplicate takeaway order.
+  // The key is dropped on success so a fresh identical order gets a new key.
+  const pendingTakeawayOrderKeys = useRef(new Map<string, string>());
 
   useEffect(() => {
     const endpoint = tenantSlug
@@ -334,16 +342,22 @@ export default function TenantMenuPage() {
         },
       }).catch(() => undefined);
 
-      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const payload = await createPublicTakeawayOrder(tenantSlug, {
+      const takeawayPayload = {
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim() || undefined,
         items: cart,
         total: cartTotal,
         pickupEta: pickupEta ? new Date(pickupEta).toISOString() : undefined,
         notes: takeawayConfig.allowNotes ? (takeawayNotes.trim() || undefined) : undefined,
-      }, idempotencyKey);
+      };
+      const fingerprint = JSON.stringify(takeawayPayload);
+      const { key, pending } = resolveOrderIdempotencyKey(fingerprint, pendingTakeawayOrderKeys.current);
+      pendingTakeawayOrderKeys.current = pending;
+      const payload = await createPublicTakeawayOrder(tenantSlug, takeawayPayload, key);
 
+      // Success: this logical submission is resolved — a future identical
+      // order must get a fresh key.
+      pendingTakeawayOrderKeys.current = new Map();
       setTakeawaySuccessId(payload.order.id);
       localStorage.setItem(`gustopos:public-takeaway-tracking:${tenantSlug}`, JSON.stringify({
         orderId: payload.order.id,
@@ -364,7 +378,13 @@ export default function TenantMenuPage() {
       setIsCartOpen(false);
       setCheckoutStep('cart');
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Invio ordine takeaway fallito');
+      // Double-tap on "Conferma ordine takeaway": the API middleware rejects
+      // the second identical request with 409 — the order was already sent.
+      setError(
+        isDuplicateIdempotentError(submitError)
+          ? 'Ordine già inviato'
+          : (submitError instanceof Error ? submitError.message : 'Invio ordine takeaway fallito'),
+      );
     } finally {
       setSubmittingTakeaway(false);
     }

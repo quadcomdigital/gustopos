@@ -29,6 +29,13 @@ export default function BindBridgeMappingModal({
         a === 'kitchen' || a === 'bar' || a === 'cashier',
       )
     : [];
+  const isGoAgent = typeof bridge.version === 'string' && bridge.version.startsWith('go-');
+  const discoveredPrinterNames = useMemo(() => {
+    const names = (Array.isArray(bridge.printers) ? bridge.printers : [])
+      .map((printer) => printer.name.trim())
+      .filter(Boolean);
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
+  }, [bridge.printers]);
 
   const [rows, setRows] = useState<Record<PrintArea, string>>({
     kitchen: '',
@@ -60,22 +67,25 @@ export default function BindBridgeMappingModal({
             a === 'kitchen' || a === 'bar' || a === 'cashier',
           )
         : [];
-      return claimed.length > 0 && claimed.every((area) => !!(rows[area] && rows[area]?.trim()));
+      return claimed.length > 0 && claimed.every((area) => {
+        const selected = rows[area]?.trim() ?? '';
+        if (!selected) return false;
+        return !isGoAgent || discoveredPrinterNames.includes(selected);
+      });
     },
-    [bridge.claimedAreas, rows],
+    [bridge.claimedAreas, discoveredPrinterNames, isGoAgent, rows],
   );
 
   const printerOptions = useMemo(() => {
-    // bridge.printers is PrintBridgePrinter[] ({area, name, ip?, port?}). Extract the .name.
-    const printerNames = Array.isArray(bridge.printers)
-      ? bridge.printers.map((p) => p.name).filter((n): n is string => Boolean(n))
-      : [];
-    const set = new Set<string>(printerNames);
+    // Go agents must use names discovered by QZ Tray. Legacy/browser bridges
+    // retain the manual value as a backwards-compatible fallback.
+    if (isGoAgent) return discoveredPrinterNames;
+    const set = new Set<string>(discoveredPrinterNames);
     for (const v of Object.values(rows)) {
       if (v && v.trim()) set.add(v.trim());
     }
-    return Array.from(set).sort();
-  }, [bridge.printers, rows]);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [discoveredPrinterNames, isGoAgent, rows]);
 
   const handleSaveAll = async () => {
     setSaving(true);
@@ -177,22 +187,33 @@ export default function BindBridgeMappingModal({
                   </button>
                 </div>
                 <select
-                  value={rows[area] ?? ''}
+                  value={printerOptions.includes(rows[area] ?? '') ? (rows[area] ?? '') : ''}
                   onChange={(e) =>
                     setRows((prev) => ({ ...prev, [area]: e.target.value }))
                   }
                   className="w-full px-3 py-2 rounded border border-border text-sm bg-white"
                 >
-                  <option value="">— Seleziona stampante —</option>
+                  <option value="">— Seleziona stampante rilevata —</option>
                   {printerOptions.map((p) => (
                     <option key={p} value={p}>
                       {p}
                     </option>
                   ))}
                 </select>
-                {bridge.printers?.length === 0 && (
+                {!isGoAgent && (
+                  <label className="block text-[10px] text-text-muted">
+                    Nome QZ Tray manuale
+                    <input
+                      value={rows[area] ?? ''}
+                      onChange={(e) => setRows((prev) => ({ ...prev, [area]: e.target.value }))}
+                      placeholder="es. EPSON TM-T88V"
+                      className="mt-1 w-full px-3 py-2 rounded border border-border text-sm bg-white font-mono"
+                    />
+                  </label>
+                )}
+                {isGoAgent && discoveredPrinterNames.length === 0 && (
                   <p className="text-[10px] text-amber-700">
-                    QZ Tray su questo bridge non vede ancora stampanti. Avvia QZ Tray e attendi il prossimo heartbeat.
+                    Nessuna stampante rilevata da QZ Tray. Avvia QZ Tray sul POS e attendi il prossimo heartbeat.
                   </p>
                 )}
               </div>

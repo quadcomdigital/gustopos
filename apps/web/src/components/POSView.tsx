@@ -10,7 +10,7 @@ import ModifierModal from './ModifierModal';
 import ConfirmDialog from './ConfirmDialog';
 import { CheckoutModal } from './checkout';
 import { useCheckoutStore } from '../store/checkout-store';
-import { fetchCustomerAddresses, createCustomerAddress } from '../shared/api/client';
+import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
 
 interface POSViewProps {
   data: AppData;
@@ -362,7 +362,14 @@ export default function POSView({
       setShowCartMobile(false);
       setActionSuccess(orderMode === 'delivery' ? 'Delivery creato con successo' : 'Ordine inviato in cucina');
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Invio ordine non riuscito');
+      // A double-tap on "Invia" makes the API middleware reject the second
+      // request with 409 (same idempotency key). The order was already
+      // submitted — show a clear message instead of the raw English error.
+      setActionError(
+        isDuplicateIdempotentError(error)
+          ? 'Ordine già inviato'
+          : (error instanceof Error ? error.message : 'Invio ordine non riuscito'),
+      );
     } finally {
       setIsProcessing(false);
     }

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const controllerSource = readFileSync(join(__dirname, "..", "app.controller.ts"), "utf8");
+const appRepositorySource = readFileSync(join(__dirname, "..", "repository", "app.repository.ts"), "utf8");
 const gatewaySource = readFileSync(join(__dirname, "..", "realtime.gateway.ts"), "utf8");
 const dbClientSource = readFileSync(join(__dirname, "..", "db", "client.ts"), "utf8");
 const migrationSource = readFileSync(join(__dirname, "..", "..", "drizzle", "0058_phase0_rls_fail_closed.sql"), "utf8");
@@ -23,6 +24,20 @@ function sectionBetween(source: string, start: string, end: string): string {
   return source.slice(startIndex, endIndex);
 }
 
+test("throttler guard is registered globally and skips websocket contexts", () => {
+  const moduleSource = readFileSync(join(__dirname, "..", "app.module.ts"), "utf8");
+  const guardSource = readFileSync(join(__dirname, "..", "security", "http-throttler.guard.ts"), "utf8");
+
+  assert.match(moduleSource, /provide: APP_GUARD/);
+  assert.match(moduleSource, /useClass: HttpThrottlerGuard/);
+  // The global default must stay high: the API sits behind a reverse proxy,
+  // so all tenants share the proxy IP as the throttling key.
+  assert.match(moduleSource, /limit: 1000/);
+  // WebSocket message handlers must not be throttled (ThrottlerGuard would
+  // treat the socket as an HTTP request and crash the realtime gateway).
+  assert.match(guardSource, /context\.getType\(\) !== "http"/);
+});
+
 test("legacy print completion is no longer public and requires print dispatch permission", () => {
   const section = sectionBetween(
     controllerSource,
@@ -39,19 +54,67 @@ test("QZ signing route is authenticated and rejects arbitrary signing input", ()
   const section = sectionBetween(
     controllerSource,
     '  @Get("sign")',
-    "  // ─── Prep Items",
+    '  @Get("print-bridge/sign")',
   );
 
   assert.doesNotMatch(section, /@Public\(\)/);
   assert.match(section, /@Throttle\(/);
   assert.match(section, /@RequiresModule\("printing"\)/);
-  assert.match(section, /!\/\^\[a-f0-9\]\{64\}\$\//);
+
+  const digestHelper = sectionBetween(
+    controllerSource,
+    "  private async signQzDigest(",
+    '  @Get("sign")',
+  );
+  assert.match(digestHelper, /!\/\^\[a-f0-9\]\{64\}\$\/\.test\(request\)/);
+  assert.ok(!digestHelper.includes('path.join(process.cwd(), "public", "signing", "private-key.pem")'));
+  assert.match(digestHelper, /QZ_SIGNING_KEY_PATH/);
+});
+
+test("bridge QZ signing route uses bridge authentication", () => {
+  const section = sectionBetween(
+    controllerSource,
+    '  @Get("print-bridge/sign")',
+    "  // ─── Prep Items",
+  );
+
+  assert.match(section, /@Public\(\)/);
+  assert.match(section, /verifyBridgeOrOnboardingSecret\(req\)/);
+  assert.match(section, /signQzDigest\(request\)/);
+});
+
+test("heartbeat normalizes legacy null collections before strict validation", () => {
+  const section = sectionBetween(
+    controllerSource,
+    '  @Post("print-bridge/heartbeat")',
+    '  @Post("print-bridge/claim")',
+  );
+
+  assert.match(section, /heartbeatInput/);
+  assert.match(section, /areas:\s*\(raw as Record<string, unknown>\)\.areas \?\? \[\]/);
+  assert.match(section, /printers:\s*\(raw as Record<string, unknown>\)\.printers \?\? \[\]/);
+  assert.match(section, /printBridgeHeartbeatRequestSchema\.parse\(heartbeatInput\)/);
+});
+
+test("test print persists the encoded ESC/POS payload", () => {
+  const section = sectionBetween(
+    appRepositorySource,
+    "  async testPrintFromBridge(",
+    "  constructor(\n",
+  );
+
+  assert.match(section, /payload:\s*ep\.build\(\)/);
+  assert.doesNotMatch(section, /payload:\s*`Brigde:/);
 });
 
 test("realtime rejects anonymous sockets and isolates public group-order sockets", () => {
   assert.match(gatewaySource, /next\(new Error\("Authentication required"\)\)/);
   assert.match(gatewaySource, /socket\.data\.isGroupOrder = true/);
-  assert.match(gatewaySource, /socket\.data\.authenticated !== true/);
+  // Isolation is structural: staff sockets join tenant-scoped rooms while
+  // group-order sockets join ONLY the groupOrder:<session> room, so they can
+  // never receive tenant events via room fan-out.
+  assert.match(gatewaySource, /socket\.join\(`tenant:\$\{payload\.tenantId\}`\)/);
+  assert.match(gatewaySource, /socket\.join\(`groupOrder:\$\{payload\.sessionId\}`\)/);
   assert.match(gatewaySource, /event\.startsWith\("groupOrder:"\)/);
   assert.match(gatewaySource, /Only group-order sockets may join group-order rooms/);
 });

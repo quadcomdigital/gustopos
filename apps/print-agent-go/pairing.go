@@ -113,6 +113,12 @@ func StartPairingServer(apiBase string, prev *Config) (*PairingServer, error) {
 	host, _ := os.Hostname()
 	bridgeID := "bridge_" + sanitizeID(host) + "_" + randomHex(3)
 	instanceID := randomUUID()
+	// Re-pairing must preserve the machine identity. The server uses this
+	// stable value to reuse the existing bridge row instead of creating a
+	// second bridge for every newly issued short code.
+	if prev != nil && prev.InstanceID != "" {
+		instanceID = prev.InstanceID
+	}
 	ps := &PairingServer{
 		ln:         ln,
 		done:       make(chan *Config, 1),
@@ -302,7 +308,15 @@ func normalizeServerURL(s string) string {
 	if err != nil || u.Host == "" {
 		return "" // not a usable URL — caller falls back to the default
 	}
-	return s
+	// The API origin is the host root. Older setup instructions sometimes
+	// saved `https://host/api`, but the public certificate route lives at
+	// `/signing/digital-certificate.txt` (not `/api/signing/...`). Strip only
+	// that exact API suffix so normal path-based deployments remain intact.
+	if strings.TrimRight(u.Path, "/") == "/api" {
+		u.Path = ""
+		u.RawPath = ""
+	}
+	return strings.TrimRight(u.String(), "/")
 }
 
 func allDigits(s string) bool {

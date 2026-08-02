@@ -1,5 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule, RequestMethod } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerModule } from "@nestjs/throttler";
+import { HttpThrottlerGuard } from "./security/http-throttler.guard";
 import { AppController } from "./app.controller";
 import { AuthModule } from "./auth.module";
 import { BomController } from "./bom.controller";
@@ -41,10 +43,15 @@ import { PublicMenuController } from "./public/public-menu.controller";
 @Module({
   imports: [
     AuthModule,
+    // Generous global backstop: the real protection comes from the strict
+    // per-route @Throttle overrides (login, superadmin auth, consumer auth,
+    // QZ signing, bridge traffic). The default must stay high because the API
+    // typically sits behind a reverse proxy, so every tenant shares the
+    // proxy's IP as the throttling key.
     ThrottlerModule.forRoot([
       {
         ttl: 60_000,
-        limit: 10,
+        limit: 1000,
       },
     ]),
   ],
@@ -60,7 +67,6 @@ import { PublicMenuController } from "./public/public-menu.controller";
   ],
   providers: [
     AppRepository,
-    StaffRepository,
     ShiftsRepository,
     SuppliersRepository,
     InventoryRepository,
@@ -81,6 +87,7 @@ import { PublicMenuController } from "./public/public-menu.controller";
     TenantContextMiddleware,
     IdempotencyMiddleware,
     FeatureFlagGuard,
+    { provide: APP_GUARD, useClass: HttpThrottlerGuard },
     SuperadminGuard,
     SuperadminAuthService,
     SuperadminAuthGuard,

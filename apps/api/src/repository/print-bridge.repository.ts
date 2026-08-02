@@ -40,6 +40,24 @@ export class PrintBridgeRepository {
     return crypto.createHmac("sha256", pepper).update(code).digest("hex");
   }
 
+  // Drizzle rows contain nullable fields and Date instances. Keep that DB
+  // representation out of the shared wire contract before validating it.
+  private toPrintJob(row: typeof printJobs.$inferSelect): PrintJob {
+    return printJobSchema.parse({
+      id: row.id,
+      orderId: row.orderId,
+      area: row.area,
+      protocol: row.protocol,
+      status: row.status,
+      payload: row.payload,
+      error: row.error ?? undefined,
+      bridgeId: row.bridgeId ?? undefined,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      dispatchedAt: row.dispatchedAt ? row.dispatchedAt.toISOString() : undefined,
+    });
+  }
+
   private toPrintBridge(row: typeof printBridges.$inferSelect): PrintBridge {
     let areas: PrintArea[] = [];
     let printers: Array<{ area: PrintArea; name: string; ip?: string | null; port?: number }> = [];
@@ -127,6 +145,7 @@ export class PrintBridgeRepository {
     return {
       id: row.id,
       tenantId: row.tenantId,
+      instanceId: row.instanceId ?? null,
       name: row.name,
       host: row.host ?? null,
       version: row.version ?? null,
@@ -156,9 +175,24 @@ export class PrintBridgeRepository {
     if (crossTenantCollision) {
       throw new Error();
     }
-    const existing = await db.query.printBridges.findFirst({
+    const existingById = await db.query.printBridges.findFirst({
       where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, payload.bridgeId)),
     });
+    const existingByInstance = instanceId
+      ? await db.query.printBridges.findFirst({
+          where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.instanceId, instanceId)),
+        })
+      : null;
+    if (existingById && existingByInstance && existingById.id !== existingByInstance.id) {
+      // Never let a pairing code overwrite a different machine's bridge row.
+      // The stable instance identity wins only when it is unambiguous.
+      throw new Error("Bridge ID and instance identity refer to different bridges");
+    }
+    // A new pairing code must not create another row for the same physical
+    // agent. Prefer the stable instance row so print_jobs.bridge_id and
+    // existing mappings remain attached to the same primary key.
+    const existing = existingByInstance ?? existingById;
+    const effectiveBridgeId = existing?.id ?? payload.bridgeId;
     const now = new Date();
     const areasJson = JSON.stringify(payload.areas);
     const printersJson = JSON.stringify(payload.printers);
@@ -166,6 +200,7 @@ export class PrintBridgeRepository {
       await db
         .update(printBridges)
         .set({
+          instanceId: instanceId ?? existing.instanceId,
           name: payload.name ?? existing.name,
           host: payload.host ?? existing.host,
           version: payload.version ?? existing.version,
@@ -175,23 +210,52 @@ export class PrintBridgeRepository {
           lastHeartbeatAt: now,
           updatedAt: now,
         })
-        .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, payload.bridgeId)));
+        .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, effectiveBridgeId)));
     } else {
-      await db.insert(printBridges).values({
-        id: payload.bridgeId,
-        tenantId,
-        name: payload.name ?? payload.bridgeId,
-        host: payload.host ?? null,
-        version: payload.version ?? null,
-        status: "active",
-        areas: areasJson,
-        printers: printersJson,
-        lastHeartbeatAt: now,
-        createdAt: now,
-        updatedAt: now,
-      });
+      try {
+        await db.insert(printBridges).values({
+          id: effectiveBridgeId,
+          tenantId,
+          instanceId: instanceId ?? null,
+          name: payload.name ?? effectiveBridgeId,
+          host: payload.host ?? null,
+          version: payload.version ?? null,
+          status: "active",
+          areas: areasJson,
+          printers: printersJson,
+          lastHeartbeatAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      } catch (error) {
+        // Two heartbeats can arrive together during pairing. The partial
+        // unique index intentionally rejects the second insert; recover by
+        // re-reading the row created by the winner and updating it normally.
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : "";
+        if (code !== "23505" || !instanceId) throw error;
+        const raced = await db.query.printBridges.findFirst({
+          where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.instanceId, instanceId)),
+        });
+        if (!raced) throw error;
+        await db
+          .update(printBridges)
+          .set({
+            name: payload.name ?? raced.name,
+            host: payload.host ?? raced.host,
+            version: payload.version ?? raced.version,
+            status: "active",
+            areas: areasJson,
+            printers: printersJson,
+            lastHeartbeatAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, raced.id)));
+        return (await this.getPrintBridge(raced.id))!;
+      }
     }
-    return (await this.getPrintBridge(payload.bridgeId))!;
+    return (await this.getPrintBridge(effectiveBridgeId))!;
   }
 
   async listPrintBridges(): Promise<PrintBridge[]> {
@@ -223,21 +287,49 @@ export class PrintBridgeRepository {
     const tenantId = overrideTenantId ?? getTenantIdOrDefault();
     await this.reclaimStalePrintJobClaims(tenantId);
     const bridge = await this.getPrintBridge(bridgeId);
-    if (!bridge || bridge.areas.length === 0) return [];
+    if (!bridge) return [];
 
-    const claimed = await db
-      .update(printJobs)
-      .set({ status: 'dispatched', bridgeId, claimedByInstanceId: instanceId, claimedAt: new Date(), updatedAt: new Date() })
-      .where(
-        and(
-          eq(printJobs.tenantId, tenantId),
-          eq(printJobs.status, 'pending'),
-          or(isNull(printJobs.bridgeId), eq(printJobs.bridgeId, bridgeId)),
-          inArray(printJobs.area, bridge.areas),
-        ),
-      )
-      .returning();
-    return (claimed ?? []).slice(0, limit).map((r) => printJobSchema.parse(r));
+    // Go agents use the admin-assigned claimedAreas as the queue boundary.
+    // Legacy/browser bridges keep the historical heartbeat-driven `areas`
+    // behavior so the two protocols remain backwards-compatible.
+    const queueAreas = bridge.version?.startsWith("go-")
+      ? bridge.claimedAreas
+      : bridge.areas;
+    if (queueAreas.length === 0) return [];
+
+    const boundedLimit = Math.max(1, Math.min(limit, 50));
+    return db.transaction(async (tx) => {
+      // Lock only the jobs we will actually return. SKIP LOCKED prevents two
+      // bridges polling concurrently from selecting the same pending rows.
+      const candidates = await tx
+        .select()
+        .from(printJobs)
+        .where(
+          and(
+            eq(printJobs.tenantId, tenantId),
+            eq(printJobs.status, 'pending'),
+            or(isNull(printJobs.bridgeId), eq(printJobs.bridgeId, bridgeId)),
+            inArray(printJobs.area, queueAreas),
+          ),
+        )
+        .limit(boundedLimit)
+        .for('update', { skipLocked: true });
+      if (candidates.length === 0) return [];
+
+      const candidateIds = candidates.map((candidate) => candidate.id);
+      const claimed = await tx
+        .update(printJobs)
+        .set({ status: 'dispatched', bridgeId, claimedByInstanceId: instanceId, claimedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(printJobs.tenantId, tenantId),
+            eq(printJobs.status, 'pending'),
+            inArray(printJobs.id, candidateIds),
+          ),
+        )
+        .returning();
+      return claimed.map((row) => this.toPrintJob(row));
+    });
   }
 
   async completeBridgeJob(bridgeId: string, jobId: string, notes: string | undefined, instanceId: string, overrideTenantId?: string): Promise<PrintJob | null> {
@@ -257,7 +349,7 @@ export class PrintBridgeRepository {
       })
       .where(and(eq(printJobs.tenantId, tenantId), eq(printJobs.id, jobId)))
       .returning();
-    return row ? printJobSchema.parse(row) : null;
+    return row ? this.toPrintJob(row) : null;
   }
 
   async failBridgeJob(bridgeId: string, jobId: string, error: string, instanceId: string, overrideTenantId?: string): Promise<PrintJob | null> {
@@ -277,7 +369,7 @@ export class PrintBridgeRepository {
       })
       .where(and(eq(printJobs.tenantId, tenantId), eq(printJobs.id, jobId)))
       .returning();
-    return row ? printJobSchema.parse(row) : null;
+    return row ? this.toPrintJob(row) : null;
   }
 
   async listOnboardingSecrets(tenantId: string): Promise<PrintBridgeOnboardingSecret[]> {
@@ -606,5 +698,57 @@ export class PrintBridgeRepository {
     const row = rows[0];
     if (!row) throw new Error(`Bridge ${bridgeId} not found`);
     return this.toPrintBridge(row);
+  }
+
+  /**
+   * Remove a bridge from the tenant pool. Also cleans up everything that
+   * would otherwise let it come back or strand jobs:
+   *  - in-flight/pending jobs are reset to pending and unassigned, so any
+   *    surviving bridge can claim them again (the FK already nulls bridge_id
+   *    on delete, but newer dispatched jobs would otherwise stay stuck);
+   *  - any onboarding secret bound to this machine is revoked, so the agent
+   *    cannot silently re-register with the same pairing code.
+   */
+  async deletePrintBridge(bridgeId: string): Promise<boolean> {
+    const tenantId = getTenantIdOrDefault();
+    return db.transaction(async (tx) => {
+      const existing = await tx.query.printBridges.findFirst({
+        where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)),
+      });
+      if (!existing) return false;
+
+      await tx
+        .update(printJobs)
+        .set({
+          bridgeId: null,
+          claimedByInstanceId: null,
+          claimedAt: null,
+          status: 'pending',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(printJobs.tenantId, tenantId),
+            eq(printJobs.bridgeId, bridgeId),
+            inArray(printJobs.status, ['pending', 'dispatched']),
+          ),
+        );
+
+      await tx
+        .update(printBridgeOnboardingSecrets)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(printBridgeOnboardingSecrets.tenantId, tenantId),
+            eq(printBridgeOnboardingSecrets.boundBridgeId, bridgeId),
+            isNull(printBridgeOnboardingSecrets.revokedAt),
+          ),
+        );
+
+      await tx
+        .delete(printBridges)
+        .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)));
+      return true;
+    });
   }
 }

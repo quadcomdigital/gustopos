@@ -113,6 +113,7 @@ export const printBridgePrinterMappingSchema = z.object({
 export const printBridgeSchema = z.object({
   id: z.string(),
   tenantId: z.string(),
+  instanceId: z.string().nullable().optional(),
   name: z.string(),
   host: z.string().nullable().optional(),
   version: z.string().nullable().optional(),

@@ -19,9 +19,9 @@ import (
 //  1. ALL messages are TEXT JSON frames. QZ Tray 2.x has no binary-frame handler
 //     (the endpoint only declares @OnWebSocketMessage(Session, Reader)), so the
 //     old 1.x binary certificate/signature frames are silently ignored.
-//  2. On connect, register the signing certificate with a JSON message:
-//     {"certificate": "<PEM>", "uid": "..."} → QZ replies {"uid":..., "result":null}
-//     (or a gateway dialog for first-time/unsaved certs).
+//  2. On connect, negotiate getVersion, then register the signing certificate
+//     with a JSON message: {"certificate": "<PEM>", "uid": "..."} → QZ replies
+//     {"uid":..., "result":null} (or a gateway dialog for first-time/unsaved certs).
 //  3. Signed calls carry call/params/uid/timestamp/signature/signAlgorithm in ONE
 //     JSON text message. The signature is RSA-SHA512 over the SHA-256 hex digest of
 //     the JSON string containing ONLY {"call", "params", "timestamp"} — exactly what
@@ -39,7 +39,8 @@ type QZClient struct {
 }
 
 type qzResult struct {
-	err error
+	err    error
+	result json.RawMessage
 }
 
 func NewQZClient(url, certPEM string, signer func(string) (string, error)) *QZClient {
@@ -84,29 +85,58 @@ func (q *QZClient) Connect() error {
 	go q.readLoop(conn)
 	go q.pingLoop(conn, stop)
 
-	// Certificate handshake (QZ 2.x): JSON text message, not binary.
-	uid := newUID()
-	ch := make(chan qzResult, 1)
+	// QZ Tray 2.x negotiates the connected version before registering the
+	// application certificate. This mirrors qz-tray.js' openConnection flow.
+	versionUID := newUID()
+	versionCh := make(chan qzResult, 1)
 	q.mu.Lock()
-	q.pending[uid] = ch
+	q.pending[versionUID] = versionCh
 	q.mu.Unlock()
-	msg := fmt.Sprintf(`{"certificate":%s,"uid":%s}`, jsonString(q.certPEM), jsonString(uid))
+	versionMsg := fmt.Sprintf(`{"call":"getVersion","timestamp":%d,"uid":%s}`,
+		time.Now().UnixMilli(), jsonString(versionUID))
 	q.writeMu.Lock()
-	writeErr := conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	writeErr := conn.WriteMessage(websocket.TextMessage, []byte(versionMsg))
 	q.writeMu.Unlock()
 	if writeErr != nil {
-		q.forget(uid)
+		q.forget(versionUID)
+		q.Close()
+		return fmt.Errorf("query QZ Tray version: %w", writeErr)
+	}
+	select {
+	case res := <-versionCh:
+		if res.err != nil {
+			q.Close()
+			return fmt.Errorf("QZ Tray version negotiation failed: %w", res.err)
+		}
+	case <-time.After(15 * time.Second):
+		q.forget(versionUID)
+		q.Close()
+		return fmt.Errorf("QZ Tray did not answer getVersion within 15s")
+	}
+
+	// Certificate handshake (QZ 2.x): JSON text message, not binary.
+	certUID := newUID()
+	certCh := make(chan qzResult, 1)
+	q.mu.Lock()
+	q.pending[certUID] = certCh
+	q.mu.Unlock()
+	certMsg := fmt.Sprintf(`{"certificate":%s,"uid":%s}`, jsonString(q.certPEM), jsonString(certUID))
+	q.writeMu.Lock()
+	writeErr = conn.WriteMessage(websocket.TextMessage, []byte(certMsg))
+	q.writeMu.Unlock()
+	if writeErr != nil {
+		q.forget(certUID)
 		q.Close()
 		return fmt.Errorf("send certificate to QZ Tray: %w", writeErr)
 	}
 	select {
-	case res := <-ch:
+	case res := <-certCh:
 		if res.err != nil {
 			q.Close()
 			return fmt.Errorf("certificate rejected by QZ Tray: %w", res.err)
 		}
 	case <-time.After(15 * time.Second):
-		q.forget(uid)
+		q.forget(certUID)
 		q.Close()
 		return fmt.Errorf("QZ Tray did not acknowledge certificate within 15s (first-time allow dialog?)")
 	}
@@ -175,8 +205,9 @@ func (q *QZClient) readLoop(conn *websocket.Conn) {
 			return
 		}
 		var resp struct {
-			UID string `json:"uid"`
-			Err any    `json:"error"`
+			UID    string          `json:"uid"`
+			Err    json.RawMessage `json:"error"`
+			Result json.RawMessage `json:"result"`
 		}
 		if json.Unmarshal(raw, &resp) != nil {
 			continue // non-JSON frame — ignore
@@ -191,10 +222,10 @@ func (q *QZClient) readLoop(conn *websocket.Conn) {
 		if ch == nil {
 			continue
 		}
-		if resp.Err != nil {
-			ch <- qzResult{err: fmt.Errorf("QZ Tray: %v", resp.Err)}
+		if len(resp.Err) > 0 && string(resp.Err) != "null" {
+			ch <- qzResult{err: fmt.Errorf("QZ Tray: %s", strings.TrimSpace(string(resp.Err)))}
 		} else {
-			ch <- qzResult{}
+			ch <- qzResult{result: resp.Result}
 		}
 	}
 }
@@ -208,6 +239,70 @@ func (q *QZClient) readLoop(conn *websocket.Conn) {
 //
 // The signature is computed over `{"call","params","timestamp"}` only (no uid),
 // matching QZ Tray's validSignature()/isSignatureValid().
+// FindPrinters asks QZ Tray for the printers visible on this POS. QZ Tray's
+// official client treats printers.find as a signed call, even though it is
+// read-only. QZ Tray returns an array of printer names in `result`.
+func (q *QZClient) FindPrinters(timeout time.Duration) ([]string, error) {
+	q.mu.Lock()
+	conn := q.conn
+	q.mu.Unlock()
+	if conn == nil {
+		return nil, fmt.Errorf("QZ Tray not connected")
+	}
+
+	uid := newUID()
+	ch := make(chan qzResult, 1)
+	q.mu.Lock()
+	if q.closed || q.conn == nil {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("QZ Tray not connected")
+	}
+	q.pending[uid] = ch
+	conn = q.conn
+	q.mu.Unlock()
+
+	ts := time.Now().UnixMilli()
+	paramsJSON := `{}`
+	signContent := fmt.Sprintf(`{"call":"printers.find","params":%s,"timestamp":%d}`, paramsJSON, ts)
+	if q.signer == nil {
+		q.forget(uid)
+		return nil, fmt.Errorf("sign printer discovery: signer is not configured")
+	}
+	sigB64, err := q.signer(signContent)
+	if err != nil {
+		q.forget(uid)
+		return nil, fmt.Errorf("sign printer discovery: %w", err)
+	}
+	msg := fmt.Sprintf(`{"uid":%s,"call":"printers.find","params":%s,"timestamp":%d,"signature":%s,"signAlgorithm":"SHA512"}`,
+		jsonString(uid), paramsJSON, ts, jsonString(strings.TrimSpace(sigB64)))
+	if err := func() error {
+		q.writeMu.Lock()
+		defer q.writeMu.Unlock()
+		return conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	}(); err != nil {
+		q.forget(uid)
+		return nil, fmt.Errorf("find printers request: %w", err)
+	}
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			return nil, res.err
+		}
+		var printers []string
+		if len(res.result) == 0 || string(res.result) == "null" {
+			return []string{}, nil
+		}
+		if err := json.Unmarshal(res.result, &printers); err != nil {
+			return nil, fmt.Errorf("decode QZ printer discovery: %w", err)
+		}
+		return printers, nil
+	case <-time.After(timeout):
+		q.forget(uid)
+		return nil, fmt.Errorf("QZ Tray printer discovery timeout after %s", timeout)
+	}
+}
+
 func (q *QZClient) Print(printerName, payloadB64 string, timeout time.Duration) error {
 	q.mu.Lock()
 	conn := q.conn
@@ -231,6 +326,9 @@ func (q *QZClient) Print(printerName, payloadB64 string, timeout time.Duration) 
 		return fmt.Errorf("QZ Tray not connected")
 	}
 
+	if q.signer == nil {
+		return fmt.Errorf("sign job: signer is not configured")
+	}
 	sigB64, err := q.signer(signContent)
 	if err != nil {
 		return fmt.Errorf("sign job: %w", err)

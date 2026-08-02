@@ -45,9 +45,22 @@ type API struct {
 }
 
 func NewAPI(base, signBase, code, instanceID string) *API {
+	// Normalize both freshly paired and persisted configurations. Older agents
+	// could save `https://host/api`, but signing is served at the origin root.
+	// Applying this here fixes existing installations before their first QZ
+	// certificate request, not only new pairing attempts.
+	normalizedBase := normalizeServerURL(base)
+	if normalizedBase == "" && strings.TrimSpace(base) != "" {
+		normalizedBase = strings.TrimRight(strings.TrimSpace(base), "/")
+	}
+	rawSignBase := ifEmpty(signBase, normalizedBase)
+	normalizedSignBase := normalizeServerURL(rawSignBase)
+	if normalizedSignBase == "" && strings.TrimSpace(rawSignBase) != "" {
+		normalizedSignBase = strings.TrimRight(strings.TrimSpace(rawSignBase), "/")
+	}
 	return &API{
-		Base:       strings.TrimRight(base, "/"),
-		SignBase:   strings.TrimRight(ifEmpty(signBase, base), "/"),
+		Base:       normalizedBase,
+		SignBase:   normalizedSignBase,
 		Code:       code,
 		InstanceID: instanceID,
 		Client:     &http.Client{Timeout: 15 * time.Second},
@@ -108,23 +121,38 @@ type HeartbeatRequest struct {
 	Printers []map[string]any `json:"printers"`
 }
 
+type BridgePrinterMapping struct {
+	Area string `json:"area"`
+	Name string `json:"name"`
+}
+
 type HeartbeatResponse struct {
 	Bridge struct {
-		ID       string `json:"id"`
-		TenantID string `json:"tenantId"`
-		Status   string `json:"status"`
+		ID           string                 `json:"id"`
+		TenantID     string                 `json:"tenantId"`
+		Status       string                 `json:"status"`
+		Areas        []string               `json:"areas"`
+		ClaimedAreas []string               `json:"claimedAreas"`
+		Mappings     []BridgePrinterMapping `json:"mappings"`
 	} `json:"bridge"`
 	ServerTime string `json:"serverTime"`
 }
 
 // Heartbeat registers this bridge under the tenant resolved from the code.
 // The first call binds the code to this bridgeId (permanent until revoked).
-func (a *API) Heartbeat(cfg *Config) (*HeartbeatResponse, error) {
+func (a *API) Heartbeat(cfg *Config, discovered ...[]string) (*HeartbeatResponse, error) {
 	host, _ := os.Hostname()
-	// Report printer mappings so admins see area→printer routing in Settings.
-	printers := make([]map[string]any, 0, len(cfg.PrinterNames))
-	for area, name := range cfg.PrinterNames {
-		printers = append(printers, map[string]any{"area": area, "name": name})
+	// Report the printer names discovered by QZ Tray. Administrative area
+	// mappings are returned separately by the API and must not be sent back as
+	// capabilities: the server owns those mappings.
+	printers := make([]map[string]any, 0)
+	if len(discovered) > 0 {
+		for _, name := range discovered[0] {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				printers = append(printers, map[string]any{"name": name})
+			}
+		}
 	}
 	req := HeartbeatRequest{
 		BridgeID: cfg.BridgeID,
@@ -184,8 +212,13 @@ func (a *API) Fail(bridgeID, jobID, errMsg string) error {
 func (a *API) SignQzMessage(jsonPayload string) (string, error) {
 	sum := sha256.Sum256([]byte(jsonPayload))
 	hexHash := hex.EncodeToString(sum[:])
-	u := a.SignBase + "/api/sign?request=" + url.QueryEscape(hexHash)
-	resp, err := a.Client.Get(u)
+	u := a.SignBase + "/api/print-bridge/sign?request=" + url.QueryEscape(hexHash)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header = a.headers()
+	resp, err := a.Client.Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -466,6 +466,16 @@ function tenantHeaders(): Record<string, string> {
   return { 'X-Tenant-Id': tenantId };
 }
 
+/**
+ * True when the API middleware rejected a request because an identical
+ * idempotency key is already being processed (a double-tap on "Invia in
+ * Cucina"). The order was already submitted, so callers show a soft message
+ * instead of the raw English "Duplicate idempotent request".
+ */
+export function isDuplicateIdempotentError(error: unknown): boolean {
+  return error instanceof Error && error.message.toLowerCase().includes('duplicate idempotent');
+}
+
 async function readJson<T>(response: Response, parser: { parse: (x: unknown) => T }): Promise<T> {
   const payload = await response.json();
   if (!response.ok) {
@@ -1072,16 +1082,63 @@ export async function updateQzTrayConfig(payload: { qzTray: Partial<QzTrayConfig
   return response.json() as Promise<QzTrayConfigResponse>;
 }
 
+// ─── Order idempotency (H2) ─────────────────────────────────────────────
+// authorizedFetch mints a fresh random key per HTTP call. A retried order
+// submission (double-tap on "Invia", or re-send after a network timeout where
+// the server already committed) would therefore carry a DIFFERENT key and the
+// API middleware could not dedupe it → duplicate order. We keep one key per
+// logical order action, keyed by a fingerprint of the exact payload:
+//   - retry of the same payload reuses the key (middleware dedupes), and
+//   - the entry is dropped once the request actually reaches the server, so a
+//     genuinely new identical order gets a fresh key.
+const pendingOrderKeys = new Map<string, string>();
+
+/**
+ * Resolve the idempotency key for an order payload. Pure helper (unit-tested):
+ * reuses an existing pending key for the same fingerprint, otherwise mints a
+ * new one. The map is capped to avoid unbounded growth on long-lived POS tabs.
+ */
+export function resolveOrderIdempotencyKey(
+  fingerprint: string,
+  pending: ReadonlyMap<string, string>,
+): { key: string; pending: Map<string, string> } {
+  const map = new Map(pending);
+  let key = map.get(fingerprint);
+  if (!key) {
+    key = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    map.set(fingerprint, key);
+    if (map.size > 20) {
+      const oldest = map.keys().next().value as string;
+      map.delete(oldest);
+    }
+  }
+  return { key, pending: map };
+}
+
 export async function createOrder(payload: CreateOrderRequest): Promise<Order> {
   const request = createOrderRequestSchema.parse(payload);
+  const fingerprint = JSON.stringify(request);
+  const { key, pending } = resolveOrderIdempotencyKey(fingerprint, pendingOrderKeys);
+  pendingOrderKeys.clear();
+  for (const [fp, k] of pending) pendingOrderKeys.set(fp, k);
+
+  // If this fetch throws (network failure / timeout), the server may have
+  // committed the order but the response was lost. We deliberately do NOT drop
+  // the pending key on that path, so a retry of the same cart reuses it and the
+  // middleware returns the committed order instead of creating a duplicate.
   const response = await authorizedFetch(`${API_URL}/api/orders`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(request),
-  });
+  }, false, key);
 
+  // The request reached the server. Whatever the status code, the middleware
+  // has now seen this key (it caches 2xx/4xx responses and releases the lock
+  // on 5xx), so this logical action is resolved: drop the entry so the next
+  // submission — even an identical cart — is treated as a new action.
+  pendingOrderKeys.delete(fingerprint);
   return readJson(response, orderSchema);
 }
 
@@ -2436,6 +2493,15 @@ export async function triggerBridgeTestPrintRequest(
   return authedJson<PrintBridgeTestPrintResponse>(
     `/api/print-bridge/${encodeURIComponent(bridgeId)}/test-print`,
     { method: 'POST', json: { area } },
+  );
+}
+
+export async function deletePrintBridgeRequest(
+  bridgeId: string,
+): Promise<{ success: boolean; id: string }> {
+  return authedJson<{ success: boolean; id: string }>(
+    `/api/print-bridge/${encodeURIComponent(bridgeId)}`,
+    { method: 'DELETE' },
   );
 }
 

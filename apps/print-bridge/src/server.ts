@@ -259,14 +259,53 @@ function authMiddleware(req: express.Request, res: express.Response, next: expre
   next();
 }
 
+// ─── QZ Tray signing endpoint hardening ──────────────────────────────────
+// The POS browser signs QZ requests through this loopback bridge. Browsers
+// always send the Origin header on cross-origin requests, so the signing
+// endpoint only answers pages whose origin is explicitly allowlisted. This
+// stops any other website or local process from using the bridge as an
+// arbitrary signing oracle. Override per deployment with
+// PRINT_BRIDGE_ALLOWED_ORIGINS (comma-separated origins).
+const PRINT_BRIDGE_ALLOWED_ORIGINS = (process.env.PRINT_BRIDGE_ALLOWED_ORIGINS ?? [
+  "http://localhost:11900",
+  "http://127.0.0.1:11900",
+  // Defaults mirror the API's committed CORS_ORIGIN for the test.franksbar.it
+  // stack; deployments on other origins must set PRINT_BRIDGE_ALLOWED_ORIGINS.
+  "https://test.franksbar.it",
+  "http://65.108.42.45:11900",
+  "http://65.108.42.45:80",
+].join(",")).split(",").map((origin) => origin.trim()).filter(Boolean);
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  return Boolean(origin && PRINT_BRIDGE_ALLOWED_ORIGINS.includes(origin));
+}
+
+// Diagnostic endpoints (openssl chain checks, allowed.dat helpers) are handy
+// during setup but expose filesystem paths and shell out to openssl. Enable
+// them explicitly in production with PRINT_BRIDGE_DEBUG_ENDPOINTS=true.
+const PRINT_BRIDGE_DEBUG_ENDPOINTS = process.env.PRINT_BRIDGE_DEBUG_ENDPOINTS === "true";
+const DEBUG_SIGNING_ROUTES = [
+  "/signing/debug",
+  "/signing/verify-test",
+  "/signing/whitelist-entry",
+  "/signing/whitelist-entry.txt",
+];
+
 // QZ Tray signing endpoints
 // CORS: the POS browser (BridgeWorker) fetches the certificate + signs
 // messages cross-origin from the API origin to this local print-bridge.
-app.use("/signing", (_req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+// ACAO is set per-route and never "*" for signing (see sign-message below).
+app.use("/signing", (req, res, next) => {
+  // req.path is relative to the mount ("debug") — compare against the full
+  // original URL so the debug-route gate matches the registered routes.
+  const fullPath = req.originalUrl.split("?")[0];
+  if (!PRINT_BRIDGE_DEBUG_ENDPOINTS && DEBUG_SIGNING_ROUTES.includes(fullPath)) {
+    res.status(404).send("Not found");
+    return;
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (_req.method === "OPTIONS") {
+  if (req.method === "OPTIONS") {
     res.sendStatus(204);
     return;
   }
@@ -314,10 +353,11 @@ app.get("/signing/private-key.pem", authMiddleware, (_req, res) => {
   }
 });
 
-// Serve the public certificate
+// Serve the public certificate (public material — readable cross-origin)
 app.get("/signing/digital-certificate.txt", (_req, res) => {
   try {
     const { cert } = getCerts();
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Content-Type", "text/plain");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.send(cert);
@@ -326,11 +366,33 @@ app.get("/signing/digital-certificate.txt", (_req, res) => {
   }
 });
 
-// Sign a message with the private key (SHA512)
+// Sign a SHA-256 hex digest of the canonical request (SHA512-RSA). Only
+// browsers may obtain signatures: cross-origin pages must present an
+// allowlisted Origin, and same-origin pages (the legacy print-station.html
+// served by this bridge) are recognised by their Sec-Fetch-Site header.
+// Requests without an Origin and without a browser Sec-Fetch-Site header are
+// local processes/scripts — never sign for them. The digest format check
+// prevents the bridge from ever being an arbitrary signer.
 app.get("/signing/sign-message", (req, res) => {
-  const request = req.query.request as string;
-  if (!request) {
-    res.status(400).send("Missing request parameter");
+  const origin = req.headers.origin;
+  const secFetchSite = req.headers["sec-fetch-site"];
+  const isBrowserSameOrigin =
+    !origin &&
+    (secFetchSite === "same-origin" || secFetchSite === "same-site" || secFetchSite === "none");
+  if (!isAllowedOrigin(origin) && !isBrowserSameOrigin) {
+    // A foreign/absent Origin with no browser Sec-Fetch-Site means a local
+    // process, script or malicious page — never sign for it.
+    res.status(403).send("Forbidden: origin not allowed");
+    return;
+  }
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin as string);
+  }
+
+  const request = req.query.request;
+  // QZ Tray sends the lowercase SHA-256 hex digest of its canonical request.
+  if (typeof request !== "string" || !/^[a-f0-9]{64}$/.test(request)) {
+    res.status(400).send("Missing or invalid request parameter");
     return;
   }
 
@@ -339,7 +401,6 @@ app.get("/signing/sign-message", (req, res) => {
     const sign = crypto.createSign("SHA512");
     sign.update(request);
     const signature = sign.sign(key, "base64");
-    console.log(`[print-bridge] Signed message: ${request.substring(0, 80)}${request.length > 80 ? '...' : ''} (${request.length} bytes)`);
     res.setHeader("Content-Type", "text/plain");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.send(signature);
@@ -353,6 +414,7 @@ app.get("/signing/sign-message", (req, res) => {
 app.get("/signing/override.crt", (_req, res) => {
   try {
     const { caCert } = getCerts();
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Content-Type", "application/x-x509-ca-cert");
     res.setHeader("Content-Disposition", "attachment; filename=override.crt");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -686,6 +748,7 @@ if (require.main === module) {
     // eslint-disable-next-line no-console
     console.log(`[print-bridge] listening on ${bindAddress}:${port}`);
     console.log(`[print-bridge] agent WebSocket at ws://${bindAddress}:${port}/agent`);
+    console.log(`[print-bridge] QZ signing allowlist: ${PRINT_BRIDGE_ALLOWED_ORIGINS.length} origin(s) (override with PRINT_BRIDGE_ALLOWED_ORIGINS)`);
   });
 
   // Periodic ping to detect stale agent connections (NAT/firewall timeouts)

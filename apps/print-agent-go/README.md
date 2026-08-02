@@ -39,12 +39,17 @@ POS machine                    VPS
 | `POST /api/print-bridge/claim` | poll for print jobs (scoped to the tenant) |
 | `POST /api/print-bridge/jobs/:id/complete` | mark job printed |
 | `POST /api/print-bridge/jobs/:id/fail` | mark job failed |
-| `GET /api/sign?request=<sha256hex>` | server-side QZ message signing (no key on POS) |
+| `GET /api/print-bridge/sign?request=<sha256hex>` | bridge-authenticated server-side QZ message signing (no key on POS) |
 | `GET /signing/digital-certificate.txt` | fetch the QZ signing certificate |
 
 All bridge requests carry:
 - `X-Print-Bridge-Key: <6-digit code>` — the credential
 - `X-Bridge-Instance-Id: <stable UUID>` — claim ownership (persisted in config)
+
+The agent receives its administrative `claimedAreas` and area→printer mappings
+from the heartbeat response. The admin configures these in Settings; the agent
+persists them locally and uses them for subsequent queue claims and QZ routing.
+A bridge with no claimed areas intentionally receives no jobs.
 
 ## Build
 
@@ -86,13 +91,21 @@ the journal (`journalctl -u gustopos-print-agent`).
 1. Copy `gustopos-print-agent-windows-amd64.exe` anywhere on the machine.
 2. Double-click it → the pairing page opens with the server pre-filled → type
    the 6-digit code from **Settings → Configurazioni Stampa**.
-3. Register a scheduled task at logon to run it (the agent now reconnects
-   automatically using the saved `config.json`).
+3. After pairing, the agent registers an `ONLOGON` task automatically for the
+   current Windows user. It reconnects using the saved `config.json`; no manual
+   Task Scheduler setup is required. Starting the exe again is safe: a
+   single-instance lock prevents duplicate agents.
 
 ## Configuration
 
 The agent persists `config.json` **automatically** after pairing — users never
-create or edit it. The default server origin is baked into the binary
+create or edit it. On Windows, new installations store it in
+`%LOCALAPPDATA%\\GustoPOS\\PrintAgent\\config.json`; an existing legacy file in
+`%ProgramData%\\gustopos-print-agent\\config.json` is preserved and continues
+to be used. The same pairing registers the current executable for automatic
+startup at user logon; the task is refreshed on each run so upgrades and moved
+executables do not retain a stale path. Remove it with
+`gustopos-print-agent-windows-amd64.exe -uninstall-startup`. The default server origin is baked into the binary
 (`defaultAPIBase`, overridable at build time via
 `-ldflags "-X main.defaultAPIBase=..."`) and is pre-filled in the pairing page:
 
@@ -106,17 +119,22 @@ create or edit it. The default server origin is baked into the binary
   "qzPort": 8182,
   "qzSecure": false,
   "areas": ["kitchen", "bar", "cashier"],
-  "printerNames": { "kitchen": "Epson-TM88", "bar": "Epson-TM88" }
+  "printerNames": { "kitchen": "Epson-TM88", "bar": "Epson-TM88" },
+  "discoveredPrinters": ["Epson-TM88", "Star TSP100"]
 }
 ```
 
 - `code` is the bound 6-digit credential (stored for auto-reconnect).
-- `printerNames` maps area → QZ printer name. If unset, the bridge ID is used
-  as the printer name (deterministic fallback).
+- `printerNames` maps area → QZ printer name. For Go agents, these names are
+  selected from the `discoveredPrinters` list returned by QZ Tray; the admin UI
+  does not accept arbitrary names for this path.
+- `discoveredPrinters` is the last successful local QZ Tray discovery and is
+  cached locally so a temporary QZ restart does not erase the UI options.
 - `qzPort`/`qzSecure`: QZ Tray listener (default 8182 ws:// — the insecure
   port; 8181 is the secure WSS port). Use `wss://` + 8181 if the local QZ
   Tray config requires a secure connection.
 - Override the config path with `GUSTOPOS_AGENT_CONFIG`.
+- Windows startup runs as the logged-in user (not SYSTEM) so it can communicate with QZ Tray.
 
 ## Notes
 

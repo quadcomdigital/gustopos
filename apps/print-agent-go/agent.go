@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -14,21 +16,30 @@ type Agent struct {
 	api *API
 	qz  *QZClient
 
-	heartbeatEvery time.Duration
-	claimEvery     time.Duration
-	claimBatch     int
-	printTimeout   time.Duration
+	heartbeatEvery     time.Duration
+	claimEvery         time.Duration
+	claimBatch         int
+	printTimeout       time.Duration
+	discoveredPrinters []string
 }
 
 func NewAgent(cfg *Config) (*Agent, error) {
 	api := NewAPI(cfg.APIBase, "", cfg.Code, cfg.InstanceID)
+	// Persist the canonical origin on the next config save so legacy
+	// installations no longer reintroduce /api and the certificate 404.
+	cfg.APIBase = api.Base
+	if err := cfg.Save(); err != nil {
+		log.Printf("could not persist canonical API origin: %v", err)
+	}
+	cachedPrinters := append([]string(nil), cfg.DiscoveredPrinters...)
 	return &Agent{
-		cfg:            cfg,
-		api:            api,
-		heartbeatEvery: 30 * time.Second,
-		claimEvery:     3 * time.Second,
-		claimBatch:     10,
-		printTimeout:   30 * time.Second,
+		cfg:                cfg,
+		api:                api,
+		heartbeatEvery:     30 * time.Second,
+		claimEvery:         3 * time.Second,
+		claimBatch:         10,
+		printTimeout:       30 * time.Second,
+		discoveredPrinters: cachedPrinters,
 	}, nil
 }
 
@@ -67,16 +78,20 @@ func (a *Agent) ensureQZ() error {
 var errDetachedSentinel = fmt.Errorf("bridge detached")
 
 func (a *Agent) Run() error {
+	// QZ discovery is best-effort: the API heartbeat must still run when QZ
+	// Tray is starting or temporarily unavailable.
+	_ = a.ensureQZ()
+	a.discoverPrinters()
+
 	// First heartbeat also performs the bind if this is a fresh pairing.
-	if _, err := a.api.Heartbeat(a.cfg); err != nil {
+	if response, err := a.api.Heartbeat(a.cfg, a.discoveredPrinters); err != nil {
 		if IsDetached(err) {
 			return errDetachedSentinel
 		}
 		log.Printf("initial heartbeat failed (will retry): %v", err)
+	} else {
+		a.applyHeartbeatConfig(response)
 	}
-
-	// QZ Tray may not be running yet — don't block the loop on it.
-	_ = a.ensureQZ()
 
 	hb := time.NewTicker(a.heartbeatEvery)
 	defer hb.Stop()
@@ -86,11 +101,14 @@ func (a *Agent) Run() error {
 	for {
 		select {
 		case <-hb.C:
-			if _, err := a.api.Heartbeat(a.cfg); err != nil {
+			a.discoverPrinters()
+			if response, err := a.api.Heartbeat(a.cfg, a.discoveredPrinters); err != nil {
 				if IsDetached(err) {
 					return errDetachedSentinel
 				}
 				log.Printf("heartbeat failed: %v", err)
+			} else {
+				a.applyHeartbeatConfig(response)
 			}
 		case <-cl.C:
 			if err := a.claimOnce(); err != nil {
@@ -100,6 +118,42 @@ func (a *Agent) Run() error {
 			}
 		}
 	}
+}
+
+// discoverPrinters refreshes the transient local capability list. The last
+// successful result is retained across temporary QZ failures so the admin UI
+// does not lose its options during a reconnect.
+func (a *Agent) discoverPrinters() {
+	if a.qz == nil || !a.qz.Connected() {
+		if err := a.ensureQZ(); err != nil {
+			log.Printf("printer discovery deferred: %v", err)
+			return
+		}
+	}
+	printers, err := a.qz.FindPrinters(3 * time.Second)
+	if err != nil {
+		log.Printf("printer discovery failed (keeping last result): %v", err)
+		return
+	}
+	seen := make(map[string]struct{}, len(printers))
+	a.discoveredPrinters = a.discoveredPrinters[:0]
+	for _, printer := range printers {
+		printer = strings.TrimSpace(printer)
+		if printer == "" {
+			continue
+		}
+		if _, ok := seen[printer]; ok {
+			continue
+		}
+		seen[printer] = struct{}{}
+		a.discoveredPrinters = append(a.discoveredPrinters, printer)
+	}
+	sort.Strings(a.discoveredPrinters)
+	a.cfg.DiscoveredPrinters = append([]string(nil), a.discoveredPrinters...)
+	if err := a.cfg.Save(); err != nil {
+		log.Printf("could not persist discovered printers: %v", err)
+	}
+	log.Printf("discovered %d local printer(s) via QZ Tray", len(a.discoveredPrinters))
 }
 
 // claimOnce pulls pending jobs for this bridge and prints them.
@@ -119,6 +173,34 @@ func (a *Agent) claimOnce() error {
 	return nil
 }
 
+// applyHeartbeatConfig makes the API's administrative bridge configuration
+// authoritative for the Go agent. The API returns claimedAreas and mappings
+// separately from the heartbeat-reported capabilities in areas/printers.
+func (a *Agent) applyHeartbeatConfig(response *HeartbeatResponse) {
+	if response == nil {
+		return
+	}
+	if response.Bridge.ID != "" && response.Bridge.ID != a.cfg.BridgeID {
+		log.Printf("bridge id canonicalized by server: %s -> %s", a.cfg.BridgeID, response.Bridge.ID)
+		a.cfg.BridgeID = response.Bridge.ID
+	}
+	if response.Bridge.ClaimedAreas != nil {
+		a.cfg.Areas = append([]string(nil), response.Bridge.ClaimedAreas...)
+	}
+	if response.Bridge.Mappings != nil {
+		printers := make(map[string]string, len(response.Bridge.Mappings))
+		for _, mapping := range response.Bridge.Mappings {
+			if mapping.Area != "" && mapping.Name != "" {
+				printers[mapping.Area] = mapping.Name
+			}
+		}
+		a.cfg.PrinterNames = printers
+	}
+	if err := a.cfg.Save(); err != nil {
+		log.Printf("could not persist server bridge configuration: %v", err)
+	}
+}
+
 func (a *Agent) processJob(job PrintJob) {
 	log.Printf("job %s received (order=%s area=%s)", job.ID, job.OrderID, job.Area)
 
@@ -136,9 +218,10 @@ func (a *Agent) processJob(job PrintJob) {
 		printer = a.cfg.PrinterNames["default"]
 	}
 	if printer == "" {
-		// Fall back to the bridge ID as the printer name; admins should set
-		// printerNames[area] in the config for deterministic routing.
-		printer = a.cfg.BridgeID
+		err := fmt.Errorf("no printer mapping configured for area %q", job.Area)
+		log.Printf("job %s failed to print: %v", job.ID, err)
+		_ = a.api.Fail(a.cfg.BridgeID, job.ID, err.Error())
+		return
 	}
 
 	if err := a.qz.Print(printer, job.Payload, a.printTimeout); err != nil {

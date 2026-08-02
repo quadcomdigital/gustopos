@@ -19,14 +19,14 @@ We use **SemVer** (`MAJOR.MINOR.PATCH`). Until 1.0, treat every change as
 backward-incompatible for protocol reasons unless explicitly stated.
 
 The single source of truth for the version is the `VERSION` variable in the
-**Makefile** (default `0.2.0`). It is injected into the binary at link time
+**Makefile** (default `0.7.0`). It is injected into the binary at link time
 via `-X main.version=$(VERSION)` and into the download page / `version.json`
 by the publish script.
 
 When you change the version, change it **only** in the Makefile:
 
 ```make
-VERSION ?= 0.2.0
+VERSION ?= 0.7.0
 ```
 
 > Do not hardcode the version in Go source. The `version` var in `main.go`
@@ -34,8 +34,8 @@ VERSION ?= 0.2.0
 
 ### Version bump rules
 
-- **PATCH** (`0.1.0` → `0.1.1`): bug fixes, no API/protocol contract change.
-- **MINOR** (`0.1.0` → `0.2.0`): new features, additive changes.
+- **PATCH** (`0.7.0` → `0.7.1`): bug fixes, no API/protocol contract change.
+- **MINOR** (`0.7.0` → `0.8.0`): new features, additive changes.
 - **MAJOR** (`0.x` → `1.0.0`): breaking protocol/API changes, or when the
   agent is declared production-ready.
 
@@ -61,7 +61,7 @@ go vet ./...
 # 4. Publish to the web app's public folder
 make publish-downloads          # uses VERSION from the Makefile
 #    or, to override on the CLI:
-make publish-downloads VERSION=0.2.0
+make publish-downloads VERSION=0.7.0
 ```
 
 `make publish-downloads` runs `scripts/publish-downloads.sh` which:

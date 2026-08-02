@@ -11,26 +11,15 @@ import (
 // Config is persisted to disk after a successful pairing so the daemon can
 // reconnect automatically on every boot without any user interaction.
 type Config struct {
-	// APIBase is the origin of the GustoPOS API, e.g. "https://pos.example.com".
-	APIBase string `json:"apiBase"`
-	// BridgeID is this machine's unique bridge identifier (stable across restarts).
-	BridgeID string `json:"bridgeId"`
-	// InstanceID is a stable per-machine UUID used for claim ownership
-	// (X-Bridge-Instance-Id). It must survive restarts, otherwise the API
-	// refuses to complete jobs we claimed earlier.
-	InstanceID string `json:"instanceId"`
-	// Code is the 6-digit pairing code. Once bound to this bridge server-side
-	// it becomes a permanent credential (revoking the secret detaches us).
-	Code string `json:"code"`
-	// QZPort is the QZ Tray local WebSocket port (8181 secure, 8182 insecure).
-	QZPort int `json:"qzPort,omitempty"`
-	// QZSecure toggles wss:// vs ws:// for the local QZ Tray connection.
-	QZSecure bool `json:"qzSecure,omitempty"`
-	// Areas this machine prints for.
-	Areas []string `json:"areas,omitempty"`
-	// PrinterNames maps area -> QZ printer name. Optional: if empty the agent
-	// asks QZ Tray to print to the default printer.
-	PrinterNames map[string]string `json:"printerNames,omitempty"`
+	APIBase            string            `json:"apiBase"`
+	BridgeID           string            `json:"bridgeId"`
+	InstanceID         string            `json:"instanceId"`
+	Code               string            `json:"code"`
+	QZPort             int               `json:"qzPort,omitempty"`
+	QZSecure           bool              `json:"qzSecure,omitempty"`
+	Areas              []string          `json:"areas,omitempty"`
+	PrinterNames       map[string]string `json:"printerNames,omitempty"`
+	DiscoveredPrinters []string          `json:"discoveredPrinters,omitempty"`
 }
 
 // configPath returns the location of the persistent config file.
@@ -42,25 +31,42 @@ func configPath() string {
 		return filepath.Join(h, "config.json")
 	}
 	if runtime.GOOS == "windows" {
-		// README documents C:\ProgramData\gustopos-print-agent\config.json
-		if pd := os.Getenv("ProgramData"); pd != "" {
-			return filepath.Join(pd, "gustopos-print-agent", "config.json")
-		}
-		return filepath.Join("C:\\ProgramData", "gustopos-print-agent", "config.json")
+		return windowsConfigPath()
 	}
 	return filepath.Join("/etc/gustopos-print-agent", "config.json")
 }
 
-// DefaultConfig returns sensible defaults before any file is read.
+// windowsConfigPath preserves the legacy machine-wide location when a config
+// already exists there. New user-session installs use LOCALAPPDATA, which is
+// writable by the same standard user that runs QZ Tray and the ONLOGON task.
+func windowsConfigPath() string {
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		programData = `C:\ProgramData`
+	}
+	legacy := filepath.Join(programData, "gustopos-print-agent", "config.json")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+	}
+	if localAppData == "" {
+		return legacy
+	}
+	return filepath.Join(localAppData, "GustoPOS", "PrintAgent", "config.json")
+}
+
 func DefaultConfig() *Config {
 	return &Config{
-		QZPort: 8182, // QZ Tray insecure WS port (8181 is the secure WSS port)
+		QZPort: 8182,
 		Areas:  []string{"kitchen", "bar", "cashier"},
 	}
 }
 
-// LoadConfig reads the config file if present. Returns an error if the file
-// exists but is malformed; returns (nil, nil) if the file does not exist yet.
+// LoadConfig reads the config file if present. Returns nil,nil when absent.
 func LoadConfig() (*Config, error) {
 	path := configPath()
 	raw, err := os.ReadFile(path)
@@ -74,9 +80,6 @@ func LoadConfig() (*Config, error) {
 	if err := json.Unmarshal(raw, cfg); err != nil {
 		return nil, err
 	}
-	// A hand-written config with `"areas": null` would marshal back to JSON
-	// `null` and be rejected by the API's heartbeat schema. Normalize to the
-	// defaults so the agent always sends a valid array.
 	if len(cfg.Areas) == 0 {
 		cfg.Areas = DefaultConfig().Areas
 	}
@@ -101,7 +104,6 @@ func (c *Config) Save() error {
 	return os.Rename(tmp, path)
 }
 
-// IsPaired reports whether we have enough state to start the agent loop.
 func (c *Config) IsPaired() bool {
 	return c != nil && c.APIBase != "" && c.BridgeID != "" && c.InstanceID != "" && c.Code != ""
 }

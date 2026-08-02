@@ -22,16 +22,6 @@ const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
   "settings:update": [],
 };
 
-function canReceiveEvent(enabledModules: ModuleKey[] | undefined, event: string): boolean {
-  const requiredModules = EVENT_MODULE_MAP[event];
-  if (!requiredModules || requiredModules.length === 0) {
-    return true;
-  }
-
-  const modules = enabledModules ?? [];
-  return requiredModules.some((moduleKey) => modules.includes(moduleKey));
-}
-
 @WebSocketGateway({
   cors: {
     origin: parseCorsOrigins(process.env.CORS_ORIGIN),
@@ -130,6 +120,15 @@ export class RealtimeGateway implements OnModuleInit {
         socket.data.isGroupOrder = false;
         socket.data.tenantId = payload.tenantId;
         socket.data.enabledModules = enabledModules;
+        // Room-based fan-out: each authenticated staff socket joins its tenant
+        // room, one room per enabled feature module, and a cross-tenant
+        // "staff" room. Emits are then O(1) adapter lookups instead of
+        // iterating every connected socket per event.
+        socket.join(`tenant:${payload.tenantId}`);
+        for (const module of enabledModules) {
+          socket.join(`tenant:${payload.tenantId}:${module}`);
+        }
+        socket.join("staff");
         next();
       } catch {
         next(new Error("Invalid socket token"));
@@ -148,46 +147,35 @@ export class RealtimeGateway implements OnModuleInit {
         if (separator > "groupOrder:".length) {
           const room = event.slice(0, separator);
           const roomEvent = event.slice(separator + 1);
-          for (const socket of this.server.sockets.sockets.values()) {
-            if (socket.rooms.has(room) && (!tenantId || socket.data.tenantId === tenantId)) {
-              socket.emit(roomEvent, actualPayload);
-            }
-          }
+          this.server.to(room).emit(roomEvent, actualPayload);
         }
         return;
       }
 
-      for (const socket of this.server.sockets.sockets.values()) {
-        // Public sockets are intentionally excluded from global pub/sub events.
-        if (socket.data.authenticated !== true) {
-          continue;
-        }
-        if (tenantId && socket.data.tenantId !== tenantId) {
-          continue;
-        }
-        if (canReceiveEvent(socket.data.enabledModules as ModuleKey[] | undefined, event)) {
-          socket.emit(event, actualPayload);
-        }
-      }
+      // Cross-instance delivery: every API instance receives the pub/sub
+      // message and fans out to its own local room members.
+      this.server.to(this.roomsForEvent(event, tenantId)).emit(event, actualPayload);
     });
   }
 
-  async emit<T>(event: string, payload: T, tenantId?: string): Promise<void> {
-    const sockets = [...this.server.sockets.sockets.values()];
-    for (const socket of sockets) {
-      if (socket.data.authenticated !== true) {
-        continue;
-      }
-      if (tenantId && socket.data.tenantId !== tenantId) {
-        continue;
-      }
-      const modules = socket.data.enabledModules as ModuleKey[] | undefined;
-      if (canReceiveEvent(modules, event)) {
-        socket.emit(event, payload);
-      }
+  // Maps an event to the socket rooms that should receive it, mirroring the
+  // old per-socket module filter without iterating every connection. Events
+  // without a module requirement go to the base tenant room (or "staff" when
+  // no tenant scope is known); module-gated events go to the per-module rooms.
+  // socket.io deduplicates sockets that appear in several target rooms.
+  private roomsForEvent(event: string, tenantId: string | null): string[] {
+    const requiredModules = EVENT_MODULE_MAP[event];
+    const baseRoom = tenantId ? `tenant:${tenantId}` : "staff";
+    if (!requiredModules || requiredModules.length === 0) {
+      return [baseRoom];
     }
+    return requiredModules.map((module) => `${baseRoom}:${module}`);
+  }
 
-    const scopedTenantId = tenantId ?? getTenantContext()?.tenantId;
+  async emit<T>(event: string, payload: T, tenantId?: string): Promise<void> {
+    const scopedTenantId = tenantId ?? getTenantContext()?.tenantId ?? null;
+    this.server.to(this.roomsForEvent(event, scopedTenantId)).emit(event, payload);
+
     const pubsubPayload = scopedTenantId ? { __tenantId: scopedTenantId, payload } : payload;
     await this.pubSubService.publish(event, pubsubPayload);
   }
