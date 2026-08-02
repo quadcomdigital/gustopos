@@ -18,7 +18,10 @@ export const preparePrepItemResponseSchema = z.object({
 export const prepItemSchema = z.object({
   id: z.string(),
   tenantId: z.string(),
-  ingredientId: z.string(),
+  // Exactly one of ingredientId / bomId is set: ingredientId for the classic
+  // single-ingredient variant, bomId for a variant whose recipe is a BoM.
+  ingredientId: z.string().nullable(),
+  bomId: z.string().nullable(),
   name: z.string(),
   quantityPerUnit: z.number(),
   unit: z.string(),

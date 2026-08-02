@@ -87,6 +87,7 @@ export default function IngredientsTab({
   const [conversions, setConversions] = useState<UnitConversion[]>([]);
   const fetchUnitConversions = useAppStore((s) => s.fetchUnitConversions);
   const createUnitConversion = useAppStore((s) => s.createUnitConversion);
+  const deleteUnitConversion = useAppStore((s) => s.deleteUnitConversion);
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
@@ -1063,34 +1064,33 @@ export default function IngredientsTab({
             )}
           </div>
         </div>
-          {selectedIngredient && conversions.length >= 0 && (
+          {selectedIngredient && (
             <div className="md:col-span-2 border-t border-border pt-3 mt-2">
-              <details className="group">
-                <summary className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-text-muted cursor-pointer hover:text-secondary transition-colors">
-                  <ArrowLeftRight size={12} />
+              <div className="flex items-center gap-1.5 mb-1">
+                <ArrowLeftRight size={12} className="text-text-muted" />
+                <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">
                   Conversioni unità di misura
-                  <span className="text-[9px] font-normal normal-case text-text-muted ml-auto group-open:hidden">
-                    {conversions.length > 0 ? `${conversions.length} definita(e)` : 'Mostra'}
-                  </span>
-                </summary>
-                <div className="mt-2">
-                  <UnitConversionManager
-                    ingredientName={selectedIngredient.name}
-                    ingredientUnit={ingredientEditUnit}
-                    conversions={conversions}
-                    onCreateConversion={async (fromUnit, factor) => {
-                      const created = await createUnitConversion(selectedIngredient.id, {
-                        fromUnit,
-                        toUnit: ingredientEditUnit,
-                        factor,
-                      });
-                      if (created) {
-                        setConversions((prev) => [...prev, created]);
-                      }
-                    }}
-                  />
-                </div>
-              </details>
+                </p>
+              </div>
+              <UnitConversionManager
+                ingredientName={selectedIngredient.name}
+                ingredientUnit={ingredientEditUnit}
+                conversions={conversions}
+                onCreateConversion={async (fromUnit, factor) => {
+                  const created = await createUnitConversion(selectedIngredient.id, {
+                    fromUnit,
+                    toUnit: ingredientEditUnit,
+                    factor,
+                  });
+                  if (created) {
+                    setConversions((prev) => [...prev, created]);
+                  }
+                }}
+                onDeleteConversion={async (conversionId) => {
+                  await deleteUnitConversion(selectedIngredient.id, conversionId);
+                  setConversions((prev) => prev.filter((c) => c.id !== conversionId));
+                }}
+              />
             </div>
           )}
 

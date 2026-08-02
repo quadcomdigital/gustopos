@@ -259,7 +259,7 @@ export default function SettingsView({
         return 'ESC/POS richiede almeno un\'area di stampa attiva.';
       }
       if (draft.printing.logoMode === 'bitmap' && !draft.printing.logoBitmap) {
-        return 'Modalità logo bitmap richiede un logoBitmap valido.';
+        return 'Modalità logo bitmap richiede di caricare un logo (sezione Layout scontrino).';
       }
     }
     return null;

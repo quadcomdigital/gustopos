@@ -370,6 +370,7 @@ export default function InventoryTabs({
         {activeTab === 'prep' && !simpleCatalogMode && (
           <PrepView
             inventory={inventory}
+            bomItems={bomItems}
             prepItems={prepItems}
             onRefresh={onRefreshPrepItems}
           />

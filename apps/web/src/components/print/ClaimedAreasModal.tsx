@@ -10,7 +10,7 @@ interface ClaimedAreasModalProps {
 const AREA_DESCRIPTIONS: Record<PrintArea, string> = {
   kitchen: 'riceve job comande dalla cucina',
   bar: 'riceve job comande dal bar',
-  cashier: 'riceve job scontrini di chiusura',
+  cashier: 'riceve job scontrini di chiusura ed emissione fiscale (RT)',
 };
 
 export default function ClaimedAreasModal({

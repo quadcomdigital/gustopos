@@ -129,8 +129,15 @@ import {
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   uiSettingsSchema,
+  printLogoUploadResponseSchema,
+  prepItemSchema,
+  preparePrepItemResponseSchema,
+  unitConversionSchema,
   updatePrintingSettingsRequestSchema,
   updateUiSettingsRequestSchema,
+  fiscalPrinterConfigResponseSchema,
+  fiscalPrinterConfigUpdateRequestSchema,
+  fiscalJobSchema,
   staffAdminSchema,
   staffAdminListResponseSchema,
   staffCreateRequestSchema,
@@ -267,6 +274,10 @@ import {
   type VoidOrderRequest,
   type VoidOrderResponse,
   type UiSettings,
+  type PrintLogoUploadResponse,
+  type FiscalPrinterConfig,
+  type FiscalPrinterConfigUpdateRequest,
+  type FiscalJob,
   type UpdatePrintingSettingsRequest,
   type UpdateUiSettingsRequest,
   type UpdateOrderRequest,
@@ -1042,6 +1053,49 @@ export async function updateUiSettings(payload: UpdateUiSettingsRequest): Promis
   return readJson(response, uiSettingsSchema);
 }
 
+// ─── Certified fiscal printer (Path B) ──────────────────────────────────
+
+export async function fetchFiscalPrinterConfig(): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+  const response = await authorizedFetch(`${API_URL}/api/settings/fiscal/printer`);
+  return readJson(response, fiscalPrinterConfigResponseSchema);
+}
+
+export async function updateFiscalPrinterConfig(payload: FiscalPrinterConfigUpdateRequest): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+  const request = fiscalPrinterConfigUpdateRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/settings/fiscal/printer`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, fiscalPrinterConfigResponseSchema);
+}
+
+export async function enqueueFiscalTestJob(): Promise<{ job: FiscalJob }> {
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/jobs/test`, {
+    method: 'POST',
+  });
+  return readJson(response, z.object({ job: fiscalJobSchema }));
+}
+
+export async function enqueueFiscalChiusura(businessDate: string): Promise<{ job: FiscalJob }> {
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/chiusura`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ businessDate }),
+  });
+  return readJson(response, z.object({ job: fiscalJobSchema }));
+}
+
+export async function fetchFiscalJobs(query: { status?: string; type?: string; limit?: number } = {}): Promise<{ jobs: FiscalJob[] }> {
+  const params = new URLSearchParams();
+  if (query.status) params.set('status', query.status);
+  if (query.type) params.set('type', query.type);
+  if (query.limit) params.set('limit', String(query.limit));
+  const suffix = params.toString().length > 0 ? `?${params.toString()}` : '';
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/jobs${suffix}`);
+  return readJson(response, z.object({ jobs: z.array(fiscalJobSchema) }));
+}
+
 export async function updatePrintingSettings(payload: UpdatePrintingSettingsRequest): Promise<UiSettings> {
   const request = updatePrintingSettingsRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/settings/printing`, {
@@ -1053,6 +1107,27 @@ export async function updatePrintingSettings(payload: UpdatePrintingSettingsRequ
   });
 
   return readJson(response, uiSettingsSchema);
+}
+
+/**
+ * Upload a logo image for thermal receipts. The API converts it to a 1-bit
+ * monochrome bitmap and returns the base64 of a complete GS v 0 raster
+ * command, which callers store in settings.printing.logoBitmap.
+ */
+export async function uploadPrintLogo(
+  file: File,
+  opts: { width?: number; threshold?: number } = {},
+): Promise<PrintLogoUploadResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  if (opts.width !== undefined) form.append('width', String(opts.width));
+  if (opts.threshold !== undefined) form.append('threshold', String(opts.threshold));
+  const response = await authorizedFetch(`${API_URL}/api/settings/printing/logo`, {
+    method: 'POST',
+    // No Content-Type: the browser sets the multipart boundary automatically.
+    body: form,
+  });
+  return readJson(response, printLogoUploadResponseSchema);
 }
 
 // ─── QZ Tray Configuration ─────────────────────────────────────────────
@@ -2396,13 +2471,13 @@ export async function fetchPrepItems(): Promise<PrepItem[]> {
   const data = await response.json();
   return Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
 }
-export async function createPrepItem(payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }): Promise<PrepItem> {
+export async function createPrepItem(payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }): Promise<PrepItem> {
   const response = await authorizedFetch(`${API_URL}/api/prep-items`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return response.json();
+  return readJson(response, prepItemSchema);
 }
 export async function updatePrepItem(id: string, payload: PrepItemUpdateRequest): Promise<PrepItem> {
   const response = await authorizedFetch(`${API_URL}/api/prep-items/${encodeURIComponent(id)}`, {
@@ -2410,7 +2485,7 @@ export async function updatePrepItem(id: string, payload: PrepItemUpdateRequest)
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return response.json();
+  return readJson(response, prepItemSchema);
 }
 export async function deletePrepItem(id: string): Promise<void> {
   await authorizedFetch(`${API_URL}/api/prep-items/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -2421,7 +2496,7 @@ export async function preparePrepItem(id: string, quantity: number): Promise<Pre
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ quantity }),
   });
-  return response.json();
+  return readJson(response, preparePrepItemResponseSchema);
 }
 export async function fetchUnitConversions(inventoryId: string): Promise<UnitConversion[]> {
   const response = await authorizedFetch(`${API_URL}/api/inventory/${encodeURIComponent(inventoryId)}/conversions`);
@@ -2434,7 +2509,14 @@ export async function createUnitConversion(inventoryId: string, payload: UnitCon
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return response.json();
+  return readJson(response, unitConversionSchema);
+}
+
+export async function deleteUnitConversion(inventoryId: string, conversionId: string): Promise<{ success: true }> {
+  const response = await authorizedFetch(`${API_URL}/api/inventory/${encodeURIComponent(inventoryId)}/conversions/${encodeURIComponent(conversionId)}`, {
+    method: 'DELETE',
+  });
+  return readJson(response, z.object({ success: z.literal(true) }));
 }
 export async function failPrintJob(id: string, errorMsg?: string): Promise<PrintJob> {
   const response = await authorizedFetch(`${API_URL}/api/print-jobs/${encodeURIComponent(id)}/fail`, {

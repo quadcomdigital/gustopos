@@ -10,7 +10,7 @@
 #   ./scripts/publish-downloads.sh [VERSION]
 #
 # Requires the release binaries to already exist in bin/ (run
-# `make linux windows darwin` first). VERSION defaults to 0.7.0.
+# `make linux windows darwin` first). VERSION defaults to 0.8.0.
 #
 # NOTE: after publishing, rebuild the web app (`npm run build --workspace
 # @gustopos/web`) so Vite copies public/downloads into dist/ for the API to
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="${1:-0.7.0}"
+VERSION="${1:-0.8.0}"
 AGENT="gustopos-print-agent"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

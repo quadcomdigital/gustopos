@@ -136,6 +136,10 @@ type HeartbeatResponse struct {
 		Mappings     []BridgePrinterMapping `json:"mappings"`
 	} `json:"bridge"`
 	ServerTime string `json:"serverTime"`
+	// Certified fiscal (Path B): the tenant's RT printer config when the admin
+	// configured a device in the web UI. Applied over the local config on
+	// receipt so the server remains the source of truth for host/port/model.
+	FiscalPrinter *FiscalPrinter `json:"fiscalPrinter,omitempty"`
 }
 
 // Heartbeat registers this bridge under the tenant resolved from the code.
@@ -200,6 +204,32 @@ func (a *API) Fail(bridgeID, jobID, errMsg string) error {
 		errMsg = errMsg[:500]
 	}
 	return a.do(http.MethodPost, "/api/print-bridge/jobs/"+url.PathEscape(jobID)+"/fail",
+		map[string]any{"bridgeId": bridgeID, "error": errMsg}, nil)
+}
+
+// ─── Fiscal jobs (certified RT printer) ─────────────────────────────────
+
+type FiscalClaimResponse struct {
+	Jobs []FiscalJob `json:"jobs"`
+}
+
+func (a *API) ClaimFiscal(bridgeID string, limit int) ([]FiscalJob, error) {
+	var out FiscalClaimResponse
+	err := a.do(http.MethodPost, "/api/fiscal-bridge/claim",
+		map[string]any{"bridgeId": bridgeID, "limit": limit}, &out)
+	return out.Jobs, err
+}
+
+func (a *API) CompleteFiscal(bridgeID, jobID, progressive string) error {
+	return a.do(http.MethodPost, "/api/fiscal-bridge/jobs/"+url.PathEscape(jobID)+"/complete",
+		map[string]any{"bridgeId": bridgeID, "progressive": progressive}, nil)
+}
+
+func (a *API) FailFiscal(bridgeID, jobID, errMsg string) error {
+	if len(errMsg) > 500 {
+		errMsg = errMsg[:500]
+	}
+	return a.do(http.MethodPost, "/api/fiscal-bridge/jobs/"+url.PathEscape(jobID)+"/fail",
 		map[string]any{"bridgeId": bridgeID, "error": errMsg}, nil)
 }
 

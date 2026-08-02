@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // Config is persisted to disk after a successful pairing so the daemon can
@@ -20,6 +21,10 @@ type Config struct {
 	Areas              []string          `json:"areas,omitempty"`
 	PrinterNames       map[string]string `json:"printerNames,omitempty"`
 	DiscoveredPrinters []string          `json:"discoveredPrinters,omitempty"`
+	// Certified fiscal printer (RT) reached over the cashier PC's LAN. This is
+	// configured on the cashier PC itself (it owns the serial/USB or localhost
+	// path to the device); the server only enqueues fiscal jobs.
+	FiscalPrinter *FiscalPrinter `json:"fiscalPrinter,omitempty"`
 }
 
 // configPath returns the location of the persistent config file.
@@ -61,8 +66,9 @@ func windowsConfigPath() string {
 
 func DefaultConfig() *Config {
 	return &Config{
-		QZPort: 8182,
-		Areas:  []string{"kitchen", "bar", "cashier"},
+		QZPort:        8182,
+		Areas:         []string{"kitchen", "bar", "cashier"},
+		FiscalPrinter: &FiscalPrinter{Model: "generic-rt", Port: 4001, Timeout: 15 * time.Second},
 	}
 }
 

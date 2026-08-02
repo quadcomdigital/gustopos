@@ -177,7 +177,8 @@ function ComponentRow({
         ? (() => {
             const prep = prepItems.find((p) => p.id === comp.componentId);
             if (!prep) return undefined;
-            const prepIng = ingredientById.get(prep.ingredientId);
+            // BoM-based prep variants have no single ingredient to cost.
+            const prepIng = prep.ingredientId ? ingredientById.get(prep.ingredientId) : undefined;
             return prepIng?.unitCost ? comp.quantity * prep.quantityPerUnit * prepIng.unitCost : undefined;
           })()
         : undefined
@@ -463,7 +464,7 @@ export default function RecipeBuilder({
       } else if (c.componentType === 'prep') {
         const prep = prepItems.find((p) => p.id === c.componentId);
         if (prep) {
-          const ing = ingredientById.get(prep.ingredientId);
+          const ing = prep.ingredientId ? ingredientById.get(prep.ingredientId) : undefined;
           if (ing?.unitCost) total += c.quantity * prep.quantityPerUnit * ing.unitCost;
         }
       } else if (c.componentType === 'bom') {
@@ -477,7 +478,7 @@ export default function RecipeBuilder({
             } else if (sc.componentType === 'prep') {
               const prep = prepItems.find((p) => p.id === sc.componentId);
               if (prep) {
-                const ing = ingredientById.get(prep.ingredientId);
+                const ing = prep.ingredientId ? ingredientById.get(prep.ingredientId) : undefined;
                 if (ing?.unitCost) subCost += sc.quantity * prep.quantityPerUnit * ing.unitCost;
               }
             }

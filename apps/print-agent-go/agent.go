@@ -18,6 +18,7 @@ type Agent struct {
 
 	heartbeatEvery     time.Duration
 	claimEvery         time.Duration
+	fiscalClaimEvery   time.Duration
 	claimBatch         int
 	printTimeout       time.Duration
 	discoveredPrinters []string
@@ -37,6 +38,7 @@ func NewAgent(cfg *Config) (*Agent, error) {
 		api:                api,
 		heartbeatEvery:     30 * time.Second,
 		claimEvery:         3 * time.Second,
+		fiscalClaimEvery:   5 * time.Second,
 		claimBatch:         10,
 		printTimeout:       30 * time.Second,
 		discoveredPrinters: cachedPrinters,
@@ -97,6 +99,8 @@ func (a *Agent) Run() error {
 	defer hb.Stop()
 	cl := time.NewTicker(a.claimEvery)
 	defer cl.Stop()
+	fc := time.NewTicker(a.fiscalClaimEvery)
+	defer fc.Stop()
 
 	for {
 		select {
@@ -112,6 +116,14 @@ func (a *Agent) Run() error {
 			}
 		case <-cl.C:
 			if err := a.claimOnce(); err != nil {
+				if err == errDetachedSentinel {
+					return err
+				}
+			}
+		case <-fc.C:
+			// Certified fiscal jobs are pulled on their own cadence so a slow RT
+			// device never delays kitchen/bar ticket printing.
+			if err := a.claimFiscalOnce(); err != nil {
 				if err == errDetachedSentinel {
 					return err
 				}
@@ -195,6 +207,23 @@ func (a *Agent) applyHeartbeatConfig(response *HeartbeatResponse) {
 			}
 		}
 		a.cfg.PrinterNames = printers
+	}
+	// Certified fiscal (Path B): the server is the source of truth for the RT
+	// device config saved in the web UI. Apply it over the local config so the
+	// admin never has to touch the agent's config file.
+	if response.FiscalPrinter != nil && response.FiscalPrinter.Host != "" {
+		local := a.cfg.FiscalPrinter
+		if local == nil {
+			local = &FiscalPrinter{}
+		}
+		server := response.FiscalPrinter
+		local.Enabled = server.Enabled
+		local.Model = server.Model
+		local.Host = server.Host
+		if server.Port > 0 {
+			local.Port = server.Port
+		}
+		a.cfg.FiscalPrinter = local
 	}
 	if err := a.cfg.Save(); err != nil {
 		log.Printf("could not persist server bridge configuration: %v", err)

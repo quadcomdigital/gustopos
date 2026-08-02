@@ -1,5 +1,5 @@
 BINARY := gustopos-print-agent
-VERSION ?= 0.7.0
+VERSION ?= 0.8.0
 # Default server origin baked into the binary (pre-filled in the pairing page).
 # Override per deployment, e.g. make linux API_BASE=https://pos.franksbar.it
 API_BASE ?= https://test.franksbar.it
@@ -41,6 +41,6 @@ install-service: install
 
 # Copy release binaries + generate checksums/version.json/downloads page into
 # apps/web/public/downloads (served at /downloads/). Requires binaries in bin/.
-# Usage: make publish-downloads VERSION=0.7.0
+# Usage: make publish-downloads VERSION=0.8.0
 publish-downloads:
 	./scripts/publish-downloads.sh $(VERSION)

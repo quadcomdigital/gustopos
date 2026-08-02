@@ -7,7 +7,7 @@ import Button from '../../../shared/ui/atoms/Button';
 import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
 import UnitSelect from '../../../shared/ui/molecules/UnitSelect';
 import UnitConversionManager from '../../inventory/UnitConversionManager';
-import { fetchUnitConversions, createUnitConversion } from '../../../shared/api/client';
+import { fetchUnitConversions, createUnitConversion, deleteUnitConversion } from '../../../shared/api/client';
 
 interface PrepVariant {
   id: string;
@@ -47,6 +47,13 @@ export default function CreatePrepInlineModal({
   const handleCreateConversion = async (fromUnit: string, factor: number) => {
     if (!ingredientId || !selectedIngredient) return;
     await createUnitConversion(ingredientId, { fromUnit, toUnit: selectedIngredient.unit, factor });
+    const convs = await fetchUnitConversions(ingredientId);
+    setConversions(convs);
+  };
+
+  const handleDeleteConversion = async (conversionId: string) => {
+    if (!ingredientId) return;
+    await deleteUnitConversion(ingredientId, conversionId);
     const convs = await fetchUnitConversions(ingredientId);
     setConversions(convs);
   };
@@ -186,14 +193,13 @@ export default function CreatePrepInlineModal({
               )}
             </div>
 
-            {conversions.length > 0 && (
-              <UnitConversionManager
-                ingredientName={selectedIngredient.name}
-                ingredientUnit={selectedIngredient.unit}
-                conversions={conversions}
-                onCreateConversion={(fromUnit, factor) => handleCreateConversion(fromUnit, factor)}
-              />
-            )}
+            <UnitConversionManager
+              ingredientName={selectedIngredient.name}
+              ingredientUnit={selectedIngredient.unit}
+              conversions={conversions}
+              onCreateConversion={(fromUnit, factor) => handleCreateConversion(fromUnit, factor)}
+              onDeleteConversion={(conversionId) => handleDeleteConversion(conversionId)}
+            />
           </>
         )}
       </div>

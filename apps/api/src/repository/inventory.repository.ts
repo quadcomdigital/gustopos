@@ -752,6 +752,15 @@ if (menuUsage.length > 0) {
   throw new Error("Cannot delete BoM linked to a menu recipe");
 }
 
+const prepUsage = await db
+  .select({ prepItemId: prepItems.id })
+  .from(prepItems)
+  .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.bomId, id)))
+  .limit(1);
+if (prepUsage.length > 0) {
+  throw new Error("Cannot delete BoM linked to a prep item");
+}
+
 await db
   .delete(bomItems)
   .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, id)));
@@ -846,13 +855,14 @@ await db
 return (await this.mapBomItems()).find((item) => item.id === id) ?? null;
   }
 
-  async listPrepItems(): Promise<{ id: string; tenantId: string; ingredientId: string; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }[]> {
+  async listPrepItems(): Promise<{ id: string; tenantId: string; ingredientId: string | null; bomId: string | null; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }[]> {
 const tenantId = getTenantIdOrDefault();
 const rows = await db
   .select({
     id: prepItems.id,
     tenantId: prepItems.tenantId,
     ingredientId: prepItems.ingredientId,
+    bomId: prepItems.bomId,
     name: prepItems.name,
     quantityPerUnit: prepItems.quantityPerUnit,
     unit: prepItems.unit,
@@ -867,6 +877,7 @@ return rows.map((row) => ({
   id: row.id,
   tenantId: row.tenantId,
   ingredientId: row.ingredientId,
+  bomId: row.bomId,
   name: row.name,
   quantityPerUnit: Number(row.quantityPerUnit),
   unit: row.unit,
@@ -875,13 +886,28 @@ return rows.map((row) => ({
 }));
   }
 
-  async createPrepItem(payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }): Promise<{ id: string; tenantId: string; ingredientId: string; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }> {
+  async createPrepItem(payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }): Promise<{ id: string; tenantId: string; ingredientId: string | null; bomId: string | null; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }> {
 const tenantId = getTenantIdOrDefault();
+const hasIngredient = !!payload.ingredientId;
+const hasBom = !!payload.bomId;
+if (hasIngredient === hasBom) {
+  throw new Error("Prep item must reference exactly one of an ingredient or a BoM");
+}
+if (hasBom) {
+  const bom = await db
+    .select({ id: bomItems.id, name: bomItems.name, isActive: bomItems.isActive })
+    .from(bomItems)
+    .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, payload.bomId!)))
+    .limit(1);
+  if (bom.length === 0) throw new Error(`BoM ${payload.bomId} not found`);
+  if (bom[0].isActive !== 1) throw new Error(`Cannot create prep item from inactive BoM "${bom[0].name}"`);
+}
 const id = `prep_${Date.now().toString(36)}`;
 await db.insert(prepItems).values({
   id,
   tenantId,
-  ingredientId: payload.ingredientId,
+  ingredientId: payload.ingredientId ?? null,
+  bomId: payload.bomId ?? null,
   name: payload.name,
   quantityPerUnit: String(payload.quantityPerUnit),
   unit: payload.unit,
@@ -889,7 +915,7 @@ await db.insert(prepItems).values({
 return (await this.listPrepItems()).find((p) => p.id === id)!;
   }
 
-  async updatePrepItem(id: string, payload: PrepItemUpdateRequest): Promise<{ id: string; tenantId: string; ingredientId: string; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }> {
+  async updatePrepItem(id: string, payload: PrepItemUpdateRequest): Promise<{ id: string; tenantId: string; ingredientId: string | null; bomId: string | null; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }> {
 const tenantId = getTenantIdOrDefault();
 const existing = await db.query.prepItems.findFirst({
   where: and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)),
@@ -924,34 +950,138 @@ return withTenantTx(async (tx) => {
     .for("update");
   const prep = prepRows[0];
   if (!prep) throw new Error(`Prep item ${id} not found`);
-  const ingredientRows = await tx
-    .select()
-    .from(inventory)
-    .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, prep.ingredientId)))
-    .limit(1)
-    .for("update");
-  const ing = ingredientRows[0];
-  if (!ing) throw new Error(`Ingredient ${prep.ingredientId} not found`);
-  const rawNeeded = Number(prep.quantityPerUnit) * quantity;
-  const prevIngQty = Number(ing.quantity);
-  if (prevIngQty < rawNeeded) {
-    throw new Error(`Insufficient ${ing.name}: need ${rawNeeded} ${ing.unit}, have ${prevIngQty}`);
-  }
-  const newIngQty = prevIngQty - rawNeeded;
-  await tx.update(inventory).set({ quantity: String(newIngQty) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
-  await tx.insert(stockMovements).values({
-    id: crypto.randomUUID(),
-    tenantId,
-    ingredientId: ing.id,
-    orderId: null,
-    movementType: "manual_adjustment",
-    quantity: String(-rawNeeded),
-    previousQuantity: String(prevIngQty),
-    newQuantity: String(newIngQty),
-    notes: `Prepared ${quantity} ${prep.name}`,
-    staffId: null,
-  });
   const prevStock = Number(prep.stockQuantity);
+  const ingredientsDeducted: { id: string; name: string; quantity: number; unit: string; }[] = [];
+
+  if (prep.bomId) {
+    // BoM-based variant: explode the recipe and deduct every raw ingredient
+    // (and any nested prep stock) in the same transaction, then add the
+    // finished units to this prep item's stock.
+    const [bomRows, componentRows] = await Promise.all([
+      // All tenant BoMs: explodeBomRequirements recurses into nested `bom`
+      // components, so the lookup map must contain every BoM in the tenant.
+      tx.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
+      tx.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
+    ]);
+    const bom = bomRows.find((row) => row.id === prep.bomId);
+    if (!bom) throw new Error(`BoM ${prep.bomId} not found for prep item ${prep.name}`);
+    const bomById = new Map(bomRows.map((row) => [row.id, row]));
+    const componentsByBomId = new Map<string, typeof componentRows>();
+    for (const component of componentRows) {
+      const existing = componentsByBomId.get(component.bomId) ?? [];
+      existing.push(component);
+      componentsByBomId.set(component.bomId, existing);
+    }
+    const exploded = this.explodeBomRequirements({
+      bomId: bom.id,
+      multiplier: quantity * Number(prep.quantityPerUnit || 1),
+      bomById,
+      componentsByBomId,
+    });
+
+    const prepNameById = new Map(
+      (await tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.unit })
+        .from(prepItems)
+        .where(eq(prepItems.tenantId, tenantId)))
+        .map((row) => [row.id, row]),
+    );
+
+    const ingredientIds = [...exploded.ingredients.keys()];
+    const ingredientRows = ingredientIds.length > 0
+      ? await tx.select().from(inventory).where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds))).for("update")
+      : [];
+    const ingredientById = new Map(ingredientRows.map((row) => [row.id, row]));
+    for (const [ingredientId, needed] of exploded.ingredients) {
+      const ing = ingredientById.get(ingredientId);
+      if (!ing) throw new Error(`Ingredient ${ingredientId} not found`);
+      const prevQty = Number(ing.quantity);
+      if (prevQty < needed) {
+        throw new Error(`Insufficient ${ing.name}: need ${needed} ${ing.unit}, have ${prevQty}`);
+      }
+      const newQty = prevQty - needed;
+      await tx.update(inventory).set({ quantity: String(newQty) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
+      await tx.insert(stockMovements).values({
+        id: crypto.randomUUID(),
+        tenantId,
+        ingredientId: ing.id,
+        orderId: null,
+        movementType: "manual_adjustment",
+        quantity: String(-needed),
+        previousQuantity: String(prevQty),
+        newQuantity: String(newQty),
+        notes: `Prepared ${quantity} ${prep.name}`,
+        staffId: null,
+      });
+      ingredientsDeducted.push({ id: ing.id, name: ing.name, quantity: needed, unit: ing.unit });
+    }
+
+    for (const [nestedPrepId, needed] of exploded.preps) {
+      if (nestedPrepId === prep.id) {
+        throw new Error(`BoM "${bom.name}" references its own prep item — cycle not allowed`);
+      }
+      const nested = prepNameById.get(nestedPrepId);
+      if (!nested) throw new Error(`Prep item ${nestedPrepId} not found`);
+      const nestedRows = await tx
+        .select()
+        .from(prepItems)
+        .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, nestedPrepId)))
+        .limit(1)
+        .for("update");
+      const nestedPrep = nestedRows[0];
+      if (!nestedPrep) throw new Error(`Prep item ${nestedPrepId} not found`);
+      const prevNested = Number(nestedPrep.stockQuantity);
+      if (prevNested < needed) {
+        throw new Error(`Insufficient ${nested.name}: need ${needed} ${nested.unit}, have ${prevNested}`);
+      }
+      const newNested = prevNested - needed;
+      await tx.update(prepItems).set({ stockQuantity: String(newNested) }).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, nestedPrepId)));
+      await tx.insert(stockMovements).values({
+        id: crypto.randomUUID(),
+        tenantId,
+        ingredientId: null,
+        prepItemId: nestedPrepId,
+        orderId: null,
+        movementType: "manual_adjustment",
+        quantity: String(-needed),
+        previousQuantity: String(prevNested),
+        newQuantity: String(newNested),
+        notes: `Prepared ${quantity} ${prep.name}`,
+        staffId: null,
+      });
+      ingredientsDeducted.push({ id: nestedPrepId, name: nested.name, quantity: needed, unit: nested.unit });
+    }
+  } else {
+    if (!prep.ingredientId) throw new Error(`Prep item ${prep.name} has no ingredient source`);
+    const ingredientRows = await tx
+      .select()
+      .from(inventory)
+      .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, prep.ingredientId)))
+      .limit(1)
+      .for("update");
+    const ing = ingredientRows[0];
+    if (!ing) throw new Error(`Ingredient ${prep.ingredientId} not found`);
+    const rawNeeded = Number(prep.quantityPerUnit) * quantity;
+    const prevIngQty = Number(ing.quantity);
+    if (prevIngQty < rawNeeded) {
+      throw new Error(`Insufficient ${ing.name}: need ${rawNeeded} ${ing.unit}, have ${prevIngQty}`);
+    }
+    const newIngQty = prevIngQty - rawNeeded;
+    await tx.update(inventory).set({ quantity: String(newIngQty) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
+    await tx.insert(stockMovements).values({
+      id: crypto.randomUUID(),
+      tenantId,
+      ingredientId: ing.id,
+      orderId: null,
+      movementType: "manual_adjustment",
+      quantity: String(-rawNeeded),
+      previousQuantity: String(prevIngQty),
+      newQuantity: String(newIngQty),
+      notes: `Prepared ${quantity} ${prep.name}`,
+      staffId: null,
+    });
+    ingredientsDeducted.push({ id: ing.id, name: ing.name, quantity: rawNeeded, unit: ing.unit });
+  }
+
   const newStock = prevStock + quantity;
   await tx.update(prepItems).set({ stockQuantity: String(newStock) }).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)));
   return {
@@ -959,7 +1089,7 @@ return withTenantTx(async (tx) => {
     prepItemId: prep.id,
     previousStock: prevStock,
     newStock,
-    ingredientsDeducted: [{ id: ing.id, name: ing.name, quantity: rawNeeded, unit: ing.unit }],
+    ingredientsDeducted,
   }; /* CASCADE2_PREP_PREPITEM_RETURN_DONE */
 });
   }
@@ -983,16 +1113,59 @@ return rows.map((r) => ({
 
   async createUnitConversion(inventoryId: string, payload: UnitConversionCreateRequest): Promise<{ id: string; tenantId: string; inventoryId: string; fromUnit: string; toUnit: string; factor: number; createdAt: string; }> {
 const tenantId = getTenantIdOrDefault();
-const id = `uc_${Date.now().toString(36)}`;
-await db.insert(inventoryUnitConversions).values({
-  id,
-  tenantId,
-  inventoryId,
-  fromUnit: payload.fromUnit,
-  toUnit: payload.toUnit,
-  factor: String(payload.factor),
-});
+// Guard against the (tenantId, inventoryId, fromUnit) unique constraint so
+// the caller gets a clear Italian message instead of a raw Postgres 23505.
+const existing = await db
+  .select({ id: inventoryUnitConversions.id })
+  .from(inventoryUnitConversions)
+  .where(
+    and(
+      eq(inventoryUnitConversions.tenantId, tenantId),
+      eq(inventoryUnitConversions.inventoryId, inventoryId),
+      eq(inventoryUnitConversions.fromUnit, payload.fromUnit),
+    ),
+  )
+  .limit(1);
+if (existing.length > 0) {
+  throw new Error(`Esiste già una conversione per "${payload.fromUnit}"`);
+}
+const id = `uc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+try {
+  await db.insert(inventoryUnitConversions).values({
+    id,
+    tenantId,
+    inventoryId,
+    fromUnit: payload.fromUnit,
+    toUnit: payload.toUnit,
+    factor: String(payload.factor),
+  });
+} catch (error) {
+  // TOCTOU fallback: two concurrent requests may both pass the pre-check
+  // above; the partial unique index then rejects the loser with 23505.
+  // Map it to the same friendly Italian message instead of leaking Postgres.
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  if (code === "23505") {
+    throw new Error(`Esiste già una conversione per "${payload.fromUnit}"`);
+  }
+  throw error;
+}
 return (await this.listUnitConversions(inventoryId)).find((c) => c.id === id)!;
+  }
+
+  async deleteUnitConversion(inventoryId: string, conversionId: string): Promise<boolean> {
+const tenantId = getTenantIdOrDefault();
+const result = await db
+  .delete(inventoryUnitConversions)
+  .where(
+    and(
+      eq(inventoryUnitConversions.tenantId, tenantId),
+      eq(inventoryUnitConversions.inventoryId, inventoryId),
+      eq(inventoryUnitConversions.id, conversionId),
+    ),
+  );
+return (result.rowCount ?? 0) > 0;
   }
 
   async listCategories(scope?: Category["scope"]): Promise<{ id: string; name: string; scope: "ingredient" | "bom" | "menu"; isActive: boolean; printAreas: ("kitchen" | "bar" | "cashier")[]; createdAt: string; updatedAt: string; }[]> {

@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { db, withTenantTx } from "../db/client";
-import { tables, orders, orderItems, payments, paymentItems,
-  reservations, deliveryOrders, printJobs, appSettings, menuItems,
+import {  tables, orders, orderItems, payments, paymentItems,
+  reservations, deliveryOrders, printJobs, fiscalJobs, appSettings, menuItems,
   menuModifierGroups, menuModifierOptions, menuModifierOptionOverrides,
   categories, categoryModifierPools, categoryModifierPoolOptions, inventory,
 } from "../db/schema";
@@ -20,6 +20,7 @@ import {
   reservationCreateRequestSchema, reservationUpdateRequestSchema,
   reservationSchema, reservationListResponseSchema, reservationsQuerySchema,
   reservationStatusSchema, reservationNoShowRequestSchema,
+  fiscalReceiptPayloadSchema,
   deliveryOrderSchema, deliveryStatusUpdateRequestSchema, deliveryStatusSchema,
   deliveryOrdersListResponseSchema, deliveryOrdersQuerySchema, deliveryUpsertRequestSchema,
   operationalSummaryQuerySchema, reservationsSummarySchema, deliverySummarySchema,
@@ -76,11 +77,8 @@ export class TablesRepository {
 
     ep.init();
 
-    if (settings.printing.logoMode === "bitmap" && settings.printing.logoBitmap) {
-      ep.raw(0x1B, 0x33, 0x0A);
-      ep.line(`LOGO_BITMAP:${settings.printing.logoWidth}:${settings.printing.logoThreshold}`);
-      ep.raw(0x1B, 0x32);
-    }
+    // The logo is intentionally NOT printed on kitchen/bar/cashier tickets:
+    // it renders only on the cashier scontrino (buildCashierReceiptPayload).
 
     ep.align("center").doubleWidth(true).bold(true);
     ep.line(area.toUpperCase());
@@ -579,6 +577,7 @@ export class TablesRepository {
             refundReason: null,
             notes: parsed.notes ?? null,
             staffId: actorStaffId,
+            fiscalStatus: parsed.fiscalEmit ? "pending" : "none",
             createdAt: new Date(),
           })
           .returning();
@@ -615,6 +614,9 @@ export class TablesRepository {
           refundedPaymentId: paymentRow.refundedPaymentId ?? undefined,
           refundReason: paymentRow.refundReason ?? undefined,
           notes: paymentRow.notes ?? undefined,
+          fiscalStatus: paymentRow.fiscalStatus as "none" | "pending" | "emitted" | "failed" | undefined,
+          fiscalProgressive: paymentRow.fiscalProgressive ?? undefined,
+          fiscalError: paymentRow.fiscalError ?? undefined,
           staffId: paymentRow.staffId,
           createdAt: paymentRow.createdAt.toISOString(),
         },
@@ -622,6 +624,15 @@ export class TablesRepository {
     });
 
     if (result) {
+      // Opt-in certified fiscal emission (Path B): when the operator toggled
+      // fiscal on for this transaction, enqueue a job for the Go agent. Never
+      // blocks the committed close, mirroring the print dispatch behavior.
+      if (parsed.fiscalEmit) {
+        void this.enqueueFiscalReceiptJob(result.payment, receiptItems).catch((err) => {
+          console.error("[fiscal] receipt job enqueue failed:", err instanceof Error ? err.message : String(err));
+        });
+      }
+
       // Print failure must never make a committed close look failed.
       void this
         .createCashierCloseReceiptJob(
@@ -644,6 +655,57 @@ export class TablesRepository {
     }
 
     return result;
+  }
+
+  /**
+   * Opt-in certified fiscal emission (Path B). Enqueues a fiscal job for the
+   * Go agent only when a fiscal printer is configured AND enabled for the
+   * tenant — the close itself is never blocked by fiscal.
+   */
+  private async enqueueFiscalReceiptJob(
+    payment: { id: string; tableNumber: string; subtotal: number; discountAmount: number; total: number; method: "cash" | "card" | "mixed" },
+    items: Array<{ name: string; quantity: number; price: number }>,
+  ): Promise<void> {
+    const tenantId = this.currentTenantId();
+    // Read the fiscal printer config (stored under the fiscal_exports module).
+    const moduleConfigRows = await db.execute(sql`
+      SELECT config FROM tenant_module_configs
+      WHERE tenant_id = ${tenantId} AND module_key = 'fiscal_exports'
+      LIMIT 1
+    `);
+    const raw = (moduleConfigRows as unknown as { rows?: Array<{ config: string }> }).rows?.[0]?.config;
+    let printerConfig: { enabled?: boolean; host?: string } = {};
+    if (raw) {
+      try {
+        printerConfig = (JSON.parse(raw) as { fiscalPrinter?: { enabled?: boolean; host?: string } }).fiscalPrinter ?? {};
+      } catch {
+        printerConfig = {};
+      }
+    }
+    if (!printerConfig.enabled || !printerConfig.host) {
+      return;
+    }
+
+    const payload = fiscalReceiptPayloadSchema.parse({
+      paymentId: payment.id,
+      items: items.map((item) => ({ name: item.name, quantity: item.quantity, price: item.price })),
+      subtotal: payment.subtotal,
+      discountAmount: payment.discountAmount,
+      total: payment.total,
+      method: payment.method,
+      businessDate: new Date().toISOString().slice(0, 10),
+    });
+
+    const now = new Date();
+    await db.insert(fiscalJobs).values({
+      id: `fj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      tenantId,
+      type: "receipt",
+      status: "pending",
+      payload: JSON.stringify(payload),
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   /**

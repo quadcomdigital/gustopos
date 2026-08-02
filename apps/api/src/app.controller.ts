@@ -15,8 +15,11 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { Throttle } from "@nestjs/throttler";
 import {
   closeTableRequestSchema,
@@ -96,10 +99,15 @@ import {
   fiscalCloseRequestSchema,
   fiscalExportCreateRequestSchema,
   fiscalExportsQuerySchema,
+  fiscalPrinterConfigUpdateRequestSchema,
+  fiscalJobsQuerySchema,
+  fiscalBridgeClaimRequestSchema,
+  fiscalChiusuraRequestSchema,
   prepItemUpdateRequestSchema,
   unitConversionCreateRequestSchema,
   updateUiSettingsRequestSchema,
   updatePrintingSettingsRequestSchema,
+  printLogoUploadResponseSchema,
   menuItemCreateRequestSchema,
   menuItemReplaceRecipeRequestSchema,
   menuItemUpdateRequestSchema,
@@ -173,6 +181,12 @@ import {
   type TimeReportResponse,
   type FiscalClosure,
   type FiscalCloseRequest,
+  type FiscalPrinterConfig,
+  type FiscalPrinterConfigUpdateRequest,
+  type FiscalJob,
+  type FiscalBridgeJobCompleteRequest,
+  type FiscalBridgeJobFailRequest,
+  type FiscalChiusuraRequest,
   type FiscalExport,
   type FiscalExportCreateRequest,
   type FiscalExportsQuery,
@@ -232,6 +246,7 @@ import { TablesRepository } from "./repository/tables.repository";
 import { LoyaltyRepository } from "./repository/loyalty.repository";
 import { ConsumerRepository } from "./repository/consumer.repository";
 import { FiscalRepository } from "./repository/fiscal.repository";
+import { FiscalBridgeRepository } from "./repository/fiscal-bridge.repository";
 import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { CustomerRepository } from "./repository/customer.repository";
 import { PaymentsRepository } from "./repository/payments.repository";
@@ -245,6 +260,7 @@ import { Roles } from "./auth/roles.decorator";
 import { Public } from "./auth/public.decorator";
 import type { AuthenticatedRequest } from "./auth/auth-request.type";
 import { AuditLogService } from "./audit-log.service";
+import { imageBufferToLogoRaster, LOGO_IMAGE_MIME_TYPES, LOGO_MAX_BYTES, sniffImageType } from "./repository/utils/logo-raster";
 import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
 import { RequiresModule } from "./tenant/requires-module.decorator";
 import type { Response } from "express";
@@ -276,6 +292,7 @@ export class AppController {
     @Inject(PaymentsRepository) private readonly paymentsRepo: PaymentsRepository,
     @Inject(PrintJobsRepository) private readonly printJobsRepo: PrintJobsRepository,
     @Inject(PrintBridgeRepository) private readonly printBridgeRepo: PrintBridgeRepository,
+    @Inject(FiscalBridgeRepository) private readonly fiscalBridgeRepo: FiscalBridgeRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
   ) {}
@@ -1059,6 +1076,169 @@ export class AppController {
     response.send(generated.csv);
   }
 
+  // ─── Certified fiscal printer (Path B) ──────────────────────────────────
+  // Config + job queue for the RT device, reached through the Go agent.
+
+  @Get("settings/fiscal/printer")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("fiscal_exports")
+  async getFiscalPrinterConfig(): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+    const fiscalPrinter = await this.fiscalBridgeRepo.getFiscalPrinterConfig();
+    return { fiscalPrinter };
+  }
+
+  @Patch("settings/fiscal/printer")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("fiscal_exports")
+  async saveFiscalPrinterConfig(@Body() payload: FiscalPrinterConfigUpdateRequest): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+    const parsed = fiscalPrinterConfigUpdateRequestSchema.parse(payload);
+    const fiscalPrinter = await this.fiscalBridgeRepo.saveFiscalPrinterConfig(parsed.fiscalPrinter);
+    return { fiscalPrinter };
+  }
+
+  @Post("fiscal/jobs/test")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async enqueueFiscalTestJob(): Promise<{ job: FiscalJob }> {
+    const job = await this.fiscalBridgeRepo.enqueueFiscalJob({
+      type: "test",
+      payloadJson: JSON.stringify({ requestedAt: new Date().toISOString() }),
+    });
+    return { job };
+  }
+
+  @Post("fiscal/chiusura")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:close")
+  @RequiresModule("fiscal_exports")
+  async enqueueFiscalChiusura(@Body() payload: FiscalChiusuraRequest): Promise<{ job: FiscalJob }> {
+    const parsed = fiscalChiusuraRequestSchema.parse(payload);
+    const job = await this.fiscalBridgeRepo.enqueueFiscalJob({
+      type: "chiusura",
+      payloadJson: JSON.stringify({ businessDate: parsed.businessDate }),
+    });
+    return { job };
+  }
+
+  @Get("fiscal/jobs")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  async listFiscalJobs(@Query() query: Record<string, string | undefined>): Promise<{ jobs: FiscalJob[] }> {
+    const parsed = fiscalJobsQuerySchema.parse({
+      status: query.status,
+      type: query.type,
+      limit: query.limit ? Number(query.limit) : undefined,
+    });
+    const jobs = await this.fiscalBridgeRepo.listFiscalJobs(parsed);
+    return { jobs };
+  }
+
+  @Get("fiscal/jobs/:id")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  async getFiscalJob(@Param("id") id: string): Promise<{ job: FiscalJob }> {
+    const job = await this.fiscalBridgeRepo.getFiscalJobById(id);
+    if (!job) {
+      throw new NotFoundException("Fiscal job not found");
+    }
+    return { job };
+  }
+
+  // Agent-facing endpoints (mirror print-bridge: bridge/onboarding auth).
+
+  @Post("fiscal-bridge/claim")
+  @Public()
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  async fiscalBridgeClaim(@Body() raw: unknown, @Req() req: any): Promise<{ jobs: FiscalJob[] }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = fiscalBridgeClaimRequestSchema.parse(raw);
+      // The tenant must have an RT device configured for fiscal claims to be
+      // served; a misconfigured agent polling the queue must not steal jobs.
+      // The enabled toggle is enforced per-job (receipts only) so connection
+      // tests can run before the admin flips the switch.
+      const config = await this.fiscalBridgeRepo.getFiscalPrinterConfig();
+      if (!config.host) {
+        return { jobs: [] };
+      }
+      // Area gating: mirror the print claim queue boundary — only a bridge
+      // assigned to the cashier area may claim certified fiscal jobs, so a
+      // kitchen/bar-only agent can never pull (and fail) a cashier receipt.
+      const fiscalBridge = await this.printBridgeRepo.getPrintBridge(payload.bridgeId);
+      if (!fiscalBridge) {
+        return { jobs: [] };
+      }
+      const fiscalQueueAreas = fiscalBridge.version?.startsWith("go-")
+        ? fiscalBridge.claimedAreas
+        : fiscalBridge.areas;
+      if (!fiscalQueueAreas.includes("cashier")) {
+        return { jobs: [] };
+      }
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
+      const jobs: FiscalJob[] = await this.fiscalBridgeRepo.claimFiscalJobsForBridge(
+        payload.bridgeId,
+        payload.limit ?? 10,
+        instanceId,
+        auth.tenantId,
+      );
+      return { jobs };
+    });
+  }
+
+  @Post("fiscal-bridge/jobs/:id/complete")
+  @Public()
+  async fiscalBridgeJobComplete(
+    @Param("id") id: string,
+    @Body() raw: unknown,
+    @Req() req: any,
+  ): Promise<{ job: FiscalJob } | { success: false }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || "";
+      const job = await this.fiscalBridgeRepo.completeFiscalJob(
+        (raw as { bridgeId?: string })?.bridgeId ?? "",
+        id,
+        raw as FiscalBridgeJobCompleteRequest,
+        instanceId,
+        auth.tenantId,
+      );
+      if (!job) {
+        return { success: false };
+      }
+      return { job };
+    });
+  }
+
+  @Post("fiscal-bridge/jobs/:id/fail")
+  @Public()
+  async fiscalBridgeJobFail(
+    @Param("id") id: string,
+    @Body() raw: unknown,
+    @Req() req: any,
+  ): Promise<{ job: FiscalJob } | { success: false }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || "";
+      const job = await this.fiscalBridgeRepo.failFiscalJob(
+        (raw as { bridgeId?: string })?.bridgeId ?? "",
+        id,
+        raw as FiscalBridgeJobFailRequest,
+        instanceId,
+        auth.tenantId,
+      );
+      if (!job) {
+        return { success: false };
+      }
+      return { job };
+    });
+  }
+
   @Get("customers/:id")
   @Roles("admin")
   @RequiresPermissions("customers:view")
@@ -1470,6 +1650,56 @@ export class AppController {
       return updated;
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid printing settings payload");
+    }
+  }
+
+  // Upload a logo image for thermal receipts. Converts it to a 1-bit
+  // monochrome bitmap and packs it as a GS v 0 raster command, returned as
+  // base64 so the client stores it in settings.printing.logoBitmap.
+  @Post("settings/printing/logo")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: LOGO_MAX_BYTES, files: 1 },
+    }),
+  )
+  async uploadPrintLogo(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: Record<string, unknown>,
+  ): Promise<{ logoBitmap: string; logoWidth: number; logoHeight: number; byteLength: number }> {
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException("Logo file is required");
+    }
+    if (file.size > LOGO_MAX_BYTES) {
+      throw new BadRequestException("Logo file exceeds the 2 MB limit");
+    }
+    const sniffed = sniffImageType(file.buffer);
+    if (!sniffed) {
+      throw new BadRequestException("Unsupported file: upload a PNG, JPEG, BMP or GIF image");
+    }
+    if (file.mimetype && !LOGO_IMAGE_MIME_TYPES.has(file.mimetype)) {
+      // Extension/mimetype mismatch with actual content — reject rather than
+      // let a disguised payload reach the decoder. `application/octet-stream`
+      // (some clients send it for any binary) is allowed through because the
+      // magic bytes already passed the sniff check above.
+      if (file.mimetype !== "application/octet-stream") {
+        throw new BadRequestException("File type does not match its content");
+      }
+    }
+
+    const width = Number(body?.width);
+    const threshold = Number(body?.threshold);
+    try {
+      const result = await imageBufferToLogoRaster(file.buffer, {
+        width: Number.isFinite(width) && width > 0 ? width : 384,
+        threshold: Number.isFinite(threshold) ? threshold : 160,
+      });
+      return printLogoUploadResponseSchema.parse(result);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Logo conversion failed");
     }
   }
 
@@ -2612,8 +2842,13 @@ export class AppController {
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async createPrepItem(@Body() payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) {
-    if (!payload.ingredientId || !payload.name?.trim() || !payload.quantityPerUnit || payload.quantityPerUnit <= 0 || !payload.unit) {
+  async createPrepItem(@Body() payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }) {
+    const hasIngredient = !!payload.ingredientId;
+    const hasBom = !!payload.bomId;
+    if (hasIngredient === hasBom) {
+      throw new BadRequestException("Prep item must reference exactly one of an ingredient or a BoM");
+    }
+    if (!payload.name?.trim() || !payload.quantityPerUnit || payload.quantityPerUnit <= 0 || !payload.unit) {
       throw new BadRequestException("Invalid prep item data");
     }
     try {
@@ -2678,6 +2913,18 @@ export class AppController {
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
+  }
+
+  @Delete("inventory/:id/conversions/:conversionId")
+  @RequiresPermissions("inventory:manage")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async deleteUnitConversion(@Param("id") id: string, @Param("conversionId") conversionId: string) {
+    const ok = await this.inventoryRepo.deleteUnitConversion(id, conversionId);
+    if (!ok) {
+      throw new NotFoundException("Conversione non trovata");
+    }
+    return { success: true };
   }
 
   // ─── Food Cost Matrix ─────────────────────────────────────────────────
@@ -2854,7 +3101,7 @@ export class AppController {
   // throttle is an abuse backstop, not a functional cap (a busy restaurant
   // can run several bridges behind one NAT/IP).
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
-  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string }> {
+  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string; fiscalPrinter?: FiscalPrinterConfig }> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
     return this.withBridgeTenantContext(auth.tenantId, async () => {
       const heartbeatInput = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -2921,7 +3168,16 @@ export class AppController {
       }
 
       void this.realtimeGateway.emit(socketEvents.bridgeStatus, bridge, bridge.tenantId).catch((err) => console.warn('[realtime] bridge:status emit failed:', err));
-      return { bridge, serverTime: new Date().toISOString() };
+      // Certified fiscal (Path B): hand the tenant's RT printer config to the
+      // agent on every heartbeat so the web UI's "Salva configurazione" takes
+      // effect without touching the agent's local file. Omitted when the
+      // tenant never configured a device, so the agent keeps its local config.
+      const fiscalPrinter = await this.fiscalBridgeRepo.getFiscalPrinterConfig();
+      return {
+        bridge,
+        serverTime: new Date().toISOString(),
+        ...(fiscalPrinter.host ? { fiscalPrinter } : {}),
+      };
     });
   }
 

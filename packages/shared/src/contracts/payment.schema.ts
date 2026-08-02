@@ -41,6 +41,11 @@ export const paymentSchema = z.object({
   staffId: z.string().min(1),
   createdAt: z.string(),
   items: z.array(paymentItemSchema).optional(),
+  // Certified fiscal emission (Path B) — populated when the operator opted in
+  // and the RT printer emitted the receipt via the Go agent.
+  fiscalStatus: z.enum(["none", "pending", "emitted", "failed"]).optional(),
+  fiscalProgressive: z.string().optional(),
+  fiscalError: z.string().optional(),
 });
 
 // ─── Close Table ────────────────────────────────────────────────────────────
@@ -57,6 +62,10 @@ export const closeTableRequestSchema = z.object({
   gatewayReference: z.string().min(3).max(120).optional(),
   paymentStatus: paymentStatusSchema.optional(),
   notes: z.string().max(500).optional(),
+  // Opt-in certified fiscal emission: when true (and a fiscal printer is
+  // configured for the tenant), the API enqueues a fiscal job for the Go
+  // agent. Default OFF — fiscal is never mandatory.
+  fiscalEmit: z.boolean().optional(),
 });
 
 export const closeTableResponseSchema = z.object({

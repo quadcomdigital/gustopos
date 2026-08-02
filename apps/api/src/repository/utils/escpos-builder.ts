@@ -96,6 +96,14 @@ export class EscPosBuilder {
     return this;
   }
 
+  /**
+   * Splice pre-encoded bytes (e.g. a GS v 0 raster command) into the payload.
+   */
+  bytes(data: Uint8Array) {
+    for (const b of data) this.buf.push(b);
+    return this;
+  }
+
   build(): string {
     return Buffer.from(new Uint8Array(this.buf)).toString("base64");
   }
@@ -109,6 +117,20 @@ export const RECEIPT_WIDTH = 42;
  * Font B/Font A glyph-width ratio (12/9), with a small safety margin.
  */
 export const CASHIER_RECEIPT_WIDTH = 56;
+
+/**
+ * True when the stored base64 is a valid GS v 0 raster command we can splice
+ * (1D 76 30 header). Pure byte check — no image decoding involved.
+ */
+export function isValidLogoRaster(logoBitmap: string | undefined | null): boolean {
+  if (!logoBitmap || typeof logoBitmap !== "string") return false;
+  try {
+    const bytes = Buffer.from(logoBitmap, "base64");
+    return bytes.length >= 8 && bytes[0] === 0x1d && bytes[1] === 0x76 && bytes[2] === 0x30;
+  } catch {
+    return false;
+  }
+}
 
 export function padRight(s: string, width: number): string {
   if (s.length >= width) return s.slice(0, width);
@@ -159,10 +181,15 @@ export function buildCashierReceiptPayload(params: {
   const ep = new EscPosBuilder();
   ep.init();
 
-  if (logoMode === "bitmap" && logoBitmap) {
+  if (logoMode === "bitmap" && logoBitmap && isValidLogoRaster(logoBitmap)) {
+    // The stored logoBitmap is the base64 of a complete GS v 0 raster
+    // command produced by the upload endpoint. Splice it verbatim so the
+    // logo renders as a real bitmap instead of a placeholder marker.
+    const raster = Buffer.from(logoBitmap, "base64");
     ep.raw(0x1B, 0x33, 0x0A);
-    ep.line(`LOGO_BITMAP:${logoWidth}:${logoThreshold}`);
+    ep.bytes(raster);
     ep.raw(0x1B, 0x32);
+    ep.line();
   }
 
   ep.align("center").doubleWidth(true).bold(true);

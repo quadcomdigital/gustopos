@@ -7,7 +7,10 @@ import {
   padRight,
   padLeft,
   RECEIPT_WIDTH,
+  buildCashierReceiptPayload,
 } from "./utils/escpos-builder";
+import { imageBufferToLogoRaster } from "./utils/logo-raster";
+import Jimp from "jimp";
 
 /**
  * Tests for ESC/POS receipt encoding and formatting helpers.
@@ -78,6 +81,64 @@ test("shared ESC/POS builder preserves large-item layout and reset commands", ()
   assert.ok(enableIndex >= 0, "payload should enable double width for the item");
   assert.ok(resetIndex > enableIndex, "payload should reset double width after the item");
 });
+
+// ─── Cashier receipt logo raster ──────────────────────────────────────────
+
+const RECEIPT_ARGS = {
+  brandName: "GUSTOPOS",
+  tableNumber: "5",
+  items: [{ name: "Pizza", quantity: 1, price: 8.5, notes: null }],
+  subtotal: 8.5,
+  discountAmount: 0,
+  surchargeAmount: 0,
+  total: 8.5,
+  method: "cash" as const,
+  paidAmount: 8.5,
+  changeAmount: 0,
+  notes: null,
+  receiptFooter: "Grazie",
+  logoMode: "none" as const,
+  logoBitmap: undefined,
+  logoWidth: 384,
+  logoThreshold: 160,
+};
+
+async function makeLogoBitmap(width = 384, height = 128): Promise<string> {
+  const img = new Jimp(width, height, 0x000000ff);
+  const png = await img.getBufferAsync(Jimp.MIME_PNG);
+  const result = await imageBufferToLogoRaster(png, { width, threshold: 160 });
+  return result.logoBitmap;
+}
+
+function payloadBytes(payload: string): number[] {
+  return [...Buffer.from(payload, "base64")];
+}
+
+test("cashier receipt with bitmap logo embeds the GS v 0 raster bytes", async () => {
+  const logoBitmap = await makeLogoBitmap();
+  const payload = buildCashierReceiptPayload({
+    ...RECEIPT_ARGS,
+    logoMode: "bitmap",
+    logoBitmap,
+  });
+  const bytes = payloadBytes(payload);
+  const signatureIndex = bytes.findIndex(
+    (byte, index) =>
+      byte === 0x1d &&
+      bytes[index + 1] === 0x76 &&
+      bytes[index + 2] === 0x30 &&
+      bytes[index + 3] === 0x00,
+  );
+  assert.ok(signatureIndex >= 0, "payload should contain a GS v 0 raster command");
+  // Full raster command (header + data) must be present verbatim.
+  const rasterBytes = [...Buffer.from(logoBitmap, "base64")];
+  assert.ok(
+    rasterBytes.every((b, i) => bytes[signatureIndex + i] === b),
+    "the stored raster command should be spliced verbatim into the payload",
+  );
+});
+
+// ─── Shared ESC/POS builder (app.repository + tables.repository) ───────────
 
 test("shared ESC/POS builder feeds before full cut", () => {
   const payload = Buffer.from(new EscPosBuilder().init().line("ticket").feed(5).cut().build(), "base64");

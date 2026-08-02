@@ -41,6 +41,22 @@ POS machine                    VPS
 | `POST /api/print-bridge/jobs/:id/fail` | mark job failed |
 | `GET /api/print-bridge/sign?request=<sha256hex>` | bridge-authenticated server-side QZ message signing (no key on POS) |
 | `GET /signing/digital-certificate.txt` | fetch the QZ signing certificate |
+| `POST /api/fiscal-bridge/claim` | poll for certified fiscal jobs (receipt/chiusura/test) |
+| `POST /api/fiscal-bridge/jobs/:id/complete` | report emitted receipt with the fiscal progressive |
+| `POST /api/fiscal-bridge/jobs/:id/fail` | report emission failure |
+
+Certified fiscal emission (Path B) is **opt-in**: the tenant enables it in the
+web UI and the RT device config (host/port/model) is delivered to the agent via
+the heartbeat response. The agent talks to the Registratore Telematico over TCP
+using the generic protocollo RT text command family (`fiscal.go`); only agents
+with a configured device claim fiscal jobs, and only `receipt` jobs require the
+`enabled` toggle — connection tests and daily chiusura run before enabling.
+
+Fiscal claims are **area-gated** like print jobs: only a bridge assigned to the
+`cashier` claimed area may claim certified fiscal jobs (enforced both by the
+API and locally by the agent). A kitchen- or bar-only agent never pulls a
+cashier receipt, so the cashier station remains the sole owner of the RT
+device.
 
 All bridge requests carry:
 - `X-Print-Bridge-Key: <6-digit code>` — the credential

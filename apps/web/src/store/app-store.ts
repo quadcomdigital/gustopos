@@ -144,6 +144,7 @@ import {
   fetchData,
   fetchBootstrap,
   fetchInventory,
+  fetchPrepItems,
   fetchCategories,
   fetchSimpleCatalogCategories,
   fetchCustomers,
@@ -893,7 +894,8 @@ interface AppState {
   refreshPrepItems: () => Promise<void>;
   fetchUnitConversions: (inventoryId: string) => Promise<UnitConversion[]>;
   createUnitConversion: (inventoryId: string, payload: UnitConversionCreateRequest) => Promise<UnitConversion>;
-  createPrepItem: (payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
+  deleteUnitConversion: (inventoryId: string, conversionId: string) => Promise<void>;
+  createPrepItem: (payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
   updatePrepItem: (id: string, payload: PrepItemUpdateRequest) => Promise<PrepItem>;
   deletePrepItem: (id: string) => Promise<void>;
   preparePrepItem: (id: string, quantity: number) => Promise<PreparePrepItemResponse>;
@@ -3484,15 +3486,43 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     await revokeOnboardingSecretRequest(id);
   },
   refreshPrepItems: async () => {
-    set({ prepItemsLastFetchedAt: new Date().toISOString() });
+    try {
+      const currentUser = get().currentUser;
+      if (!currentUser) return;
+      if (!hasModuleEnabled(get(), 'inventory')) return;
+      const prepItems = await fetchPrepItems();
+      set({ prepItems });
+    } catch (err) {
+      set({ error: handleActionError(err) });
+    }
   },
   fetchUnitConversions: async (inventoryId) => {
     const data = await authorizedFetch(`${API_URL}/api/inventory/${encodeURIComponent(inventoryId)}/conversions`).then((r: Response) => r.json());
-    return data?.conversions ?? [];
+    // API returns a plain array; tolerate the legacy { conversions } envelope too.
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.conversions)) return data.conversions;
+    return [];
   },
   createUnitConversion: async (inventoryId, payload) => {
-    const data = await authorizedFetch(`${API_URL}/api/inventory/${encodeURIComponent(inventoryId)}/conversions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then((r: Response) => r.json());
+    const response = await authorizedFetch(`${API_URL}/api/inventory/${encodeURIComponent(inventoryId)}/conversions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await response.json();
+    if (!response.ok) {
+      const message = typeof data === 'object' && data && 'message' in data
+        ? String((data as { message: string }).message)
+        : 'Request failed';
+      throw new Error(message);
+    }
     return data;
+  },
+  deleteUnitConversion: async (inventoryId, conversionId) => {
+    const response = await authorizedFetch(`${API_URL}/api/inventory/${encodeURIComponent(inventoryId)}/conversions/${encodeURIComponent(conversionId)}`, { method: 'DELETE' });
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const message = typeof data === 'object' && data && 'message' in data
+        ? String((data as { message: string }).message)
+        : 'Errore eliminazione conversione';
+      throw new Error(message);
+    }
   },
   createPrepItem: async (payload) => {
     const data = await authorizedFetch(`${API_URL}/api/prep-items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then((r: Response) => r.json());

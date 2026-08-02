@@ -546,11 +546,8 @@ export class AppRepository {
 
     ep.init();
 
-    if (settings.printing.logoMode === "bitmap" && settings.printing.logoBitmap) {
-      ep.raw(0x1B, 0x33, 0x0A);
-      ep.line(`LOGO_BITMAP:${settings.printing.logoWidth}:${settings.printing.logoThreshold}`);
-      ep.raw(0x1B, 0x32);
-    }
+    // The logo is intentionally NOT printed on kitchen/bar/cashier tickets:
+    // it renders only on the cashier scontrino (buildCashierReceiptPayload).
 
     ep.align("center").doubleSize(true).bold(true);
     ep.line(area.toUpperCase());
@@ -2581,6 +2578,7 @@ export class AppRepository {
         id: prepItems.id,
         tenantId: prepItems.tenantId,
         ingredientId: prepItems.ingredientId,
+        bomId: prepItems.bomId,
         name: prepItems.name,
         quantityPerUnit: prepItems.quantityPerUnit,
         unit: prepItems.unit,
@@ -2595,6 +2593,7 @@ export class AppRepository {
       id: row.id,
       tenantId: row.tenantId,
       ingredientId: row.ingredientId,
+      bomId: row.bomId,
       name: row.name,
       quantityPerUnit: Number(row.quantityPerUnit),
       unit: row.unit,

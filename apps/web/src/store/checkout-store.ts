@@ -41,6 +41,10 @@ interface CheckoutState {
   discountAmount: string;
   surchargeAmount: string;
   gatewayReference: string;
+  // Opt-in certified fiscal emission (Path B). Default OFF — the operator
+  // explicitly enables fiscal for the transaction on the close screen.
+  fiscalEmit: boolean;
+  setFiscalEmit: (enabled: boolean) => void;
   
   openCheckout: (tableId: string, tableNumber: string) => Promise<void>;
   closeCheckout: () => void;
@@ -91,6 +95,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   discountAmount: '',
   surchargeAmount: '',
   gatewayReference: '',
+  fiscalEmit: false,
   
   openCheckout: async (tableId, tableNumber) => {
     set({ isOpen: true, step: 'main', tableId, tableNumber, error: '' });
@@ -114,6 +119,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
       discountAmount: '',
       surchargeAmount: '',
       gatewayReference: '',
+      fiscalEmit: false,
       error: '',
       busy: false,
     });
@@ -328,8 +334,10 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   
   setGatewayReference: (ref) => set({ gatewayReference: ref }),
   
+  setFiscalEmit: (enabled) => set({ fiscalEmit: enabled }),
+  
   closeTable: async (tableId) => {
-    const { closeMethod, paidAmount, discountAmount, surchargeAmount, gatewayReference } = get();
+    const { closeMethod, paidAmount, discountAmount, surchargeAmount, gatewayReference, fiscalEmit } = get();
     
     set({ busy: true, error: '' });
     
@@ -341,6 +349,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
         ...(surchargeAmount.trim().length > 0 && Number.isFinite(Number(surchargeAmount)) ? { surchargeAmount: Math.max(0, Number(surchargeAmount)) } : {}),
         ...(closeMethod !== 'cash' && gatewayReference.trim().length > 0 ? { gatewayReference: gatewayReference.trim() } : {}),
         paymentStatus: 'captured',
+        ...(fiscalEmit ? { fiscalEmit: true } : {}),
       });
       
       get().closeCheckout();

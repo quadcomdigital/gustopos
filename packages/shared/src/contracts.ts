@@ -53,6 +53,7 @@ export * from "./contracts/bom.schema";
 
 // ─── Re-export print domain ───────────────────────────────────────────────
 export * from "./contracts/print.schema";
+export * from "./contracts/fiscal.schema";
 
 // ─── Re-export misc domains ───────────────────────────────────────────────
 export * from "./contracts/prep.schema";

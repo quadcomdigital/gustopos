@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { printAreaSchema } from "../contracts/shared.schema";
+import { fiscalPrinterConfigSchema } from "./fiscal.schema";
 
 // ─── Print Job ─────────────────────────────────────────────────────────
 
@@ -79,7 +80,10 @@ export const uiSettingsSchema = z.object({
     autoPrintKitchen: z.boolean(),
     autoPrintOnClose: z.boolean(),
     logoMode: z.enum(["none", "bitmap"]),
-    logoBitmap: z.string().optional(),
+    // Base64 of the full ESC/POS raster command (GS v 0) produced by the
+    // logo upload endpoint. Kept in settings so receipt builders splice the
+    // already-converted bytes without needing an image decoder at print time.
+    logoBitmap: z.string().max(400_000).optional(),
     logoWidth: z.number().int().min(128).max(576),
     logoThreshold: z.number().int().min(0).max(255),
     receiptFooter: z.string().max(200),
@@ -90,6 +94,14 @@ export const updateUiSettingsRequestSchema = uiSettingsSchema;
 
 export const updatePrintingSettingsRequestSchema = z.object({
   printing: uiSettingsSchema.shape.printing.partial(),
+});
+
+export const printLogoUploadResponseSchema = z.object({
+  // Base64 of the complete ESC/POS raster command (GS v 0) — ready to splice.
+  logoBitmap: z.string().min(8).max(400_000),
+  logoWidth: z.number().int().min(8).max(576),
+  logoHeight: z.number().int().min(1).max(2048),
+  byteLength: z.number().int().positive(),
 });
 
 // ─── Print-Bridge ──────────────────────────────────────────────────────
@@ -139,6 +151,9 @@ export const printBridgeHeartbeatRequestSchema = z.object({
 export const printBridgeHeartbeatResponseSchema = z.object({
   bridge: printBridgeSchema,
   serverTime: z.string(),
+  // Certified fiscal (Path B): the tenant's RT printer config, present only
+  // when the tenant configured a device. The Go agent applies it on receipt.
+  fiscalPrinter: fiscalPrinterConfigSchema.optional(),
 });
 
 export const printBridgeClaimRequestSchema = z.object({
@@ -315,6 +330,7 @@ export type UiTheme = z.infer<typeof uiThemeSchema>;
 export type UiSettings = z.infer<typeof uiSettingsSchema>;
 export type UpdateUiSettingsRequest = z.infer<typeof updateUiSettingsRequestSchema>;
 export type UpdatePrintingSettingsRequest = z.infer<typeof updatePrintingSettingsRequestSchema>;
+export type PrintLogoUploadResponse = z.infer<typeof printLogoUploadResponseSchema>;
 export type PrintBridgePrinter = z.infer<typeof printBridgePrinterSchema>;
 export type PrintBridgePrinterMapping = z.infer<typeof printBridgePrinterMappingSchema>;
 export type PrintBridge = z.infer<typeof printBridgeSchema>;

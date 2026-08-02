@@ -1,7 +1,7 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import type { PrintJob, UiSettings } from '@gustopos/shared';
 import { useAppStore } from '../../store/app-store';
-import type { QzTrayConfig } from '../../shared/api/client';
+import { uploadPrintLogo, type QzTrayConfig } from '../../shared/api/client';
 
 interface PrintSettingsSectionProps {
   draft: UiSettings;
@@ -55,6 +55,50 @@ export default function PrintSettingsSection({
   const idPrefix = useId();
   const fieldId = (key: string) => `${idPrefix}-${key}`;
   const [bridgeEndpointOverride, setBridgeEndpointOverride] = useState('');
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState('');
+  const [logoPreview, setLogoPreview] = useState('');
+  const [logoMeta, setLogoMeta] = useState('');
+  const logoFileInput = useRef<HTMLInputElement>(null);
+
+  const clearLogo = () => {
+    setPrinting({ logoMode: 'none', logoBitmap: undefined });
+    setLogoPreview('');
+    setLogoMeta('');
+    setLogoError('');
+    if (logoFileInput.current) logoFileInput.current.value = '';
+  };
+
+  const handleLogoFile = async (file: File | undefined) => {
+    setLogoError('');
+    if (!file) return;
+    const ALLOWED = ['image/png', 'image/jpeg', 'image/bmp', 'image/gif'];
+    if (!ALLOWED.includes(file.type)) {
+      setLogoError('Formato non supportato: usa PNG, JPEG, BMP o GIF.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setLogoError('File troppo grande (max 2 MB).');
+      return;
+    }
+    setLogoUploading(true);
+    try {
+      const result = await uploadPrintLogo(file, {
+        width: draft.printing.logoWidth,
+        threshold: draft.printing.logoThreshold,
+      });
+      setPrinting({ logoMode: 'bitmap', logoBitmap: result.logoBitmap, logoWidth: result.logoWidth });
+      setLogoMeta(`${result.logoWidth}×${result.logoHeight} px · ${(result.byteLength / 1024).toFixed(1)} KB`);
+      // Local preview of the original image (the server converts to 1-bit).
+      const reader = new FileReader();
+      reader.onload = () => setLogoPreview(String(reader.result ?? ''));
+      reader.readAsDataURL(file);
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : 'Caricamento logo fallito.');
+    } finally {
+      setLogoUploading(false);
+    }
+  };
 
   const setPrinting = (patch: Partial<UiSettings['printing']>) => {
     onSetDraft((prev) => ({ ...prev, printing: { ...prev.printing, ...patch } }));
@@ -101,47 +145,87 @@ export default function PrintSettingsSection({
         </div>
 
         {draft.printing.logoMode === 'bitmap' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label htmlFor={fieldId('printLogoWidth')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Larghezza Bitmap</label>
-              <input
-                id={fieldId('printLogoWidth')}
-                value={String(draft.printing.logoWidth)}
-                onChange={(event) => {
-                  const next = Number(event.target.value.replace(/[^0-9]/g, ''));
-                  onSetDraft((prev) => ({
-                    ...prev,
-                    printing: { ...prev.printing, logoWidth: Number.isFinite(next) ? next : prev.printing.logoWidth },
-                  }));
-                }}
-                className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
-              />
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor={fieldId('printLogoWidth')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Larghezza (dot)</label>
+                <input
+                  id={fieldId('printLogoWidth')}
+                  value={String(draft.printing.logoWidth)}
+                  onChange={(event) => {
+                    const next = Number(event.target.value.replace(/[^0-9]/g, ''));
+                    onSetDraft((prev) => ({
+                      ...prev,
+                      printing: { ...prev.printing, logoWidth: Number.isFinite(next) ? next : prev.printing.logoWidth },
+                    }));
+                  }}
+                  className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor={fieldId('printLogoThreshold')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Soglia bianco/nero (0-255)</label>
+                <input
+                  id={fieldId('printLogoThreshold')}
+                  value={String(draft.printing.logoThreshold)}
+                  onChange={(event) => {
+                    const next = Number(event.target.value.replace(/[^0-9]/g, ''));
+                    onSetDraft((prev) => ({
+                      ...prev,
+                      printing: { ...prev.printing, logoThreshold: Number.isFinite(next) ? next : prev.printing.logoThreshold },
+                    }));
+                  }}
+                  className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
+                />
+              </div>
             </div>
-            <div>
-              <label htmlFor={fieldId('printLogoThreshold')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Threshold Bitmap</label>
-              <input
-                id={fieldId('printLogoThreshold')}
-                value={String(draft.printing.logoThreshold)}
-                onChange={(event) => {
-                  const next = Number(event.target.value.replace(/[^0-9]/g, ''));
-                  onSetDraft((prev) => ({
-                    ...prev,
-                    printing: { ...prev.printing, logoThreshold: Number.isFinite(next) ? next : prev.printing.logoThreshold },
-                  }));
-                }}
-                className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
-              />
+
+            <div className="rounded border border-border p-3 space-y-2 bg-gray-50">
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={() => logoFileInput.current?.click()}
+                  disabled={logoUploading}
+                  className="px-3 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+                >
+                  {logoUploading ? 'Conversione...' : '📁 Carica logo'}
+                </button>
+                <input
+                  ref={logoFileInput}
+                  id={fieldId('printLogoFile')}
+                  type="file"
+                  accept="image/png,image/jpeg,image/bmp,image/gif"
+                  onChange={(event) => void handleLogoFile(event.target.files?.[0])}
+                  className="hidden"
+                />
+                {draft.printing.logoBitmap && (
+                  <button
+                    onClick={clearLogo}
+                    className="px-3 py-2 rounded border border-danger/40 text-danger text-xs font-bold uppercase tracking-wider"
+                  >
+                    🗑 Rimuovi logo
+                  </button>
+                )}
+              </div>
+              {logoError && <p className="text-xs text-danger font-medium">{logoError}</p>}
+              {(logoPreview || draft.printing.logoBitmap) && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  {logoPreview ? (
+                    <img
+                      src={logoPreview}
+                      alt="Anteprima logo"
+                      className="h-12 w-auto object-contain bg-white border border-border rounded px-1"
+                    />
+                  ) : (
+                    <div className="h-12 w-24 flex items-center justify-center border border-dashed border-border rounded text-[10px] text-text-muted uppercase">
+                      Logo salvato
+                    </div>
+                  )}
+                  {logoMeta && <span className="text-xs text-text-muted font-mono">{logoMeta}</span>}
+                </div>
+              )}
             </div>
-            <div>
-              <label htmlFor={fieldId('printLogoBitmap')} className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Bitmap Logo (base64)</label>
-              <input
-                id={fieldId('printLogoBitmap')}
-                value={draft.printing.logoBitmap ?? ''}
-                onChange={(event) => setPrinting({ logoBitmap: event.target.value || undefined })}
-                placeholder="data:image/png;base64,..."
-                className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
-              />
-            </div>
+            <p className="text-[11px] text-text-muted">
+              Il logo viene stampato solo sullo <strong>scontrino cassa</strong> (chiusura tavolo), non sui ticket cucina/bar.
+            </p>
           </div>
         )}
 

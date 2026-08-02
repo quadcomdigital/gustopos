@@ -370,6 +370,11 @@ export const payments = pgTable("payments", {
   refundReason: text("refund_reason"),
   notes: text("notes"),
   shareIndex: integer("share_index"),
+  // Certified fiscal emission (Path B): populated when the operator opted in
+  // and the RT printer emitted the receipt via the Go agent.
+  fiscalStatus: text("fiscal_status").notNull().default("none"),
+  fiscalProgressive: text("fiscal_progressive"),
+  fiscalError: text("fiscal_error"),
   staffId: text("staff_id")
     .notNull()
     .references(() => staff.id, { onDelete: "restrict" }),
@@ -688,6 +693,28 @@ export const fiscalClosuresArchive = pgTable("fiscal_closures_archive", {
   index("fiscal_closures_archive_tenant_date_idx").on(table.tenantId, table.businessDate),
 ]);
 
+export const fiscalJobs = pgTable(
+  "fiscal_jobs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    type: text("type").notNull(), // receipt | chiusura | test
+    status: text("status").notNull().default("pending"),
+    payload: text("payload").notNull(),
+    result: text("result"),
+    error: text("error"),
+    bridgeId: text("bridge_id").references(() => printBridges.id, { onDelete: "set null" }),
+    claimedByInstanceId: text("claimed_by_instance_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("fiscal_jobs_tenant_status_type_idx").on(table.tenantId, table.status, table.type),
+  ],
+);
+
 export const fiscalExports = pgTable("fiscal_exports", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
@@ -940,9 +967,11 @@ export const inventoryAudit = pgTable("inventory_audit", {
 export const prepItems = pgTable("prep_items", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  ingredientId: text("ingredient_id")
-    .notNull()
-    .references(() => inventory.id, { onDelete: "cascade" }),
+  // Exactly one of ingredient_id / bom_id is set. ingredient_id keeps the
+  // original single-ingredient variants; bom_id links a prep item to a BoM
+  // recipe so preparing it deducts every component of the recipe (Cartoccio).
+  ingredientId: text("ingredient_id").references(() => inventory.id, { onDelete: "cascade" }),
+  bomId: text("bom_id").references(() => bomItems.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   quantityPerUnit: numeric("quantity_per_unit", { precision: 12, scale: 3 }).notNull(),
   unit: text("unit").notNull(),
@@ -951,6 +980,7 @@ export const prepItems = pgTable("prep_items", {
 }, (t) => [
   index("prep_items_tenant_idx").on(t.tenantId),
   index("prep_items_ingredient_idx").on(t.ingredientId),
+  index("prep_items_bom_idx").on(t.bomId),
 ]);
 
 export const printBridgeOnboardingSecrets = pgTable("print_bridge_onboarding_secrets", {

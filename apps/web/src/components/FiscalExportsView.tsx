@@ -1,9 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { pushToast } from '../shared/ui/toast';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';
 import { cn } from '../lib/utils';
 import ConfirmDialog from './ConfirmDialog';
+import {
+  fetchFiscalPrinterConfig,
+  updateFiscalPrinterConfig,
+  enqueueFiscalTestJob,
+  enqueueFiscalChiusura,
+  fetchFiscalJobs,
+} from '../shared/api/client';
+import type { FiscalPrinterConfig, FiscalJob } from '@gustopos/shared';
 
 function escapeHtml(str: string): string {
   return str
@@ -31,11 +39,106 @@ export default function FiscalExportsView() {
   // UX-004: mobile task split — Genera / Chiudi / Storico, one action per screen.
   const [mobileTab, setMobileTab] = useState<'generate' | 'close' | 'history'>('generate');
 
+  // ── Certified fiscal printer (Path B: Registratore Telematico) ──────────
+  const [printer, setPrinter] = useState<FiscalPrinterConfig | null>(null);
+  const [savingPrinter, setSavingPrinter] = useState(false);
+  const [jobs, setJobs] = useState<FiscalJob[]>([]);
+  const [rtTestStatus, setRtTestStatus] = useState<'idle' | 'pending' | 'success' | 'failed'>('idle');
+
   const mapError = (value: unknown) => {
     const message = value instanceof Error ? value.message : 'Errore modulo fiscale';
     if (message.includes('Fiscal day already closed')) return 'La giornata fiscale risulta gia chiusa.';
     return message;
   };
+
+  const loadPrinterConfig = async () => {
+    try {
+      const { fiscalPrinter } = await fetchFiscalPrinterConfig();
+      setPrinter(fiscalPrinter);
+    } catch (configError) {
+      setError(mapError(configError));
+    }
+  };
+
+  const refreshFiscalJobs = async () => {
+    try {
+      const { jobs: jobList } = await fetchFiscalJobs({ limit: 10 });
+      setJobs(jobList);
+    } catch {
+      // Non-fatal: jobs list is informational.
+    }
+  };
+
+  const savePrinter = async () => {
+    if (!printer) return;
+    setSavingPrinter(true);
+    setError('');
+    setSuccess('');
+    try {
+      const { fiscalPrinter: updated } = await updateFiscalPrinterConfig({ fiscalPrinter: printer });
+      setPrinter(updated);
+      setSuccess('Configurazione RT salvata.');
+      pushToast('success', 'Configurazione RT salvata.');
+    } catch (saveError) {
+      const message = mapError(saveError);
+      setError(message);
+      pushToast('error', message);
+    } finally {
+      setSavingPrinter(false);
+    }
+  };
+
+  const testPrinter = async () => {
+    setRtTestStatus('pending');
+    setError('');
+    setSuccess('');
+    try {
+      const { job } = await enqueueFiscalTestJob();
+      await refreshFiscalJobs();
+      if (job.status === 'failed') {
+        setRtTestStatus('failed');
+        setError(job.error ?? 'Test RT fallito.');
+        return;
+      }
+      setRtTestStatus('success');
+      setSuccess('Test RT accodato: verifica il progressivo sull\'agente.');
+      pushToast('success', 'Test RT accodato.');
+    } catch (testError) {
+      setRtTestStatus('failed');
+      const message = mapError(testError);
+      setError(message);
+      pushToast('error', message);
+    }
+  };
+
+  const runChiusura = async () => {
+    setRtTestStatus('pending');
+    setError('');
+    setSuccess('');
+    try {
+      const { job } = await enqueueFiscalChiusura(businessDate);
+      await refreshFiscalJobs();
+      if (job.status === 'failed') {
+        setRtTestStatus('failed');
+        setError(job.error ?? 'Chiusura RT fallita.');
+        return;
+      }
+      setRtTestStatus('success');
+      setSuccess('Chiusura RT accodata all\'agente.');
+      pushToast('success', 'Chiusura RT accodata.');
+    } catch (chiusuraError) {
+      setRtTestStatus('failed');
+      const message = mapError(chiusuraError);
+      setError(message);
+      pushToast('error', message);
+    }
+  };
+
+  useEffect(() => {
+    void loadPrinterConfig();
+    void refreshFiscalJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Query-aware TTL: refreshFiscalExports short-circuits when the same query
   // was fetched within the last 30s, so navigating away and back does not
@@ -231,6 +334,116 @@ export default function FiscalExportsView() {
             {tab.label}
           </button>
         ))}
+      </div>
+
+      {/* Certified fiscal printer (Registratore Telematico) — Path B */}
+      <div className="bg-white border border-border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-lg font-bold text-primary uppercase tracking-wide">Registratore Telematico</h2>
+          <span className={cn('px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider', printer?.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-bg text-text-muted')}>
+            {printer?.enabled ? 'Attivo' : 'Disattivato'}
+          </span>
+        </div>
+        <p className="text-xs text-text-muted">
+          Connessione al registratore via agente stampa (protocollo RT su TCP/IP locale).
+          L'emissione fiscale è <strong>opt-in per singola transazione</strong> — mai obbligatoria.
+        </p>
+        <p className="text-[11px] text-text-muted bg-bg/50 rounded-lg px-3 py-2">
+          ⚠️ L'agente che emette deve avere assegnata l'area <strong>cassa</strong> (Stampanti → Aree).
+          Senza area cassa i lavori fiscali non vengono prelevati.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Modello</span>
+            <select
+              value={printer?.model ?? 'generic-rt'}
+              onChange={(event) => setPrinter((current) => current ? { ...current, model: event.target.value as FiscalPrinterConfig['model'] } : current)}
+              className="mt-1 w-full px-3 py-2 rounded border border-border text-sm bg-white"
+            >
+              <option value="generic-rt">Generico (protocollo RT)</option>
+              <option value="epson-tm-s1000">Epson TM-S1000</option>
+              <option value="custom-vkp80iii">Custom VKP80 III</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Host / IP</span>
+            <input
+              type="text"
+              value={printer?.host ?? ''}
+              placeholder="192.168.1.50"
+              onChange={(event) => setPrinter((current) => current ? { ...current, host: event.target.value } : current)}
+              className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Porta</span>
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              value={printer?.port ?? 4001}
+              onChange={(event) => setPrinter((current) => current ? { ...current, port: Number(event.target.value) } : current)}
+              className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
+            />
+          </label>
+          <label className="flex items-end gap-2 pb-1">
+            <input
+              type="checkbox"
+              checked={printer?.enabled ?? false}
+              onChange={(event) => setPrinter((current) => current ? { ...current, enabled: event.target.checked } : current)}
+              className="h-4 w-4 accent-primary"
+            />
+            <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted">Abilita stampante fiscale</span>
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => void savePrinter()}
+            disabled={savingPrinter || !printer}
+            className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+          >
+            {savingPrinter ? 'Salvataggio...' : 'Salva configurazione'}
+          </button>
+          <button
+            onClick={() => void testPrinter()}
+            disabled={rtTestStatus === 'pending' || !printer?.host}
+            className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+          >
+            {rtTestStatus === 'pending' ? 'Test in corso...' : 'Test connessione'}
+          </button>
+          <button
+            onClick={() => void runChiusura()}
+            disabled={rtTestStatus === 'pending' || !printer?.host}
+            className="px-4 py-2 rounded border-2 border-amber-500 text-amber-700 text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+          >
+            Chiusura RT {businessDate}
+          </button>
+        </div>
+        {rtTestStatus === 'success' && <p className="text-xs text-emerald-600 font-semibold">Operazione accodata: verifica l'esito sulla lista lavori.</p>}
+        {rtTestStatus === 'failed' && <p className="text-xs text-danger">Operazione non riuscita. Controlla agente stampa e registratore.</p>}
+        {jobs.length > 0 && (
+          <div className="border-t border-border pt-3">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-text-muted mb-2">Lavori fiscali recenti</p>
+            <ul className="space-y-1.5">
+              {jobs.slice(0, 6).map((job) => {
+                let progressive = '';
+                try {
+                  if (job.result) progressive = JSON.parse(job.result).progressive ?? '';
+                } catch {}
+                return (
+                  <li key={job.id} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold capitalize">{job.type}</span>
+                    <span className="text-text-muted">{new Date(job.createdAt).toLocaleTimeString('it-IT')}</span>
+                    {progressive && <span className="font-mono text-emerald-700">#{progressive}</span>}
+                    <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-bold uppercase', job.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : job.status === 'failed' ? 'bg-danger/10 text-danger' : 'bg-bg text-text-muted')}>
+                      {job.status}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div className="bg-white border border-border rounded-xl p-4 space-y-3">

@@ -2,12 +2,30 @@ import { useState } from 'react';
 import { CheckCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useCheckoutStore } from '../../store/checkout-store';
+import { useAppStore } from '../../store/app-store';
 import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import ConfirmDialog from '../ConfirmDialog';
 import { trackUxMetric } from '../../shared/ux/metrics';
 
 export default function CloseTableView() {
-  const { tableId, paymentStatus, closeMethod, paidAmount, gatewayReference, setCloseMethod, setPaidAmount, setGatewayReference, closeTable, busy, error } = useCheckoutStore();
+  const {
+    tableId,
+    paymentStatus,
+    closeMethod,
+    paidAmount,
+    gatewayReference,
+    fiscalEmit,
+    setCloseMethod,
+    setPaidAmount,
+    setGatewayReference,
+    setFiscalEmit,
+    closeTable,
+    busy,
+    error,
+  } = useCheckoutStore();
+  // Certified fiscal (Path B) is opt-in per transaction and only offered when
+  // the tenant has the fiscal_exports module enabled.
+  const fiscalModuleEnabled = useAppStore((state) => state.enabledModules.includes('fiscal_exports'));
   const [showConfirm, setShowConfirm] = useState(false);
 
   const handlePay = async () => {
@@ -92,6 +110,37 @@ export default function CloseTableView() {
             />
           )}
 
+          {fiscalModuleEnabled && (
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-text-muted uppercase tracking-widest">Scontrino fiscale</label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={fiscalEmit}
+              onClick={() => setFiscalEmit(!fiscalEmit)}
+              className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 min-h-[44px] rounded border text-sm transition-colors ${
+                fiscalEmit ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-white text-text-muted'
+              }`}
+            >
+              <span className="font-semibold">{fiscalEmit ? 'Emissione fiscale attiva' : 'Non emettere scontrino fiscale'}</span>
+              <span
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  fiscalEmit ? 'bg-primary' : 'bg-border'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                    fiscalEmit ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </span>
+            </button>
+            <p className="text-[11px] text-text-muted">
+              Se attivo, alla chiusura viene emesso lo scontrino dal registratore telematico (se configurato).
+            </p>
+          </div>
+          )}
+
           {error && <p className="text-sm text-danger text-center font-semibold">{error}</p>}
 
           <button
@@ -107,7 +156,7 @@ export default function CloseTableView() {
       <ConfirmDialog
         open={showConfirm}
         title="Chiudi conto?"
-        message={`Confermare la chiusura del conto con metodo ${closeMethod === 'cash' ? 'contanti' : closeMethod === 'card' ? 'carta' : 'misto'}? L'azione non può essere annullata.`}
+        message={`Confermare la chiusura del conto con metodo ${closeMethod === 'cash' ? 'contanti' : closeMethod === 'card' ? 'carta' : 'misto'}${fiscalEmit ? ' e emissione dello scontrino fiscale' : ''}? L'azione non può essere annullata.`}
         confirmLabel="Chiudi"
         onConfirm={() => {
           setShowConfirm(false);

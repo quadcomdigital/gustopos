@@ -262,18 +262,37 @@ la stampante funziona correttamente!
 
 ## 5. LOGO BITMAP
 
-Se configurato nelle Impressioni, il logo viene aggiunto all'inizio di ogni ricevuta:
+Se configurato nelle Impressioni, il logo viene aggiunto **solo sullo scontrino cassa**
+(chiusura tavolo), mai sui ticket cucina/bar:
 
 ```
 [BITMAP LOGO 384px wide]
-         KITCHEN
+         GUSTOPOS
 
-Ordine: m3x7k2p1 | Dine-in
-Tavolo: 5
+SCONTRINO NON FISCALE
 ...
 ```
 
-Il logo viene inviato come bitmap ESC/POS (sequenza `\x1B\x33\x0A` + dati raw + `\x1B\x32`).
+### Upload e conversione
+
+- Endpoint: `POST /api/settings/printing/logo` (multipart, campo `file`, opzionali
+  `width` e `threshold`) — protetto da `@Roles("admin")` + `settings:update` + modulo
+  `printing`.
+- Validazione input: MIME consentito (PNG/JPEG/BMP/GIF — WebP non è supportato
+  dal decoder jimp 0.22), max 2 MB, magic bytes sniffati (un'estensione farlocca
+  viene rifiutata; `application/octet-stream` passa solo se i magic bytes sono validi).
+- Conversione: l'immagine viene ridimensionata alla larghezza richiesta (default 384,
+  arrotondata al multiplo di 8, clamp 8-576), convertita in scala di grigi e
+  sogliata (threshold default 160): i pixel più scuri della soglia stampano come
+  punti. L'alpha quasi trasparente viene trattato come bianco.
+- Output: base64 del **comando raster completo `GS v 0`**
+  (`\x1D\x76\x30\x00 xL xH yL yH d1..dk`) salvato in `settings.printing.logoBitmap`.
+
+### Stampa
+
+Lo scontrino cassa (`buildCashierReceiptPayload`) splitta i byte raster salvati
+verboatim subito dopo l'header `\x1B\x33\x0A` (interlinea) e prima del reset
+`\x1B\x32`. I builder dei ticket area (`buildEscPosPayload`) NON includono il logo.
 
 ---
 
