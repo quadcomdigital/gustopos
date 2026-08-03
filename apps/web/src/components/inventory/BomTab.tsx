@@ -29,7 +29,7 @@ interface BomTabProps {
   loading?: boolean;
   onRefresh?: () => Promise<void>;
   onCreate?: (payload: BomCreateRequest) => Promise<void>;
-  onUpdate?: (id: string, payload: { name?: string; unit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean }) => Promise<void>;
+  onUpdate?: (id: string, payload: { name?: string; outputUnit?: string; yieldQuantity?: number; categoryId?: string; isActive?: boolean }) => Promise<void>;
   onReplaceComponents?: (id: string, payload: { components: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
   onAddComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) => Promise<void>;
   onRemoveComponent?: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) => Promise<void>;
@@ -126,7 +126,7 @@ export default function BomTab({
     return (
       bomEditName.trim() !== selectedBom.name
       || bomEditCategoryId !== (selectedBom.categoryId ?? '')
-      || bomEditUnit !== selectedBom.unit
+      ||       bomEditUnit !== selectedBom.outputUnit
       || bomEditYield !== String(selectedBom.yieldQuantity)
     );
   }, [selectedBom, bomEditName, bomEditCategoryId, bomEditUnit, bomEditYield]);
@@ -146,16 +146,16 @@ export default function BomTab({
       return inventory.map((item) => ({ id: item.id, label: item.name, unit: item.unit, stockLevel: item.quantity, unitCost: item.unitCost }));
     }
     if (createComponentType === 'prep') {
-      return prepItems.map((item) => ({ id: item.id, label: item.name, unit: item.unit, stockLevel: item.stockQuantity }));
+      return prepItems.map((item) => ({ id: item.id, label: item.name, unit: item.outputUnit, stockLevel: item.stockQuantity }));
     }
-    return bomItems.map((item) => ({ id: item.id, label: item.name, unit: item.unit }));
+    return bomItems.map((item) => ({ id: item.id, label: item.name, unit: item.outputUnit }));
   }, [createComponentType, inventory, bomItems, prepItems]);
 
   useEffect(() => {
     if (!selectedBom) return;
     setBomEditName(selectedBom.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize BoM edit fields from selected item; all values are primitives
     setBomEditCategoryId(selectedBom.categoryId ?? '');  
-    setBomEditUnit(selectedBom.unit);  
+    setBomEditUnit(selectedBom.outputUnit);  
     setBomEditYield(String(selectedBom.yieldQuantity));  
   }, [selectedBom]);
 
@@ -187,9 +187,8 @@ export default function BomTab({
     try {
       await onCreate({
         name: newBomName.trim(),
-        unit: newBomUnit,
+        outputUnit: newBomUnit,
         yieldQuantity,            categoryId: newBomCategoryId || undefined,
-            isContainer: 0,
             components: newBomComponents,
 // CASCADE_BOMTAB_PAYLOAD_DONE
       });
@@ -223,7 +222,7 @@ export default function BomTab({
     try {
       await onUpdate(selectedBom.id, {
         name: bomEditName.trim(),
-        unit: bomEditUnit,
+        outputUnit: bomEditUnit,
         yieldQuantity,
         categoryId: bomEditCategoryId || undefined,
       });
@@ -341,7 +340,7 @@ export default function BomTab({
                     )}
                   </td>
                   <td className="px-6 py-4 text-sm font-medium text-primary">
-                    {item.yieldQuantity} {item.unit}
+                    {item.yieldQuantity} {item.outputUnit}
                   </td>
                   <td className="px-6 py-4">
                     <div className="space-y-1">
@@ -354,7 +353,7 @@ export default function BomTab({
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    <span className="text-xs font-medium text-secondary">€{costPerUnit.toFixed(2)}/{item.unit}</span>
+                    <span className="text-xs font-medium text-secondary">€{costPerUnit.toFixed(2)}/{item.outputUnit}</span>
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-1">

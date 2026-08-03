@@ -3,8 +3,7 @@ import {
   bomComponents,
   bomItems,
   inventory,
-  menuItemBomRequirements,
-  menuItemIngredients,
+  menuItemComponents,
   menuItems,
   tenantModules,
   tenants,
@@ -99,19 +98,19 @@ export async function seedInitialData(): Promise<void> {
     { id: "m4", tenantId: "tenant_legacy", name: "Acqua Naturale", price: "2.0", category: "Bevande", isActive: 1 },
   ]);
 
-  await db.insert(menuItemIngredients).values([
-    { tenantId: "tenant_legacy", menuItemId: "m1", ingredientId: "1" },
-    { tenantId: "tenant_legacy", menuItemId: "m1", ingredientId: "2" },
-    { tenantId: "tenant_legacy", menuItemId: "m1", ingredientId: "3" },
-    { tenantId: "tenant_legacy", menuItemId: "m2", ingredientId: "1" },
-    { tenantId: "tenant_legacy", menuItemId: "m2", ingredientId: "2" },
-    { tenantId: "tenant_legacy", menuItemId: "m2", ingredientId: "3" },
-    { tenantId: "tenant_legacy", menuItemId: "m3", ingredientId: "4" },
+  await db.insert(menuItemComponents).values([
+    { id: "mic1", tenantId: "tenant_legacy", menuItemId: "m1", componentType: "ingredient", componentId: "1", quantity: "0.15", unit: "kg" },
+    { id: "mic2", tenantId: "tenant_legacy", menuItemId: "m1", componentType: "ingredient", componentId: "2", quantity: "0.05", unit: "kg" },
+    { id: "mic3", tenantId: "tenant_legacy", menuItemId: "m1", componentType: "ingredient", componentId: "3", quantity: "0.08", unit: "kg" },
+    { id: "mic4", tenantId: "tenant_legacy", menuItemId: "m2", componentType: "ingredient", componentId: "1", quantity: "0.15", unit: "kg" },
+    { id: "mic5", tenantId: "tenant_legacy", menuItemId: "m2", componentType: "ingredient", componentId: "2", quantity: "0.05", unit: "kg" },
+    { id: "mic6", tenantId: "tenant_legacy", menuItemId: "m2", componentType: "ingredient", componentId: "3", quantity: "0.08", unit: "kg" },
+    { id: "mic7", tenantId: "tenant_legacy", menuItemId: "m3", componentType: "ingredient", componentId: "4", quantity: "0.4", unit: "L" },
   ]);
 
   await db.insert(bomItems).values([
-    { id: "b1", tenantId: "tenant_legacy", name: "Impasto Pizza", unit: "kg", yieldQuantity: "1", isActive: 1 },
-    { id: "b2", tenantId: "tenant_legacy", name: "Salsa Pomodoro Base", unit: "kg", yieldQuantity: "1", isActive: 1 },
+    { id: "b1", tenantId: "tenant_legacy", name: "Impasto Pizza", outputUnit: "kg", yieldQuantity: "1", isActive: 1 },
+    { id: "b2", tenantId: "tenant_legacy", name: "Salsa Pomodoro Base", outputUnit: "kg", yieldQuantity: "1", isActive: 1 },
   ]);
 
   await db.insert(bomComponents).values([
@@ -120,11 +119,11 @@ export async function seedInitialData(): Promise<void> {
     { tenantId: "tenant_legacy", bomId: "b2", componentType: "ingredient", componentId: "2", quantity: "1", unit: "kg" },
   ]);
 
-  await db.insert(menuItemBomRequirements).values([
-    { tenantId: "tenant_legacy", menuItemId: "m1", bomId: "b1", quantity: "0.25", unit: "kg" },
-    { tenantId: "tenant_legacy", menuItemId: "m1", bomId: "b2", quantity: "0.12", unit: "kg" },
-    { tenantId: "tenant_legacy", menuItemId: "m2", bomId: "b1", quantity: "0.25", unit: "kg" },
-    { tenantId: "tenant_legacy", menuItemId: "m2", bomId: "b2", quantity: "0.14", unit: "kg" },
+  await db.insert(menuItemComponents).values([
+    { id: "mic8", tenantId: "tenant_legacy", menuItemId: "m1", componentType: "bom", componentId: "b1", quantity: "0.25", unit: "kg" },
+    { id: "mic9", tenantId: "tenant_legacy", menuItemId: "m1", componentType: "bom", componentId: "b2", quantity: "0.12", unit: "kg" },
+    { id: "mic10", tenantId: "tenant_legacy", menuItemId: "m2", componentType: "bom", componentId: "b1", quantity: "0.25", unit: "kg" },
+    { id: "mic11", tenantId: "tenant_legacy", menuItemId: "m2", componentType: "bom", componentId: "b2", quantity: "0.14", unit: "kg" },
   ]);
 
   await db.insert(tables).values(

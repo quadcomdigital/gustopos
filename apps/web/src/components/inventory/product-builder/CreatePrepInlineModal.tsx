@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import type { Ingredient, PrepItem, UnitConversion } from '@gustopos/shared';
+import type { Ingredient, PrepItem, PrepItemCreateRequest, UnitConversion } from '@gustopos/shared';
 import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
@@ -21,7 +21,7 @@ interface CreatePrepInlineModalProps {
   onClose: () => void;
   onSuccess: (prepItems: PrepItem[]) => void;
   inventory: Ingredient[];
-  onCreate: (payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
+  onCreate: (payload: PrepItemCreateRequest) => Promise<PrepItem>;
 }
 
 let variantCounter = 0;
@@ -105,7 +105,17 @@ export default function CreatePrepInlineModal({
           finalQty = qty * conv.factor;
           finalUnit = selectedIngredient.unit;
         }
-        const item = await onCreate({ ingredientId, name: v.name.trim(), quantityPerUnit: finalQty, unit: finalUnit });
+        const item = await onCreate({
+          name: v.name.trim(),
+          source: {
+            sourceType: 'ingredient',
+            sourceId: ingredientId,
+            inputQuantity: finalQty,
+            inputUnit: finalUnit as PrepItem['inputUnit'],
+            outputQuantity: 1,
+            outputUnit: finalUnit as PrepItem['outputUnit'],
+          },
+        });
         results.push(item);
       }
       setSaving(false);
@@ -136,7 +146,7 @@ export default function CreatePrepInlineModal({
         <div>
           <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Ingrediente base</label>
           <SearchableSelect
-            items={inventory.filter((i) => i.isActive && i.isContainer !== 1)}
+            items={inventory.filter((i) => i.isActive)}
             getLabel={(i) => `${i.name} — ${i.quantity} ${i.unit}`}
             getValue={(i) => i.id}
             selectedValue={ingredientId}

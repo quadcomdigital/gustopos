@@ -103,14 +103,14 @@ import {
   fiscalJobsQuerySchema,
   fiscalBridgeClaimRequestSchema,
   fiscalChiusuraRequestSchema,
+  prepItemCreateRequestSchema,
   prepItemUpdateRequestSchema,
   unitConversionCreateRequestSchema,
   updateUiSettingsRequestSchema,
   updatePrintingSettingsRequestSchema,
   printLogoUploadResponseSchema,
   menuItemCreateRequestSchema,
-  createMenuProductRequestSchema,
-  menuItemReplaceRecipeRequestSchema,
+  canonicalCreateMenuProductRequestSchema,
   menuItemUpdateRequestSchema,
   socketEvents,
   splitBillRequestSchema,
@@ -221,9 +221,10 @@ import {
   type UpdateUiSettingsRequest,
   type UpdatePrintingSettingsRequest,
   type MenuItemCreateRequest,
-  type CreateMenuProductRequest,
-  type MenuItemReplaceRecipeRequest,
+  type CanonicalCreateMenuProductRequest,
   type MenuItemUpdateRequest,
+  type PrepItemCreateRequest,
+  type PrepItemUpdateRequest,
   type Order,
   type SplitBillRequest,
   type PaySelectedItemsRequest,
@@ -1913,23 +1914,12 @@ export class AppController {
     return { success: true };
   }
 
-  @Post("menu")
-  @RequiresPermissions("inventory:manage")
-  @Roles("admin", "chef")
-  @RequiresModule("inventory")
-  createMenuItem(@Body() payload: MenuItemCreateRequest) {
-    const parsed = menuItemCreateRequestSchema.parse(payload);
-    return this.inventoryRepo.createMenuItem(parsed).catch((error) => {
-      throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu payload");
-    });
-  }
-
   @Post("menu-products")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async createMenuProduct(@Body() payload: CreateMenuProductRequest) {
-    const parsed = createMenuProductRequestSchema.parse(payload);
+  async createMenuProduct(@Body() payload: CanonicalCreateMenuProductRequest) {
+    const parsed = canonicalCreateMenuProductRequestSchema.parse(payload);
     try {
       return await this.inventoryRepo.createMenuProduct(parsed);
     } catch (error) {
@@ -1944,75 +1934,6 @@ export class AppController {
   async updateMenuItem(@Param("id") id: string, @Body() payload: MenuItemUpdateRequest) {
     const parsed = menuItemUpdateRequestSchema.parse(payload);
     const updated = await this.inventoryRepo.updateMenuItem(id, parsed);
-    if (!updated) {
-      throw new NotFoundException("Menu item not found");
-    }
-
-    return updated;
-  }
-
-  @Patch("menu/:id/container")
-  @Roles("admin")
-  @RequiresModule("inventory")
-  async updateMenuItemContainer(
-    @Param("id") id: string,
-    @Body() body: { defaultContainerId: string | null },
-  ) {
-    const updated = await this.inventoryRepo.updateMenuItem(id, { defaultContainerId: body.defaultContainerId });
-    if (!updated) {
-      throw new NotFoundException("Menu item not found");
-    }
-    return updated;
-  }
-
-  @Post("menu/:id/recipe")
-  @RequiresPermissions("inventory:manage")
-  @Roles("admin", "chef")
-  @RequiresModule("inventory")
-  async replaceMenuRecipe(@Param("id") id: string, @Body() payload: MenuItemReplaceRecipeRequest) {
-    const parsed = menuItemReplaceRecipeRequestSchema.parse(payload);
-    let updated;
-    try {
-      updated = await this.inventoryRepo.replaceMenuItemRecipe(id, parsed);
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu recipe payload");
-    }
-    if (!updated) {
-      throw new NotFoundException("Menu item not found");
-    }
-
-    return updated;
-  }
-
-  @Post("menu/:id/recipe/add")
-  @RequiresPermissions("inventory:manage")
-  @Roles("admin", "chef")
-  @RequiresModule("inventory")
-  async addMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) {
-    let updated;
-    try {
-      updated = await this.inventoryRepo.addMenuItemRecipeComponent(id, payload);
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Invalid recipe component");
-    }
-    if (!updated) {
-      throw new NotFoundException("Menu item not found");
-    }
-
-    return updated;
-  }
-
-  @Post("menu/:id/recipe/remove")
-  @RequiresPermissions("inventory:manage")
-  @Roles("admin", "chef")
-  @RequiresModule("inventory")
-  async removeMenuRecipeComponent(@Param("id") id: string, @Body() payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) {
-    let updated;
-    try {
-      updated = await this.inventoryRepo.removeMenuItemRecipeComponent(id, payload);
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Invalid recipe component");
-    }
     if (!updated) {
       throw new NotFoundException("Menu item not found");
     }
@@ -2857,17 +2778,10 @@ export class AppController {
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async createPrepItem(@Body() payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }) {
-    const hasIngredient = !!payload.ingredientId;
-    const hasBom = !!payload.bomId;
-    if (hasIngredient === hasBom) {
-      throw new BadRequestException("Prep item must reference exactly one of an ingredient or a BoM");
-    }
-    if (!payload.name?.trim() || !payload.quantityPerUnit || payload.quantityPerUnit <= 0 || !payload.unit) {
-      throw new BadRequestException("Invalid prep item data");
-    }
+  async createPrepItem(@Body() payload: PrepItemCreateRequest) {
+    const parsed = prepItemCreateRequestSchema.parse(payload);
     try {
-      return await this.inventoryRepo.createPrepItem(payload);
+      return await this.inventoryRepo.createPrepItem(parsed);
     } catch (e: any) {
       throw new BadRequestException(e.message);
     }
@@ -2877,7 +2791,7 @@ export class AppController {
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
-  async updatePrepItem(@Param("id") id: string, @Body() payload: { name?: string; quantityPerUnit?: number; unit?: string }) {
+  async updatePrepItem(@Param("id") id: string, @Body() payload: PrepItemUpdateRequest) {
     const parsed = prepItemUpdateRequestSchema.parse(payload);
     try {
       return await this.inventoryRepo.updatePrepItem(id, parsed);

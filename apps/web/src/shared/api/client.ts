@@ -43,9 +43,8 @@ import {
   menuItemAdminListResponseSchema,
   menuItemAdminSchema,
   menuItemCreateRequestSchema,
-  createMenuProductRequestSchema,
+  canonicalCreateMenuProductRequestSchema,
   menuProductResponseSchema,
-  menuItemReplaceRecipeRequestSchema,
   menuItemUpdateRequestSchema,
   orderSchema,
   payTableResponseSchema,
@@ -133,6 +132,7 @@ import {
   uiSettingsSchema,
   printLogoUploadResponseSchema,
   prepItemSchema,
+  prepItemCreateRequestSchema,
   preparePrepItemResponseSchema,
   unitConversionSchema,
   updatePrintingSettingsRequestSchema,
@@ -188,9 +188,8 @@ import {
   type LogoutResponse,
   type MenuItemAdmin,
   type MenuItemCreateRequest,
-  type CreateMenuProductRequest,
+  type CanonicalCreateMenuProductRequest,
   type MenuProductResponse,
-  type MenuItemReplaceRecipeRequest,
   type MenuItemUpdateRequest,
   type Order,
   type PayTableResponse,
@@ -289,6 +288,7 @@ import {
   type LoyaltyTransaction,
   type LoyaltyConfig,
   type PrepItem,
+  type PrepItemCreateRequest,
   type PrepItemUpdateRequest,
   type UnitConversion,
   type UnitConversionCreateRequest,
@@ -1945,8 +1945,8 @@ export async function fetchSimpleCatalogItemsAdmin(): Promise<MenuItemAdmin[]> {
   return readJson(response, menuItemAdminListResponseSchema);
 }
 
-export async function createMenuProduct(payload: CreateMenuProductRequest): Promise<MenuProductResponse> {
-  const request = createMenuProductRequestSchema.parse(payload);
+export async function createMenuProduct(payload: CanonicalCreateMenuProductRequest): Promise<MenuProductResponse> {
+  const request = canonicalCreateMenuProductRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/menu-products`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2008,63 +2008,6 @@ export async function updateSimpleCatalogItem(id: string, payload: MenuItemUpdat
   });
 
   return readJson(response, menuItemAdminSchema);
-}
-
-export async function replaceMenuItemRecipe(
-  id: string,
-  payload: MenuItemReplaceRecipeRequest,
-): Promise<MenuItemAdmin> {
-  const request = menuItemReplaceRecipeRequestSchema.parse(payload);
-  const response = await authorizedFetch(`${API_URL}/api/menu/${id}/recipe`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(request),
-  });
-
-  return readJson(response, menuItemAdminSchema);
-}
-
-export async function addMenuItemRecipeComponent(
-  id: string,
-  payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string },
-): Promise<MenuItemAdmin> {
-  const response = await authorizedFetch(`${API_URL}/api/menu/${id}/recipe/add`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return readJson(response, menuItemAdminSchema);
-}
-
-export async function removeMenuItemRecipeComponent(
-  id: string,
-  payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string },
-): Promise<MenuItemAdmin> {
-  const response = await authorizedFetch(`${API_URL}/api/menu/${id}/recipe/remove`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return readJson(response, menuItemAdminSchema);
-}
-
-export async function updateMenuItemContainer(
-  menuItemId: string,
-  defaultContainerId: string | null,
-): Promise<void> {
-  await authorizedFetch(`${API_URL}/api/menu/${menuItemId}/container`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ defaultContainerId }),
-  });
 }
 
 export async function setMenuItemActiveState(id: string, active: boolean): Promise<LogoutResponse> {
@@ -2485,11 +2428,12 @@ export async function fetchPrepItems(): Promise<PrepItem[]> {
   const data = await response.json();
   return Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
 }
-export async function createPrepItem(payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }): Promise<PrepItem> {
+export async function createPrepItem(payload: PrepItemCreateRequest): Promise<PrepItem> {
+  const request = prepItemCreateRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/prep-items`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(request),
   });
   return readJson(response, prepItemSchema);
 }

@@ -1,11 +1,10 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, MenuItemCreateRequest, CreateMenuProductRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, MenuItemModifier, ModifierGroup, UnitConversion } from '@gustopos/shared';
+import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, MenuItemCreateRequest, CanonicalCreateMenuProductRequest, PrepItemCreateRequest, CanonicalUnit, MenuItemUpdateRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, MenuItemModifier, ModifierGroup, UnitConversion } from '@gustopos/shared';
 import FormField from '../../../shared/ui/molecules/FormField';
 import { Plus, AlertTriangle, RefreshCw, Layers } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import Button from '../../../shared/ui/atoms/Button';
-import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
 import InlineCategoryPicker from '../InlineCategoryPicker';
 import ModifierEditor from '../ModifierEditor';
 import ModifierGroupsEditor from '../ModifierGroupsEditor';
@@ -30,12 +29,11 @@ interface FoodProductModalProps {
   categoryModifierPools?: CategoryModifierPool[];
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
   /** Canonical menu-first creation for a base food recipe. */
-  onCreateMenuProduct?: (payload: CreateMenuProductRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
-  onReplaceRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   onCreateIngredient?: (payload: IngredientCreateRequest) => Promise<Ingredient>;
-  onCreatePrepItem?: (payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
+  onCreatePrepItem?: (payload: PrepItemCreateRequest) => Promise<PrepItem>;
   /** Called when a sub-component inside an expanded BoM is edited/removed — cascades to the BoM API */
   onReplaceBomComponents?: (bomId: string, payload: { components: Array<{ componentType: string; componentId: string; quantity: number; unit: string }> }) => Promise<void>;
   /** Called to create a new BoM from the current recipe's components — returns the new BoM ID or null */
@@ -49,7 +47,7 @@ interface FoodProductModalProps {
 
 export default function FoodProductModal({
   open, onClose, onSuccess, categories, inventory, bomItems, prepItems, categoryModifierPools = [],
-  onCreateCategory, onCreateMenuProduct, onCreateMenuItem, onUpdateMenuItem, onReplaceRecipe, onCreateIngredient, onCreatePrepItem,
+  onCreateCategory, onCreateMenuProduct, onCreateMenuItem, onUpdateMenuItem, onCreateIngredient, onCreatePrepItem,
   conversionsMap = {},
   onReplaceBomComponents, onCreateBomItem, onOpenBomTab, editItem,
 }: FoodProductModalProps) {
@@ -58,7 +56,6 @@ export default function FoodProductModal({
   const [categoryId, setCategoryId] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [price, setPrice] = useState('');
-  const [defaultContainerId, setDefaultContainerId] = useState('');
   const [printAreas, setPrintAreas] = useState<PrintArea[]>(['kitchen']);
   const [recipe, setRecipe] = useState<MenuRecipeComponent[]>([]);
   const [isBase, setIsBase] = useState(false);
@@ -86,7 +83,16 @@ export default function FoodProductModal({
   const [bomSaving, setBomSaving] = useState(false);
 
   const menuCategories = useMemo(() => categories.filter((c) => !c.scope || c.scope === 'menu'), [categories]);
-  const containerCandidates = useMemo(() => inventory.filter((i) => i.isContainer === 1).map((i) => ({ id: i.id, name: i.name })), [inventory]);
+
+  const resolveComponentUnit = useCallback((component: MenuRecipeComponent): CanonicalUnit => {
+    if (component.componentType === 'ingredient') {
+      return (inventory.find((i) => i.id === component.componentId)?.unit ?? component.unit ?? 'pz') as CanonicalUnit;
+    }
+    if (component.componentType === 'prep') {
+      return (prepItems.find((p) => p.id === component.componentId)?.outputUnit ?? component.unit ?? 'pz') as CanonicalUnit;
+    }
+    return (bomItems.find((b) => b.id === component.componentId)?.outputUnit ?? component.unit ?? 'pz') as CanonicalUnit;
+  }, [inventory, prepItems, bomItems]);
 
   useEffect(() => {
     if (editItem && open) {
@@ -95,7 +101,6 @@ export default function FoodProductModal({
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
       setPrice(String(editItem.price));
-      setDefaultContainerId(editItem.defaultContainerId ?? '');
       setPrintAreas(editItem.printAreas?.length ? editItem.printAreas : ['kitchen']);
       setModifiers(editItem.modifiers ?? []);
       setModifierGroups(editItem.modifierGroups ?? []);
@@ -112,14 +117,6 @@ export default function FoodProductModal({
           if (bom && bom.components.length > 0) {
             const scale = comp.quantity / Number(bom.yieldQuantity || 1);
             return bom.components
-              .filter((sub) => {
-                // Exclude container ingredients — they're managed via the container selector
-                if (sub.componentType === 'ingredient') {
-                  const ing = inventory.find((i) => i.id === sub.componentId);
-                  return !ing || ing.isContainer !== 1;
-                }
-                return true;
-              })
               .map((sub) => ({
                 componentType: sub.componentType as 'ingredient' | 'bom' | 'prep',
                 componentId: sub.componentId,
@@ -127,11 +124,6 @@ export default function FoodProductModal({
                 unit: sub.unit,
               }));
           }
-        }
-        // Exclude container ingredients from top-level recipe too
-        if (comp.componentType === 'ingredient') {
-          const ing = inventory.find((i) => i.id === comp.componentId);
-          if (ing?.isContainer === 1) return [];
         }
         return [comp];
       });
@@ -141,7 +133,7 @@ export default function FoodProductModal({
       // Infer BASE mode: if price > 0 and no recipe, it's a BASE product
       setIsBase(editItem.price > 0 && resolved.length === 0);
     } else if (!open) {
-      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setDefaultContainerId(''); setPrintAreas(['kitchen']); setRecipe([]); setIsBase(false); setModifiers([]); setModifierGroups([]); setErrors({}); setError('');
+      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setPrintAreas(['kitchen']); setRecipe([]); setIsBase(false); setModifiers([]); setModifierGroups([]); setErrors({}); setError('');
       setOriginalBomId(null);
       setOriginalResolved([]);
     }
@@ -175,10 +167,15 @@ export default function FoodProductModal({
       // create a BoM before this branch: the new model deliberately has no
       // shadow BoM intermediary.
       let finalRecipe = recipe;
+      const finalRecipeWithUnits = finalRecipe.map((component) => ({
+        componentType: component.componentType as 'ingredient' | 'bom' | 'prep',
+        componentId: component.componentId,
+        quantity: component.quantity,
+        unit: resolveComponentUnit(component),
+      }));
       const canUseCanonicalCreate = Boolean(
         !isEdit
         && onCreateMenuProduct
-        && !defaultContainerId
         && modifiers.length === 0
         && modifierGroups.length === 0
         && recipe.every((component) => component.componentType === 'ingredient' || component.componentType === 'prep'),
@@ -190,14 +187,6 @@ export default function FoodProductModal({
         const unit = recipe[0]?.unit || 'kg';
 
         const apiComponents = recipe
-          .filter((c) => {
-            // Exclude container ingredients — they're managed separately via the container selector
-            if (c.componentType === 'ingredient') {
-              const ing = inventory.find((i) => i.id === c.componentId);
-              return !ing || ing.isContainer !== 1;
-            }
-            return true;
-          })
           .map((c) => ({
             componentType: c.componentType as 'ingredient' | 'bom' | 'prep',
             componentId: c.componentId,
@@ -206,7 +195,7 @@ export default function FoodProductModal({
           }));
 
         if (apiComponents.length === 0) {
-          throw new Error('Nessun componente valido nella ricetta dopo il filtraggio dei contenitori.');
+          throw new Error('Nessun componente valido nella ricetta.');
         }
 
         let bomId: string | null = null;
@@ -219,10 +208,9 @@ export default function FoodProductModal({
           // Create a new BoM from scratch
           bomId = await onCreateBomItem({
             name: bomName,
-            unit,
+            outputUnit: unit,
             yieldQuantity: 1,
             components: apiComponents,
-            isContainer: 0,
           });
 
           if (!bomId) {
@@ -250,11 +238,7 @@ export default function FoodProductModal({
           category: catName.trim(),
           categoryId: categoryId || undefined,
           printAreas,
-          components: finalRecipe.map((component) => ({
-            componentType: component.componentType as 'ingredient' | 'bom' | 'prep',
-            componentId: component.componentId,
-            quantity: component.quantity,
-          })),
+          components: finalRecipeWithUnits,
           inlineIngredients: [],
           inlinePreps: [],
         });
@@ -263,21 +247,16 @@ export default function FoodProductModal({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          defaultContainerId: defaultContainerId || null,
           price: Number(price),
           printAreas,
-          modifiers,
           modifierGroups,
+          components: finalRecipeWithUnits,
         });
-        if (onReplaceRecipe) {
-          await onReplaceRecipe(editItem.id, { recipe: finalRecipe });
-        }
       } else {
         await onCreateMenuItem({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          defaultContainerId: defaultContainerId || null,
           printAreas,
           price: Number(price),
           recipe: finalRecipe,
@@ -306,8 +285,8 @@ export default function FoodProductModal({
     const existing = recipe.find((c) => c.componentType === editComponent.componentType && c.componentId === editComponent.componentId);
     if (!existing) return;
     const unit = newType === 'ingredient' ? inventory.find((i) => i.id === newId)?.unit ?? existing.unit
-      : newType === 'prep' ? prepItems.find((p) => p.id === newId)?.unit ?? existing.unit
-      : bomItems.find((b) => b.id === newId)?.unit ?? existing.unit;
+      : newType === 'prep' ? prepItems.find((p) => p.id === newId)?.outputUnit ?? existing.unit
+      : bomItems.find((b) => b.id === newId)?.outputUnit ?? existing.unit;
     setRecipe((prev) => prev.map((c) => c === existing ? { componentType: newType, componentId: newId, quantity: 1, unit } : c));
     setEditComponent(null);
   }, [editComponent, recipe, inventory, prepItems, bomItems]);
@@ -368,13 +347,6 @@ export default function FoodProductModal({
     setError('');
     try {
       const components = recipe
-        .filter((c) => {
-          if (c.componentType === 'ingredient') {
-            const ing = inventory.find((i) => i.id === c.componentId);
-            return !ing || ing.isContainer !== 1;
-          }
-          return true;
-        })
         .map((c) => ({
         componentType: c.componentType as 'ingredient' | 'bom' | 'prep',
         componentId: c.componentId,
@@ -384,10 +356,9 @@ export default function FoodProductModal({
 
       const bomId = await onCreateBomItem({
         name: bomName,
-        unit,
+        outputUnit: unit,
         yieldQuantity,
         components,
-        isContainer: 0,
       });
 
       if (!bomId) {
@@ -422,14 +393,13 @@ export default function FoodProductModal({
     return (
       name !== editItem.name
       || categoryId !== (editItem.categoryId ?? '')
-      || defaultContainerId !== (editItem.defaultContainerId ?? '')
       || price !== String(editItem.price)
       || JSON.stringify(printAreas) !== JSON.stringify(editItem.printAreas)
       || JSON.stringify(recipe) !== JSON.stringify(originalRecipe)
       || JSON.stringify(modifiers) !== JSON.stringify(editItem.modifiers)
       || JSON.stringify(modifierGroups) !== JSON.stringify(editItem.modifierGroups)
     );
-  }, [isEdit, editItem, name, categoryId, defaultContainerId, price, printAreas, recipe, originalResolved, modifiers, modifierGroups]);
+  }, [isEdit, editItem, name, categoryId, price, printAreas, recipe, originalResolved, modifiers, modifierGroups]);
 
   return (
     <>
@@ -475,17 +445,6 @@ export default function FoodProductModal({
                 </button>
               ))}
             </div>
-            {containerCandidates.length > 0 && (
-              <div className="flex items-center gap-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted whitespace-nowrap">Container</label>
-                <div className="flex-1">
-                  <SearchableSelect items={containerCandidates} getLabel={(c) => c.name} getValue={(c) => c.id} selectedValue={defaultContainerId} onSelect={setDefaultContainerId} placeholder="Nessun" />
-                </div>
-                {defaultContainerId && (
-                  <button type="button" onClick={() => setDefaultContainerId('')} className="text-[10px] font-bold uppercase tracking-wider text-danger">Rimuovi</button>
-                )}
-              </div>
-            )}
           </div>
 
           {/* BASE product toggle */}
@@ -683,7 +642,7 @@ export default function FoodProductModal({
         <CreatePrepInlineModal
           open={showCreatePrep}
           onClose={() => setShowCreatePrep(false)}
-          onSuccess={(preps) => { preps.forEach((p) => handleAddComponent({ componentType: 'prep', componentId: p.id, quantity: 1, unit: p.unit })); }}
+          onSuccess={(preps) => { preps.forEach((p) => handleAddComponent({ componentType: 'prep', componentId: p.id, quantity: 1, unit: p.outputUnit })); }}
           inventory={inventory}
           onCreate={onCreatePrepItem}
         />

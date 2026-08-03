@@ -178,8 +178,8 @@ function ComponentRow({
             const prep = prepItems.find((p) => p.id === comp.componentId);
             if (!prep) return undefined;
             // BoM-based prep variants have no single ingredient to cost.
-            const prepIng = prep.ingredientId ? ingredientById.get(prep.ingredientId) : undefined;
-            return prepIng?.unitCost ? comp.quantity * prep.quantityPerUnit * prepIng.unitCost : undefined;
+            const prepIng = prep.sourceType === 'ingredient' ? ingredientById.get(prep.sourceId) : undefined;
+            return prepIng?.unitCost ? comp.quantity * prep.inputQuantity * prepIng.unitCost : undefined;
           })()
         : undefined
   ) : undefined;
@@ -290,7 +290,6 @@ export default function RecipeBuilder({
   const candidates = useMemo(() => {
     if (type === 'ingredient') {
       return inventory
-        .filter((item) => item.isContainer !== 1)
         .map((item) => ({
           id: item.id,
           label: item.name,
@@ -303,13 +302,13 @@ export default function RecipeBuilder({
       return prepItems.map((item) => ({
         id: item.id,
         label: item.name,
-        unit: item.unit,
+        unit: item.outputUnit,
         stockLevel: item.stockQuantity,
       }));
     }
     return bomItems
       .filter((item) => item.id !== bomItemId)
-      .map((item) => ({ id: item.id, label: item.name, unit: item.unit }));
+      .map((item) => ({ id: item.id, label: item.name, unit: item.outputUnit }));
   }, [type, inventory, bomItems, prepItems, bomItemId]);
 
   const addComponent = () => {
@@ -357,16 +356,6 @@ export default function RecipeBuilder({
     });
   };
 
-  /** Helper: filter out container ingredients from a component array */
-  const filterContainers = (comps: Array<{ componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }>) =>
-    comps.filter((c) => {
-      if (c.componentType === 'ingredient') {
-        const ing = inventory.find((i) => i.id === c.componentId);
-        return !ing || ing.isContainer !== 1;
-      }
-      return true;
-    });
-
   /** Handle edit/remove/add of sub-components inside an expanded BoM */
   const handleBomSubEdit = async (
     bomId: string,
@@ -402,15 +391,8 @@ export default function RecipeBuilder({
       }];
     }
 
-    // Exclude container ingredients from the saved BoM
-    const filtered = filterContainers(updatedComponents);
-
-    if (filtered.length === 0) {
-      throw new Error('Nessun componente valido nel BoM dopo il filtraggio dei contenitori.');
-    }
-
     await onReplaceBomComponents(bomId, {
-      components: filtered.map((c) => ({
+      components: updatedComponents.map((c) => ({
         componentType: c.componentType,
         componentId: c.componentId,
         quantity: c.quantity,
@@ -423,7 +405,6 @@ export default function RecipeBuilder({
   const subAddCandidates = useMemo(() => {
     if (subAddType === 'ingredient') {
       return inventory
-        .filter((item) => item.isContainer !== 1)
         .map((item) => ({
           id: item.id,
           label: item.name,
@@ -436,13 +417,13 @@ export default function RecipeBuilder({
       return prepItems.map((item) => ({
         id: item.id,
         label: item.name,
-        unit: item.unit,
+        unit: item.outputUnit,
         stockLevel: item.stockQuantity,
       }));
     }
     return bomItems
       .filter((item) => item.id !== bomItemId)
-      .map((item) => ({ id: item.id, label: item.name, unit: item.unit }));
+      .map((item) => ({ id: item.id, label: item.name, unit: item.outputUnit }));
   }, [subAddType, inventory, bomItems, prepItems, bomItemId]);
 
   const moveComponent = (index: number, direction: -1 | 1) => {
@@ -464,8 +445,8 @@ export default function RecipeBuilder({
       } else if (c.componentType === 'prep') {
         const prep = prepItems.find((p) => p.id === c.componentId);
         if (prep) {
-          const ing = prep.ingredientId ? ingredientById.get(prep.ingredientId) : undefined;
-          if (ing?.unitCost) total += c.quantity * prep.quantityPerUnit * ing.unitCost;
+          const ing = prep.sourceType === 'ingredient' ? ingredientById.get(prep.sourceId) : undefined;
+          if (ing?.unitCost) total += c.quantity * prep.inputQuantity * ing.unitCost;
         }
       } else if (c.componentType === 'bom') {
         const bom = bomItems.find((b) => b.id === c.componentId);
@@ -478,8 +459,8 @@ export default function RecipeBuilder({
             } else if (sc.componentType === 'prep') {
               const prep = prepItems.find((p) => p.id === sc.componentId);
               if (prep) {
-                const ing = prep.ingredientId ? ingredientById.get(prep.ingredientId) : undefined;
-                if (ing?.unitCost) subCost += sc.quantity * prep.quantityPerUnit * ing.unitCost;
+                const ing = prep.sourceType === 'ingredient' ? ingredientById.get(prep.sourceId) : undefined;
+                if (ing?.unitCost) subCost += sc.quantity * prep.inputQuantity * ing.unitCost;
               }
             }
           }
@@ -543,14 +524,6 @@ export default function RecipeBuilder({
                 return (
                   <div className="ml-8 pl-3 border-l-2 border-purple-200 py-2 space-y-1.5 bg-bg/30 rounded-b-lg border-x border-b border-border">
                     {bom.components
-                      .filter((subComp) => {
-                        // Hide container ingredients — they're managed separately
-                        if (subComp.componentType === 'ingredient') {
-                          const subIng = inventory.find((i) => i.id === subComp.componentId);
-                          return !subIng || subIng.isContainer !== 1;
-                        }
-                        return true;
-                      })
                       .map((subComp, subIdx) => (
                         <SubComponentRow
                           key={`sub-${subComp.componentType}-${subComp.componentId}-${subIdx}`}
@@ -667,7 +640,7 @@ export default function RecipeBuilder({
 
                     <div className="flex items-center justify-between px-2 pt-0.5">
                       <p className="text-[9px] text-text-muted italic">
-                        Resa: {bom.yieldQuantity} {bom.unit}
+                        Resa: {bom.yieldQuantity} {bom.outputUnit}
                       </p>
                       {onOpenBomTab && (
                         <button
@@ -695,7 +668,12 @@ export default function RecipeBuilder({
         </div>
       )}
 
-      <RecipeTreeView recipe={components} bomItems={bomItems} inventory={inventory} prepItems={prepItems} />
+      <RecipeTreeView
+        recipe={components}
+        bomItems={bomItems.map((b) => ({ id: b.id, name: b.name, unit: b.outputUnit, yieldQuantity: b.yieldQuantity, components: b.components }))}
+        inventory={inventory.map((i) => ({ id: i.id, name: i.name, unit: i.unit }))}
+        prepItems={prepItems.map((p) => ({ id: p.id, name: p.name, unit: p.outputUnit }))}
+      />
     </div>
   );
 }

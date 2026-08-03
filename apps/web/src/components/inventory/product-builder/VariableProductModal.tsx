@@ -52,7 +52,7 @@ export default function VariableProductModal({
   const [error, setError] = useState('');
 
   const menuCategories = useMemo(() => categories.filter((c) => !c.scope || c.scope === 'menu'), [categories]);
-  const rawIngredients = useMemo(() => inventory.filter((i) => i.isActive && i.isContainer !== 1).map((i) => ({ id: i.id, name: i.name, unit: i.unit })), [inventory]);
+  const rawIngredients = useMemo(() => inventory.filter((i) => i.isActive).map((i) => ({ id: i.id, name: i.name, unit: i.unit })), [inventory]);
 
   useEffect(() => {
     if (editItem && open) {
@@ -121,7 +121,6 @@ export default function VariableProductModal({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          defaultContainerId: editItem.defaultContainerId ?? null,
           printAreas,
           modifierGroups: allModifierGroups,
         });
@@ -130,7 +129,6 @@ export default function VariableProductModal({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          defaultContainerId: null,
           printAreas,
           price: 0,
           recipe: [],

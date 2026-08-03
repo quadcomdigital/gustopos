@@ -1,6 +1,6 @@
 import type {
   Ingredient, BomItem, PrepItem, MenuItemAdmin, Category,
-  MenuItemCreateRequest, CreateMenuProductRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest,
+  MenuItemCreateRequest, CanonicalCreateMenuProductRequest, MenuItemUpdateRequest, PrepItemCreateRequest, CanonicalUnit,
   MenuItemModifier, PrintArea, ModifierGroup, CategoryModifierPool,
   IngredientCreateRequest, UnitConversion,
 } from '@gustopos/shared';
@@ -52,14 +52,13 @@ interface MenuItemsTabProps {
   loading?: boolean;
   onRefresh?: () => Promise<void>;
   onCreate?: (payload: MenuItemCreateRequest) => Promise<void>;
-  onCreateMenuProduct?: (payload: CreateMenuProductRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdate?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
-  onReplaceRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   onSetMenuItemActive?: (id: string, active: boolean) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
   onCreateIngredient?: (payload: IngredientCreateRequest) => Promise<Ingredient>;
-  onCreatePrepItem?: (payload: { ingredientId: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
+  onCreatePrepItem?: (payload: PrepItemCreateRequest) => Promise<PrepItem>;
   /** Called when user clicks 'Apri in BoM' — closes FoodProductModal and switches to BoM tab */
   onOpenBomTab?: (bomId: string) => void;
 }
@@ -77,7 +76,6 @@ export default function MenuItemsTab({
   onCreate,
   onCreateMenuProduct,
   onUpdate,
-  onReplaceRecipe,
   onSetMenuItemActive,
   onDelete,
   onCreateCategory,
@@ -134,7 +132,6 @@ export default function MenuItemsTab({
   const [editModifiers, setEditModifiers] = useState<MenuItemModifier[]>([]);
   const [editModifierGroups, setEditModifierGroups] = useState<ModifierGroup[]>([]);
   const [editRecipe, setEditRecipe] = useState<MenuItemCreateRequest['recipe']>([]);
-  const [editDefaultContainerId, setEditDefaultContainerId] = useState('');
 
   // New product form state (kept for compatibility, but managed by new modals)
   const [_newName] = useState('');
@@ -145,7 +142,6 @@ export default function MenuItemsTab({
   const [_newModifiers] = useState<MenuItemModifier[]>([]);
   const [_newModifierGroups] = useState<ModifierGroup[]>([]);
   const [_newRecipe] = useState<MenuItemCreateRequest['recipe']>([]);
-  const [_newDefaultContainerId] = useState('');
   const [_newSaving] = useState(false);
   const [_newError] = useState('');
   const [_createErrors] = useState<ValidationErrors>({});
@@ -188,10 +184,7 @@ export default function MenuItemsTab({
           if (bom && bom.components.length > 0) {
             const scale = comp.quantity / Number(bom.yieldQuantity || 1);
             for (const sub of bom.components) {
-              // Skip container ingredients
               const subInv = inventory.find((i) => i.id === sub.componentId);
-              if (subInv?.isContainer === 1) continue;
-
               const subName = sub.componentType === 'ingredient'
                 ? (subInv?.name ?? sub.componentId)
                 : sub.componentType === 'prep'
@@ -219,7 +212,6 @@ export default function MenuItemsTab({
         } else {
           // Regular ingredient / prep component
           const inv = inventory.find((i) => i.id === comp.componentId);
-          if (inv?.isContainer === 1) continue; // skip containers
 
           const name = comp.componentName
             ?? (comp.componentType === 'prep' ? prepItems.find((p) => p.id === comp.componentId)?.name : undefined)
@@ -240,11 +232,6 @@ export default function MenuItemsTab({
     return map;
   }, [menuItems, bomItems, inventory, prepItems]);
 
-  const containerCandidates = useMemo(
-    () => inventory.filter((i) => i.isContainer === 1 && i.isActive),
-    [inventory],
-  );
-
   useEffect(() => {
     if (!selectedMenu) return;
     setEditName(selectedMenu.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize edit form fields from selected menu item; safe because all values are primitives or read-only arrays
@@ -255,7 +242,6 @@ export default function MenuItemsTab({
     setEditModifiers(selectedMenu.modifiers ?? []);  
     setEditModifierGroups(selectedMenu.modifierGroups ?? []);  
     setEditRecipe(selectedMenu.recipe);  
-    setEditDefaultContainerId(selectedMenu.defaultContainerId ?? '');
     setEditTab('metadata');
   }, [selectedMenu]);
 
@@ -267,14 +253,13 @@ export default function MenuItemsTab({
     return (
       editName.trim() !== selectedMenu.name
       || editCategoryId !== (selectedMenu.categoryId ?? '')
-      || editDefaultContainerId !== (selectedMenu.defaultContainerId ?? '')
       || editPrice !== String(selectedMenu.price)
       || JSON.stringify(editPrintAreas) !== JSON.stringify(selectedMenu.printAreas)
       || recipeChanged
       || modifiersChanged
       || modifierGroupsChanged
     );
-  }, [selectedMenu, editName, editCategoryId, editDefaultContainerId, editPrice, editPrintAreas, editRecipe, editModifiers, editModifierGroups]);
+  }, [selectedMenu, editName, editCategoryId, editPrice, editPrintAreas, editRecipe, editModifiers, editModifierGroups]);
 
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
 
@@ -290,19 +275,27 @@ export default function MenuItemsTab({
       name: editName.trim(),
       category: editCategoryId ? (menuCategories.find((c) => c.id === editCategoryId)?.name ?? editCategory.trim()) : editCategory.trim(),
       categoryId: editCategoryId || undefined,
-      defaultContainerId: editDefaultContainerId || null,
       price,
       printAreas: editPrintAreas,
-      modifiers: editModifiers,
       modifierGroups: editModifierGroups,
     });
     void onRefresh?.();
   };
 
   const saveRecipe = async () => {
-    if (!selectedMenu || !onReplaceRecipe) return;
+    if (!selectedMenu || !onUpdate) return;
     if (editRecipe.length === 0) return;
-    await onReplaceRecipe(selectedMenu.id, { recipe: editRecipe });
+    const unitByKey = new Map(
+      selectedMenu.recipe.map((r) => [`${r.componentType}:${r.componentId}`, r.unit]),
+    );
+    await onUpdate(selectedMenu.id, {
+      components: editRecipe.map((c) => ({
+        componentType: c.componentType,
+        componentId: c.componentId,
+        quantity: c.quantity,
+        unit: (unitByKey.get(`${c.componentType}:${c.componentId}`) ?? 'pz') as CanonicalUnit,
+      })),
+    });
     void onRefresh?.();
   };
 
@@ -577,31 +570,6 @@ export default function MenuItemsTab({
                     ))}
                   </div>
 
-                  {containerCandidates.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted whitespace-nowrap">Container di default</label>
-                      <div className="flex-1">
-                        <SearchableSelect
-                          items={containerCandidates}
-                          getLabel={(c) => c.name}
-                          getValue={(c) => c.id}
-                          selectedValue={editDefaultContainerId}
-                          onSelect={setEditDefaultContainerId}
-                          placeholder="Nessun contenitore"
-                        />
-                      </div>
-                      {editDefaultContainerId && (
-                        <button
-                          type="button"
-                          onClick={() => setEditDefaultContainerId('')}
-                          className="text-[10px] font-bold uppercase tracking-wider text-danger"
-                        >
-                          Rimuovi
-                        </button>
-                      )}
-                    </div>
-                  )}
-
                   <div className="flex items-center gap-3 pt-2 border-t border-border">
                     <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</label>
                     <Button
@@ -736,7 +704,6 @@ export default function MenuItemsTab({
         onCreateMenuProduct={onCreateMenuProduct}
         onCreateMenuItem={onCreate!}
         onUpdateMenuItem={onUpdate}
-        onReplaceRecipe={onReplaceRecipe}
         onCreateIngredient={onCreateIngredient ?? createIngredient}
         onCreatePrepItem={onCreatePrepItem ?? createPrepItem}
         onReplaceBomComponents={handleReplaceBomComponents}

@@ -24,8 +24,7 @@ import {
   type MenuItemAdmin,
   type ModuleKey,
   type MenuItemCreateRequest,
-  type CreateMenuProductRequest,
-  type MenuItemReplaceRecipeRequest,
+  type CanonicalCreateMenuProductRequest,
   type MenuItemUpdateRequest,
   type Order,
   type PayTableResponse,
@@ -116,6 +115,7 @@ import {
   type PrintBridgeOnboardingSecret,
   type PrintBridgeOnboardingSecretCreateCode6DigitResponse,
   type PrepItem,
+  type PrepItemCreateRequest,
   type PrepItemUpdateRequest,
   type UnitConversion,
   type UnitConversionCreateRequest,
@@ -137,7 +137,6 @@ import {
   deleteCustomerAddress as deleteCustomerAddressRequest,
   createIngredient as createIngredientRequest,
   createAdminStaff,
-  createMenuItem as createMenuItemRequest,
   createMenuProduct as createMenuProductRequest,
   createSimpleCatalogItem as createSimpleCatalogItemRequest,
   closeTable as closeTableRequest,
@@ -177,9 +176,6 @@ import {
   removeBomComponent as removeBomComponentRequest,
   updateBomItem as updateBomItemRequest,
   deleteBomItem as deleteBomItemRequest,
-  replaceMenuItemRecipe as replaceMenuItemRecipeRequest,
-  addMenuItemRecipeComponent as addMenuItemRecipeComponentRequest,
-  removeMenuItemRecipeComponent as removeMenuItemRecipeComponentRequest,
   refreshSession,
   refundPayment as refundPaymentRequest,
   resetAdminStaffPin,
@@ -815,12 +811,9 @@ interface AppState {
   deleteIngredient: (id: string) => Promise<void>;
   adjustIngredient: (id: string, payload: { quantity: number; notes?: string }) => Promise<void>;
   refreshMenuItemsAdmin: () => Promise<void>;
-  createMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
-  createMenuProduct: (payload: CreateMenuProductRequest) => Promise<void>;
+  createMenuProduct: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
+  createSimpleCatalogItem: (payload: MenuItemCreateRequest) => Promise<void>;
   updateMenuItem: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
-  replaceMenuItemRecipe: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
-  addMenuItemRecipeComponent: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) => Promise<void>;
-  removeMenuItemRecipeComponent: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }) => Promise<void>;
   setMenuItemActiveAdmin: (id: string, active: boolean) => Promise<void>;
   deleteMenuItemAdmin: (id: string) => Promise<void>;
   refreshUiSettings: () => Promise<void>;
@@ -898,7 +891,7 @@ interface AppState {
   fetchUnitConversions: (inventoryId: string) => Promise<UnitConversion[]>;
   createUnitConversion: (inventoryId: string, payload: UnitConversionCreateRequest) => Promise<UnitConversion>;
   deleteUnitConversion: (inventoryId: string, conversionId: string) => Promise<void>;
-  createPrepItem: (payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }) => Promise<PrepItem>;
+  createPrepItem: (payload: PrepItemCreateRequest) => Promise<PrepItem>;
   updatePrepItem: (id: string, payload: PrepItemUpdateRequest) => Promise<PrepItem>;
   deletePrepItem: (id: string) => Promise<void>;
   preparePrepItem: (id: string, quantity: number) => Promise<PreparePrepItemResponse>;
@@ -996,9 +989,7 @@ export function replayOfflineQueue(): void {
             } else if (action.action === 'replaceBomComponents') {
               await state.replaceBomComponents(action.id as string, action.payload as BomUpsertComponentsRequest);
             } else if (action.action === 'createMenuProduct') {
-              await state.createMenuProduct(action.payload as CreateMenuProductRequest);
-            } else if (action.action === 'createMenuItem') {
-              await state.createMenuItem(action.payload as MenuItemCreateRequest);
+              await state.createMenuProduct(action.payload as CanonicalCreateMenuProductRequest);
             } else if (action.action === 'updateMenuItem') {
               await state.updateMenuItem(action.id as string, action.payload as MenuItemUpdateRequest);
             } else if (action.action === 'deleteMenuItemAdmin') {
@@ -2703,21 +2694,6 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  createMenuItem: async (payload) => {
-    try {
-      if (!hasModuleEnabled(get(), 'inventory') && !hasModuleEnabled(get(), 'simple_catalog')) {
-        enqueueBlockedAction(set as StoreSet, isSimpleCatalogOnly(get()) ? 'simple_catalog' : 'inventory', { action: 'createMenuItem', payload });
-        throw new Error('Modulo non disponibile per questo tenant');
-      }
-      await (isSimpleCatalogOnly(get()) ? createSimpleCatalogItemRequest(payload) : createMenuItemRequest(payload));
-      const menuItemsAdmin = await (isSimpleCatalogOnly(get()) ? fetchSimpleCatalogItemsAdmin() : fetchMenuItemsAdmin());
-      set({ menuItemsAdmin });
-    } catch (err) {
-      set({ error: handleActionError(err) });
-      throw err;
-    }
-  },
-
   updateMenuItem: async (id, payload) => {
     try {
       if (!hasModuleEnabled(get(), 'inventory') && !hasModuleEnabled(get(), 'simple_catalog')) {
@@ -2733,50 +2709,14 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  replaceMenuItemRecipe: async (id, payload) => {
+  createSimpleCatalogItem: async (payload) => {
     try {
-      if (!hasModuleEnabled(get(), 'inventory')) {
-        enqueueBlockedAction(set as StoreSet, 'inventory', { action: 'replaceMenuItemRecipe', id, payload });
-        throw new Error('Modulo inventory disabilitato per questo tenant');
+      if (!hasModuleEnabled(get(), 'simple_catalog')) {
+        enqueueBlockedAction(set as StoreSet, 'simple_catalog', { action: 'createSimpleCatalogItem', payload });
+        throw new Error('Modulo semplice non disponibile per questo tenant');
       }
-      await replaceMenuItemRecipeRequest(id, payload);
-      const menuItemsAdmin = isSimpleCatalogOnly(get())
-        ? await fetchSimpleCatalogItemsAdmin()
-        : await fetchMenuItemsAdmin();
-      set({ menuItemsAdmin });
-    } catch (err) {
-      set({ error: handleActionError(err) });
-      throw err;
-    }
-  },
-
-  addMenuItemRecipeComponent: async (id, payload) => {
-    try {
-      if (!hasModuleEnabled(get(), 'inventory')) {
-        enqueueBlockedAction(set as StoreSet, 'inventory', { action: 'addMenuItemRecipeComponent', id, payload });
-        throw new Error('Modulo inventory disabilitato per questo tenant');
-      }
-      await addMenuItemRecipeComponentRequest(id, payload);
-      const menuItemsAdmin = isSimpleCatalogOnly(get())
-        ? await fetchSimpleCatalogItemsAdmin()
-        : await fetchMenuItemsAdmin();
-      set({ menuItemsAdmin });
-    } catch (err) {
-      set({ error: handleActionError(err) });
-      throw err;
-    }
-  },
-
-  removeMenuItemRecipeComponent: async (id, payload) => {
-    try {
-      if (!hasModuleEnabled(get(), 'inventory')) {
-        enqueueBlockedAction(set as StoreSet, 'inventory', { action: 'removeMenuItemRecipeComponent', id, payload });
-        throw new Error('Modulo inventory disabilitato per questo tenant');
-      }
-      await removeMenuItemRecipeComponentRequest(id, payload);
-      const menuItemsAdmin = isSimpleCatalogOnly(get())
-        ? await fetchSimpleCatalogItemsAdmin()
-        : await fetchMenuItemsAdmin();
+      await createSimpleCatalogItemRequest(payload);
+      const menuItemsAdmin = await fetchSimpleCatalogItemsAdmin();
       set({ menuItemsAdmin });
     } catch (err) {
       set({ error: handleActionError(err) });

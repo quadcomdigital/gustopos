@@ -18,10 +18,8 @@ import {
   categoryScopeSchema,
   menuItemAdminListResponseSchema,
   menuItemAdminSchema,
-  createMenuProductRequestSchema,
   menuProductResponseSchema,
   canonicalUnitSchema,
-  type CreateMenuProductRequest,
   type MenuProductResponse,
   menuItemCreateRequestSchema,
   menuItemUpdateRequestSchema,
@@ -35,6 +33,7 @@ import {
   type BomItem,
   type BomCreateRequest,
   type BomUpdateRequest,
+  type BomUpsertComponentsRequest,
   type PrepItem,
   type PrepItemUpdateRequest,
   type PreparePrepItemResponse,
@@ -51,6 +50,17 @@ import {
   type MenuItemUpdateRequest,
   type MenuItemReplaceRecipeRequest,
   type PrintArea,
+  type PrepItemCreateRequest,
+  prepItemCreateRequestSchema,
+  canonicalCreateMenuProductRequestSchema,
+  type CanonicalCreateMenuProductRequest,
+  type PrepItemResponse,
+  normalizeTargetQuantity,
+  assertAcyclicBomGraph,
+  areUnitsCompatible,
+  convertUnit,
+  type BomGraphEdge,
+  type PrepSourceEdge,
 } from "@gustopos/shared";
 import {
   inventory,
@@ -64,20 +74,17 @@ import {
   categoryModifierPoolOptions,
   categoryModifierPoolCategories,
   menuItems,
-  menuItemIngredients,
-  menuItemBomRequirements,
-  menuItemPrepRequirements,
   menuItemComponents,
-  prepItemComponents,
   orderStockImpacts,
   menuModifierGroups,
   menuModifierOptions,
   menuModifierOptionOverrides,
-  menuItemModifiers,
   suppliers,
   supplierIngredients,
   inventoryAudit,
   printJobs,
+  prepProductionRuns,
+  prepProductionImpacts,
 } from "../db/schema";
 
 type InventoryRow = typeof inventory.$inferSelect;
@@ -102,7 +109,7 @@ function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
 
 @Injectable()
 export class InventoryRepository {
-  private mapInventoryRows(rows: { id: string; name: string; quantity: unknown; unit: string; minThreshold: unknown; categoryId: string | null; unitCost: unknown; salePrice: string | null; isActive: number; isContainer: number; supplierName?: string | null; brandName?: string | null; sku?: string | null }[]): Ingredient[] {
+  private mapInventoryRows(rows: { id: string; name: string; quantity: unknown; unit: string; minThreshold: unknown; categoryId: string | null; unitCost: unknown; salePrice: string | null; isActive: number; supplierName?: string | null; brandName?: string | null; sku?: string | null }[]): Ingredient[] {
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -114,7 +121,6 @@ export class InventoryRepository {
       unitCost: Number(row.unitCost ?? 0),
       salePrice: row.salePrice != null ? Number(row.salePrice) : null,
       isActive: row.isActive === 1,
-      isContainer: row.isContainer ?? 0,
       supplierName: row.supplierName ?? null,
       brandName: row.brandName ?? null,
     }));
@@ -185,9 +191,9 @@ export class InventoryRepository {
     }
     return bomRows.map((row) =>
       bomItemSchema.parse({
-        id: row.id, name: row.name, unit: row.unit,
+        id: row.id, name: row.name, outputUnit: row.outputUnit,
         yieldQuantity: Number(row.yieldQuantity), isActive: row.isActive === 1,
-        categoryId: row.categoryId ?? undefined, isContainer: row.isContainer ?? 0,
+        categoryId: row.categoryId ?? undefined,
         components: (componentsByBomId.get(row.id) ?? []).map((component) => ({
           id: String(component.id), componentType: component.componentType,
           componentId: component.componentId, quantity: Number(component.quantity), unit: component.unit,
@@ -196,13 +202,70 @@ export class InventoryRepository {
     );
   }
 
+  private async validateBomGraph(
+    executor: typeof db,
+    tenantId: string,
+    bomId: string,
+    components: Array<{ componentType: string; componentId: string; quantity: number; unit: string }>,
+    extra?: { bomEdges?: BomGraphEdge[]; prepSources?: PrepSourceEdge[] },
+  ): Promise<void> {
+    const [bomRows, componentRows, prepRows, inventoryRows] = await Promise.all([
+      executor.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
+      executor.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
+      executor.select().from(prepItems).where(eq(prepItems.tenantId, tenantId)),
+      executor.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
+    ]);
+    const bomById = new Map(bomRows.map((row) => [row.id, row]));
+    const prepById = new Map(prepRows.map((row) => [row.id, row]));
+    const ingById = new Map(inventoryRows.map((row) => [row.id, row]));
+
+    for (const component of components) {
+      const targetBom = bomById.get(component.componentId);
+      const targetPrep = prepById.get(component.componentId);
+      const targetIng = ingById.get(component.componentId);
+      if (component.componentType === "bom") {
+        if (!targetBom) throw new Error(`BoM component ${component.componentId} not found`);
+        if (targetBom.isActive !== 1) throw new Error(`BoM "${targetBom.name}" is not active`);
+        if (!areUnitsCompatible(component.unit, targetBom.outputUnit)) throw new Error(`Unit ${component.unit} incompatible with BoM output unit ${targetBom.outputUnit}`);
+      } else if (component.componentType === "prep") {
+        if (!targetPrep) throw new Error(`Prep component ${component.componentId} not found`);
+        if (targetPrep.isActive !== 1) throw new Error(`Prep "${targetPrep.name}" is not active`);
+        if (!areUnitsCompatible(component.unit, targetPrep.outputUnit)) throw new Error(`Unit ${component.unit} incompatible with prep output unit ${targetPrep.outputUnit}`);
+      } else {
+        if (!targetIng) throw new Error(`Ingredient component ${component.componentId} not found`);
+        if (targetIng.isActive !== 1) throw new Error(`Ingredient "${targetIng.name}" is not active`);
+        if (!areUnitsCompatible(component.unit, targetIng.unit)) throw new Error(`Unit ${component.unit} incompatible with ingredient unit ${targetIng.unit}`);
+      }
+    }
+
+    const edges: BomGraphEdge[] = [...(extra?.bomEdges ?? [])];
+    for (const row of componentRows) {
+      if (row.bomId === bomId) continue;
+      if (row.componentType === "bom" || row.componentType === "prep") {
+        edges.push({ bomId: row.bomId, componentType: row.componentType, componentId: row.componentId });
+      }
+    }
+    for (const component of components) {
+      if (component.componentType === "bom" || component.componentType === "prep") {
+        edges.push({ bomId, componentType: component.componentType, componentId: component.componentId });
+      }
+    }
+    const prepSources: PrepSourceEdge[] = [
+      ...(extra?.prepSources ?? []),
+      ...prepRows.map((row) => ({
+        prepId: row.id,
+        sourceType: row.sourceType as "ingredient" | "bom",
+        sourceId: row.sourceId,
+      })),
+    ];
+
+    assertAcyclicBomGraph(edges, prepSources);
+  }
+
   private async mapMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
     const tenantId = getTenantIdOrDefault();
-    const [menuRows, ingredientRows, bomRows, prepRows, canonicalRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows, menuItemModifierRows] = await Promise.all([
+    const [menuRows, canonicalRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows] = await Promise.all([
       db.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
-      db.select().from(menuItemIngredients).where(eq(menuItemIngredients.tenantId, tenantId)),
-      db.select().from(menuItemBomRequirements).where(eq(menuItemBomRequirements.tenantId, tenantId)),
-      db.select().from(menuItemPrepRequirements).where(eq(menuItemPrepRequirements.tenantId, tenantId)),
       db.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenantId)),
       db.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
       db.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
@@ -210,48 +273,34 @@ export class InventoryRepository {
       db.select().from(menuModifierGroups).where(eq(menuModifierGroups.tenantId, tenantId)),
       db.select().from(menuModifierOptions).where(eq(menuModifierOptions.tenantId, tenantId)),
       db.select().from(menuModifierOptionOverrides).where(eq(menuModifierOptionOverrides.tenantId, tenantId)),
-      db.select().from(menuItemModifiers).where(eq(menuItemModifiers.tenantId, tenantId)),
     ]);
     const ingredientNameById = new Map(inventoryRows.map((row) => [row.id, row.name]));
+    const ingredientUnitById = new Map(inventoryRows.map((row) => [row.id, row.unit]));
     const bomNameById = new Map(bomItemRows.map((row) => [row.id, row.name]));
+    const bomUnitById = new Map(bomItemRows.map((row) => [row.id, row.outputUnit]));
     const prepNameById = new Map(prepItemRows.map((row) => [row.id, row.name]));
-    const prepUnitById = new Map(prepItemRows.map((row) => [row.id, row.unit]));
-    const canonicalMenuIds = new Set(canonicalRows.map((row) => row.menuItemId));
+    const prepUnitById = new Map(prepItemRows.map((row) => [row.id, row.outputUnit]));
     const recipeByMenuId = new Map<string, MenuItemAdmin["recipe"]>();
     for (const component of canonicalRows) {
       const existing = recipeByMenuId.get(component.menuItemId) ?? [];
       const name = component.componentType === "ingredient"
         ? ingredientNameById.get(component.componentId) ?? component.componentId
-        : prepNameById.get(component.componentId) ?? component.componentId;
+        : component.componentType === "prep"
+          ? prepNameById.get(component.componentId) ?? component.componentId
+          : bomNameById.get(component.componentId) ?? component.componentId;
       const unit = component.componentType === "ingredient"
-        ? inventoryRows.find((row) => row.id === component.componentId)?.unit ?? ""
-        : prepUnitById.get(component.componentId) ?? "";
+        ? ingredientUnitById.get(component.componentId) ?? ""
+        : component.componentType === "prep"
+          ? prepUnitById.get(component.componentId) ?? ""
+          : bomUnitById.get(component.componentId) ?? "";
       existing.push({
-        componentType: component.componentType as "ingredient" | "prep",
+        componentType: component.componentType as "ingredient" | "bom" | "prep",
         componentId: component.componentId,
         componentName: name,
         quantity: toNumeric(component.quantity),
         unit,
       });
       recipeByMenuId.set(component.menuItemId, existing);
-    }
-    for (const ingredient of ingredientRows) {
-      if (canonicalMenuIds.has(ingredient.menuItemId)) continue;
-      const existing = recipeByMenuId.get(ingredient.menuItemId) ?? [];
-      existing.push({ componentType: "ingredient", componentId: ingredient.ingredientId, componentName: ingredientNameById.get(ingredient.ingredientId) ?? ingredient.ingredientId, quantity: toNumeric(ingredient.quantity), unit: ingredient.unit });
-      recipeByMenuId.set(ingredient.menuItemId, existing);
-    }
-    for (const bom of bomRows) {
-      if (canonicalMenuIds.has(bom.menuItemId)) continue;
-      const existing = recipeByMenuId.get(bom.menuItemId) ?? [];
-      existing.push({ componentType: "bom", componentId: bom.bomId, componentName: bomNameById.get(bom.bomId) ?? bom.bomId, quantity: toNumeric(bom.quantity), unit: bom.unit });
-      recipeByMenuId.set(bom.menuItemId, existing);
-    }
-    for (const prep of prepRows) {
-      if (canonicalMenuIds.has(prep.menuItemId)) continue;
-      const existing = recipeByMenuId.get(prep.menuItemId) ?? [];
-      existing.push({ componentType: "prep", componentId: prep.prepItemId, componentName: prepNameById.get(prep.prepItemId) ?? prep.prepItemId, quantity: toNumeric(prep.quantity), unit: prepUnitById.get(prep.prepItemId) ?? "" });
-      recipeByMenuId.set(prep.menuItemId, existing);
     }
     const overridesByOptionId = new Map<string, Array<{ ingredientId: string; action: "add" | "remove" | "replace" }>>();
     for (const override of overrideRows) {
@@ -262,7 +311,7 @@ export class InventoryRepository {
     const optionsByGroupId = new Map<string, any[]>();
     for (const opt of modifierOptionRows) {
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
-      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, bomId: opt.bomId ?? undefined, priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
+      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
       optionsByGroupId.set(opt.groupId, existing);
     }
     const modifierGroupsByMenuId = new Map<string, any[]>();
@@ -271,101 +320,14 @@ export class InventoryRepository {
       existing.push({ id: group.id, name: group.name, required: Boolean(group.required), minSelections: group.minSelections, maxSelections: group.maxSelections, sortOrder: group.sortOrder ?? 0, options: optionsByGroupId.get(group.id) ?? [] });
       modifierGroupsByMenuId.set(group.menuItemId, existing);
     }
-    const adminInventoryById = new Map(inventoryRows.map((row) => [row.id, row]));
-    const adminModifiersByMenuId = new Map<string, any[]>();
-    for (const mod of menuItemModifierRows) {
-      const existing = adminModifiersByMenuId.get(mod.menuItemId) ?? [];
-      const invItem = adminInventoryById.get(mod.inventoryItemId);
-      const priceDelta = Number(mod.priceDelta);
-      const effectivePrice = priceDelta || (invItem?.salePrice != null ? Number(invItem.salePrice) : 0);
-      existing.push({ id: mod.id, inventoryItemId: mod.inventoryItemId, name: invItem?.name ?? mod.inventoryItemId, priceDelta, effectivePrice });
-      adminModifiersByMenuId.set(mod.menuItemId, existing);
-    }
     return menuItemAdminListResponseSchema.parse(menuRows.map((row) => menuItemAdminSchema.parse({
       id: row.id, name: row.name, price: Number(row.price), category: row.category, categoryId: row.categoryId ?? undefined,
-      defaultContainerId: row.defaultContainerId ?? null, printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1,
-      recipe: recipeByMenuId.get(row.id) ?? [], modifiers: adminModifiersByMenuId.get(row.id) ?? [], modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
+      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1,
+      recipe: recipeByMenuId.get(row.id) ?? [], modifiers: [], modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
     })));
   }
 
-  // --- Shadow BoM helpers ---
-
-  private shadowBomName(menuItemId: string): string {
-    return `__shadow__${menuItemId}`;
-  }
-
-  private async findShadowBoMId(menuItemId: string): Promise<string | null> {
-    const tenantId = getTenantIdOrDefault();
-    const rows = await db
-      .select({ id: bomItems.id })
-      .from(bomItems)
-      .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.name, this.shadowBomName(menuItemId))))
-      .limit(1);
-    return rows[0]?.id ?? null;
-  }
-
-  private async syncShadowBoM(
-    tx: typeof db,
-    tenantId: string,
-    menuItemId: string,
-    recipe: Array<{ componentType: string; componentId: string; quantity: number; unit: string }>,
-    categoryId?: string | null,
-  ): Promise<void> {
-    const shadowName = this.shadowBomName(menuItemId);
-    let bomId = await this.findShadowBoMId(menuItemId);
-
-    if (!bomId) {
-      bomId = `bom_shadow_${Date.now().toString(36)}`;
-      await tx.insert(bomItems).values({
-        id: bomId,
-        tenantId,
-        name: shadowName,
-        unit: 'pz',
-        yieldQuantity: '1',
-        categoryId: categoryId ?? null,
-        isActive: 1,
-        isContainer: 0,
-      });
-      await tx.insert(menuItemBomRequirements).values({
-        tenantId,
-        menuItemId,
-        bomId,
-        quantity: '1',
-        unit: 'pz',
-      });
-    }
-
-    await tx
-      .delete(bomComponents)
-      .where(and(eq(bomComponents.tenantId, tenantId), eq(bomComponents.bomId, bomId)));
-
-    if (recipe.length > 0) {
-      await tx.insert(bomComponents).values(
-        recipe.map((c) => ({
-          tenantId,
-          bomId: bomId!,
-          componentType: c.componentType,
-          componentId: c.componentId,
-          quantity: String(c.quantity),
-          unit: c.unit,
-        })),
-      );
-    }
-  }
-
-  private async deleteShadowBoM(menuItemId: string): Promise<void> {
-    const tenantId = getTenantIdOrDefault();
-    const bomId = await this.findShadowBoMId(menuItemId);
-    if (!bomId) return;
-    await db
-      .delete(bomComponents)
-      .where(and(eq(bomComponents.tenantId, tenantId), eq(bomComponents.bomId, bomId)));
-    await db
-      .delete(bomItems)
-      .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, bomId)));
-  }
-
-  async listInventoryItems(): Promise<{ id: string; name: string; quantity: number; unit: string; minThreshold: number; unitCost: number; salePrice: number | null; isActive: boolean; isContainer: number; sku?: string | null | undefined; categoryId?: string | undefined; supplierName?: string | null | undefined; brandName?: string | null | undefined; }[]> {
+  async listInventoryItems(): Promise<Ingredient[]> {
 const tenantId = getTenantIdOrDefault();
 const rows = await db
   .select({
@@ -379,7 +341,6 @@ const rows = await db
     unitCost: inventory.unitCost,
     salePrice: inventory.salePrice,
     isActive: inventory.isActive,
-    isContainer: inventory.isContainer,
     supplierName: sql<string | null>`"suppliers"."name"`.as('supplierName'),
     brandName: sql<string | null>`"supplier_ingredients"."brand_name"`.as('brandName'),
   })
@@ -397,7 +358,7 @@ const rows = await db
 return this.mapInventoryRows(rows);
   }
 
-  async createInventoryItem(payload: IngredientCreateRequest): Promise<{ id: string; name: string; quantity: number; unit: string; minThreshold: number; unitCost: number; salePrice: number | null; isActive: boolean; isContainer: number; sku?: string | null | undefined; categoryId?: string | undefined; supplierName?: string | null | undefined; brandName?: string | null | undefined; }> {
+  async createInventoryItem(payload: IngredientCreateRequest): Promise<Ingredient> {
 const parsed = ingredientCreateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 const id = `i_${Date.now().toString(36)}`;
@@ -415,7 +376,6 @@ const inserted = await db
     categoryId: parsed.categoryId ?? null,
     unitCost: String(parsed.unitCost ?? 0),
     salePrice: parsed.salePrice != null ? String(parsed.salePrice) : null,
-    isContainer: parsed.isContainer ? 1 : 0,
     isActive: 1,
   })
   .returning();
@@ -432,11 +392,10 @@ return {
   unitCost: Number(created.unitCost ?? 0),
   salePrice: created.salePrice != null ? Number(created.salePrice) : null,
   isActive: created.isActive === 1,
-  isContainer: created.isContainer ?? 0,
 };
   }
 
-  async updateInventoryItem(id: string, payload: IngredientUpdateRequest): Promise<{ id: string; name: string; quantity: number; unit: string; minThreshold: number; unitCost: number; salePrice: number | null; isActive: boolean; isContainer: number; sku?: string | null | undefined; categoryId?: string | undefined; supplierName?: string | null | undefined; brandName?: string | null | undefined; } | null> {
+  async updateInventoryItem(id: string, payload: IngredientUpdateRequest): Promise<Ingredient | null> {
 const parsed = ingredientUpdateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 
@@ -460,7 +419,6 @@ const updated = await db
     ...(parsed.unitCost !== undefined ? { unitCost: String(parsed.unitCost) } : {}),
     ...(parsed.salePrice !== undefined ? { salePrice: parsed.salePrice != null ? String(parsed.salePrice) : null } : {}),
     ...(parsed.isActive !== undefined ? { isActive: parsed.isActive ? 1 : 0 } : {}),
-    ...(parsed.isContainer !== undefined ? { isContainer: parsed.isContainer ? 1 : 0 } : {}),
   })
   .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, id)))
   .returning();
@@ -481,7 +439,6 @@ if (oldRow) {
     { field: "salePrice", oldVal: oldRow.salePrice ?? null, newVal: row.salePrice ?? null },
     { field: "categoryId", oldVal: oldRow.categoryId ?? null, newVal: row.categoryId ?? null },
     { field: "isActive", oldVal: String(oldRow.isActive), newVal: String(row.isActive) },
-    { field: "isContainer", oldVal: String(oldRow.isContainer ?? 0), newVal: String(row.isContainer ?? 0) },
     { field: "sku", oldVal: oldRow.sku ?? null, newVal: row.sku ?? null },
   ];
   const changes = auditableFields.filter((f) => f.oldVal !== f.newVal);
@@ -511,7 +468,6 @@ return {
   unitCost: Number(row.unitCost ?? 0),
   salePrice: row.salePrice != null ? Number(row.salePrice) : null,
   isActive: row.isActive === 1,
-  isContainer: row.isContainer ?? 0,
 };
   }
 
@@ -527,9 +483,13 @@ if (existing.length === 0) {
 }
 
 const menuUsage = await db
-  .select({ menuItemId: menuItemIngredients.menuItemId })
-  .from(menuItemIngredients)
-  .where(and(eq(menuItemIngredients.tenantId, tenantId), eq(menuItemIngredients.ingredientId, id)))
+  .select({ menuItemId: menuItemComponents.menuItemId })
+  .from(menuItemComponents)
+  .where(and(
+    eq(menuItemComponents.tenantId, tenantId),
+    eq(menuItemComponents.componentType, "ingredient"),
+    eq(menuItemComponents.componentId, id),
+  ))
   .limit(1);
 if (menuUsage.length > 0) {
   throw new Error("Cannot delete ingredient linked to a menu recipe");
@@ -556,7 +516,7 @@ await db
 return true;
   }
 
-  async adjustInventoryItem(id: string, deltaQuantity: number, notes?: string, staffId?: string): Promise<{ id: string; name: string; quantity: number; unit: string; minThreshold: number; unitCost: number; salePrice: number | null; isActive: boolean; isContainer: number; sku?: string | null | undefined; categoryId?: string | undefined; supplierName?: string | null | undefined; brandName?: string | null | undefined; }> {
+  async adjustInventoryItem(id: string, deltaQuantity: number, notes?: string, staffId?: string): Promise<Ingredient> {
 if (!Number.isFinite(deltaQuantity) || deltaQuantity === 0) {
   throw new Error("Inventory adjustment must be a finite non-zero number");
 }
@@ -614,7 +574,6 @@ return withTenantTx(async (tx) => {
     unitCost: Number(r.unitCost ?? 0),
     salePrice: r.salePrice != null ? Number(r.salePrice) : null,
     isActive: r.isActive === 1,
-    isContainer: r.isContainer ?? 0,
   };
 });
   }
@@ -667,11 +626,11 @@ return {
 };
   }
 
-  async listBomItems(): Promise<{ id: string; name: string; unit: string; yieldQuantity: number; isActive: boolean; components: { id: string; unit: string; componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; }[]; isContainer: number; categoryId?: string | undefined; }[]> {
+  async listBomItems(): Promise<BomItem[]> {
 return this.mapBomItems();
   }
 
-  async createBomItem(payload: BomCreateRequest): Promise<{ id: string; name: string; unit: string; yieldQuantity: number; isActive: boolean; components: { id: string; unit: string; componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; }[]; isContainer: number; categoryId?: string | undefined; }> {
+  async createBomItem(payload: BomCreateRequest): Promise<BomItem> {
 const parsed = bomCreateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 const bomId = `bom_${Date.now().toString(36)}`;
@@ -681,10 +640,9 @@ await withTenantTx(async (tx) => {
     id: bomId,
     tenantId,
     name: parsed.name,
-    unit: parsed.unit,
+    outputUnit: parsed.outputUnit,
     yieldQuantity: String(parsed.yieldQuantity),
     categoryId: parsed.categoryId ?? null,
-    isContainer: parsed.isContainer ? 1 : 0,
     isActive: 1,
   });
 
@@ -700,6 +658,7 @@ await withTenantTx(async (tx) => {
       })),
     );
   }
+  await this.validateBomGraph(tx, tenantId, bomId, parsed.components);
 });
 
 const created = (await this.mapBomItems()).find((item) => item.id === bomId);
@@ -710,7 +669,7 @@ if (!created) {
 return created;
   }
 
-  async updateBomItem(id: string, payload: BomUpdateRequest): Promise<{ id: string; name: string; unit: string; yieldQuantity: number; isActive: boolean; components: { id: string; unit: string; componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; }[]; isContainer: number; categoryId?: string | undefined; } | null> {
+  async updateBomItem(id: string, payload: BomUpdateRequest): Promise<BomItem | null> {
 const parsed = bomUpdateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 const existing = await db
@@ -719,19 +678,15 @@ const existing = await db
   .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, id)))
   .limit(1);
 if (existing.length === 0) return null;
-if (existing[0].name.startsWith('__shadow__')) {
-  throw new Error("Cannot modify auto-generated shadow BoM");
-}
 
 const updated = await db
   .update(bomItems)
   .set({
     ...(parsed.name ? { name: parsed.name } : {}),
-    ...(parsed.unit ? { unit: parsed.unit } : {}),
+    ...(parsed.outputUnit ? { outputUnit: parsed.outputUnit } : {}),
     ...(parsed.yieldQuantity ? { yieldQuantity: String(parsed.yieldQuantity) } : {}),
     ...(parsed.categoryId !== undefined ? { categoryId: parsed.categoryId } : {}),
     ...(parsed.isActive !== undefined ? { isActive: parsed.isActive ? 1 : 0 } : {}),
-    ...(parsed.isContainer !== undefined ? { isContainer: parsed.isContainer ? 1 : 0 } : {}),
   })
   .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, id)))
   .returning({ id: bomItems.id });
@@ -754,10 +709,6 @@ if (existing.length === 0) {
   return false;
 }
 
-if (existing[0].name.startsWith('__shadow__')) {
-  throw new Error("Cannot delete auto-generated shadow BoM");
-}
-
 const nestedUsage = await db
   .select({ bomId: bomComponents.bomId })
   .from(bomComponents)
@@ -774,9 +725,13 @@ if (nestedUsage.length > 0) {
 }
 
 const menuUsage = await db
-  .select({ menuItemId: menuItemBomRequirements.menuItemId })
-  .from(menuItemBomRequirements)
-  .where(and(eq(menuItemBomRequirements.tenantId, tenantId), eq(menuItemBomRequirements.bomId, id)))
+  .select({ menuItemId: menuItemComponents.menuItemId })
+  .from(menuItemComponents)
+  .where(and(
+    eq(menuItemComponents.tenantId, tenantId),
+    eq(menuItemComponents.componentType, "bom"),
+    eq(menuItemComponents.componentId, id),
+  ))
   .limit(1);
 if (menuUsage.length > 0) {
   throw new Error("Cannot delete BoM linked to a menu recipe");
@@ -785,7 +740,7 @@ if (menuUsage.length > 0) {
 const prepUsage = await db
   .select({ prepItemId: prepItems.id })
   .from(prepItems)
-  .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.bomId, id)))
+  .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.sourceType, "bom"), eq(prepItems.sourceId, id)))
   .limit(1);
 if (prepUsage.length > 0) {
   throw new Error("Cannot delete BoM linked to a prep item");
@@ -797,7 +752,7 @@ await db
 return true;
   }
 
-  async addBomComponent(id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }): Promise<{ id: string; name: string; unit: string; yieldQuantity: number; isActive: boolean; components: { id: string; unit: string; componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; }[]; isContainer: number; categoryId?: string | undefined; } | null> {
+  async addBomComponent(id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }): Promise<BomItem | null> {
 const parsed = bomAddComponentRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 const bom = await db
@@ -808,9 +763,6 @@ const bom = await db
 if (bom.length === 0) {
   return null;
 }
-if (bom[0].name.startsWith('__shadow__')) {
-  throw new Error("Cannot modify auto-generated shadow BoM");
-}
 
 // Validate component exists
 if (parsed.componentType === 'ingredient') {
@@ -820,6 +772,13 @@ if (parsed.componentType === 'ingredient') {
     .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, parsed.componentId)))
     .limit(1);
   if (exists.length === 0) throw new Error(`Ingredient ${parsed.componentId} not found`);
+} else if (parsed.componentType === 'prep') {
+  const exists = await db
+    .select({ id: prepItems.id })
+    .from(prepItems)
+    .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, parsed.componentId)))
+    .limit(1);
+  if (exists.length === 0) throw new Error(`Prep item ${parsed.componentId} not found`);
 } else {
   const exists = await db
     .select({ id: bomItems.id })
@@ -853,10 +812,12 @@ await db.insert(bomComponents).values({
   unit: parsed.unit,
 });
 
+await this.validateBomGraph(db, tenantId, id, [{ componentType: parsed.componentType, componentId: parsed.componentId, quantity: parsed.quantity, unit: parsed.unit }]);
+
 return (await this.mapBomItems()).find((item) => item.id === id) ?? null;
   }
 
-  async removeBomComponent(id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }): Promise<{ id: string; name: string; unit: string; yieldQuantity: number; isActive: boolean; components: { id: string; unit: string; componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; }[]; isContainer: number; categoryId?: string | undefined; } | null> {
+  async removeBomComponent(id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }): Promise<BomItem | null> {
 const parsed = bomRemoveComponentRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 const bom = await db
@@ -866,9 +827,6 @@ const bom = await db
   .limit(1);
 if (bom.length === 0) {
   return null;
-}
-if (bom[0].name.startsWith('__shadow__')) {
-  throw new Error("Cannot modify auto-generated shadow BoM");
 }
 
 await db
@@ -885,20 +843,44 @@ await db
 return (await this.mapBomItems()).find((item) => item.id === id) ?? null;
   }
 
-  async listPrepItems(): Promise<{ id: string; tenantId: string; ingredientId: string | null; bomId: string | null; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }[]> {
+  async replaceBomComponents(id: string, payload: BomUpsertComponentsRequest): Promise<BomItem | null> {
+    const parsed = bomUpsertComponentsRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+    const bom = await db
+      .select({ id: bomItems.id, name: bomItems.name })
+      .from(bomItems)
+      .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, id)))
+      .limit(1);
+    if (bom.length === 0) {
+      return null;
+    }
+
+    const componentRows: Array<{ tenantId: string; bomId: string; componentType: string; componentId: string; quantity: string; unit: string }> = parsed.components.map((component) => ({
+      tenantId,
+      bomId: id,
+      componentType: component.componentType,
+      componentId: component.componentId,
+      quantity: String(component.quantity),
+      unit: component.unit,
+    }));
+
+    await withTenantTx(async (tx) => {
+      await tx.delete(bomComponents).where(and(eq(bomComponents.tenantId, tenantId), eq(bomComponents.bomId, id)));
+      await tx.insert(bomComponents).values(componentRows);
+      await this.validateBomGraph(tx, tenantId, id, parsed.components, {
+        bomEdges: parsed.components
+          .filter((component) => component.componentType === "bom")
+          .map((component) => ({ bomId: id, componentType: component.componentType, componentId: component.componentId })),
+      });
+    });
+
+    return (await this.mapBomItems()).find((item) => item.id === id) ?? null;
+  }
+
+  async listPrepItems(): Promise<PrepItem[]> {
 const tenantId = getTenantIdOrDefault();
 const rows = await db
-  .select({
-    id: prepItems.id,
-    tenantId: prepItems.tenantId,
-    ingredientId: prepItems.ingredientId,
-    bomId: prepItems.bomId,
-    name: prepItems.name,
-    quantityPerUnit: prepItems.quantityPerUnit,
-    unit: prepItems.unit,
-    stockQuantity: prepItems.stockQuantity,
-    createdAt: prepItems.createdAt,
-  })
+  .select()
   .from(prepItems)
   .where(eq(prepItems.tenantId, tenantId))
   .orderBy(prepItems.name);
@@ -906,46 +888,69 @@ const rows = await db
 return rows.map((row) => ({
   id: row.id,
   tenantId: row.tenantId,
-  ingredientId: row.ingredientId,
-  bomId: row.bomId,
+  sourceType: row.sourceType as "ingredient" | "bom",
+  sourceId: row.sourceId,
   name: row.name,
-  quantityPerUnit: Number(row.quantityPerUnit),
-  unit: row.unit,
+  inputQuantity: Number(row.inputQuantity),
+  inputUnit: row.inputUnit as PrepItem["inputUnit"],
+  outputQuantity: Number(row.outputQuantity),
+  outputUnit: row.outputUnit as PrepItem["outputUnit"],
   stockQuantity: Number(row.stockQuantity),
+  isActive: row.isActive === 1,
   createdAt: row.createdAt.toISOString(),
+  updatedAt: row.updatedAt.toISOString(),
 }));
   }
 
-  async createPrepItem(payload: { ingredientId?: string; bomId?: string; name: string; quantityPerUnit: number; unit: string }): Promise<{ id: string; tenantId: string; ingredientId: string | null; bomId: string | null; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }> {
+  async createPrepItem(payload: PrepItemCreateRequest): Promise<PrepItem> {
+const parsed = prepItemCreateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
-const hasIngredient = !!payload.ingredientId;
-const hasBom = !!payload.bomId;
-if (hasIngredient === hasBom) {
-  throw new Error("Prep item must reference exactly one of an ingredient or a BoM");
-}
-if (hasBom) {
-  const bom = await db
-    .select({ id: bomItems.id, name: bomItems.name, isActive: bomItems.isActive })
-    .from(bomItems)
-    .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, payload.bomId!)))
-    .limit(1);
-  if (bom.length === 0) throw new Error(`BoM ${payload.bomId} not found`);
-  if (bom[0].isActive !== 1) throw new Error(`Cannot create prep item from inactive BoM "${bom[0].name}"`);
-}
-const id = `prep_${Date.now().toString(36)}`;
-await db.insert(prepItems).values({
-  id,
-  tenantId,
-  ingredientId: payload.ingredientId ?? null,
-  bomId: payload.bomId ?? null,
-  name: payload.name,
-  quantityPerUnit: String(payload.quantityPerUnit),
-  unit: payload.unit,
-});
-return (await this.listPrepItems()).find((p) => p.id === id)!;
+
+return withTenantTx(async (tx) => {
+  if (parsed.source.sourceType === "ingredient") {
+    const ing = await tx
+      .select({ id: inventory.id, name: inventory.name, unit: inventory.unit, isActive: inventory.isActive })
+      .from(inventory)
+      .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, parsed.source.sourceId)))
+      .limit(1);
+    const row = ing[0];
+    if (!row) throw new Error(`Ingredient ${parsed.source.sourceId} not found`);
+    if (row.isActive !== 1) throw new Error(`Cannot create prep item from inactive ingredient "${row.name}"`);
+    if (!areUnitsCompatible(parsed.source.inputUnit, row.unit)) throw new Error(`Prep input unit ${parsed.source.inputUnit} incompatible with ingredient unit ${row.unit}`);
+  } else {
+    const bom = await tx
+      .select({ id: bomItems.id, name: bomItems.name, outputUnit: bomItems.outputUnit, isActive: bomItems.isActive })
+      .from(bomItems)
+      .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, parsed.source.sourceId)))
+      .limit(1);
+    const row = bom[0];
+    if (!row) throw new Error(`BoM ${parsed.source.sourceId} not found`);
+    if (row.isActive !== 1) throw new Error(`Cannot create prep item from inactive BoM "${row.name}"`);
+    if (!areUnitsCompatible(parsed.source.inputUnit, row.outputUnit)) throw new Error(`Prep input unit ${parsed.source.inputUnit} incompatible with BoM output unit ${row.outputUnit}`);
+    await this.validateBomGraph(tx, tenantId, "", [], {
+      prepSources: [{ prepId: `__prep_${parsed.name}`, sourceType: "bom", sourceId: parsed.source.sourceId }],
+    });
   }
 
-  async updatePrepItem(id: string, payload: PrepItemUpdateRequest): Promise<{ id: string; tenantId: string; ingredientId: string | null; bomId: string | null; name: string; quantityPerUnit: number; unit: string; stockQuantity: number; createdAt: string; }> {
+  const id = `prep_${Date.now().toString(36)}`;
+  await tx.insert(prepItems).values({
+    id,
+    tenantId,
+    sourceType: parsed.source.sourceType,
+    sourceId: parsed.source.sourceId,
+    name: parsed.name,
+    inputQuantity: String(parsed.source.inputQuantity),
+    inputUnit: parsed.source.inputUnit,
+    outputQuantity: String(parsed.source.outputQuantity),
+    outputUnit: parsed.source.outputUnit,
+    stockQuantity: "0",
+    isActive: 1,
+  });
+  return (await this.listPrepItems()).find((p) => p.id === id)!;
+});
+  }
+
+  async updatePrepItem(id: string, payload: PrepItemUpdateRequest): Promise<PrepItem> {
 const tenantId = getTenantIdOrDefault();
 const existing = await db.query.prepItems.findFirst({
   where: and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)),
@@ -953,8 +958,11 @@ const existing = await db.query.prepItems.findFirst({
 if (!existing) throw new Error(`Prep item ${id} not found`);
 const updates: Record<string, any> = {};
 if (payload.name !== undefined) updates.name = payload.name;
-if (payload.quantityPerUnit !== undefined) updates.quantityPerUnit = String(payload.quantityPerUnit);
-if (payload.unit !== undefined) updates.unit = payload.unit;
+if (payload.inputQuantity !== undefined) updates.inputQuantity = String(payload.inputQuantity);
+if (payload.inputUnit !== undefined) updates.inputUnit = payload.inputUnit;
+if (payload.outputQuantity !== undefined) updates.outputQuantity = String(payload.outputQuantity);
+if (payload.outputUnit !== undefined) updates.outputUnit = payload.outputUnit;
+if (payload.isActive !== undefined) updates.isActive = payload.isActive ? 1 : 0;
 if (Object.keys(updates).length > 0) {
   await db.update(prepItems).set(updates).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)));
 }
@@ -962,210 +970,213 @@ return (await this.listPrepItems()).find((p) => p.id === id)!;
   }
 
   async deletePrepItem(id: string): Promise<void> {
-const tenantId = getTenantIdOrDefault();
-await db.delete(prepItems).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)));
+    const tenantId = getTenantIdOrDefault();
+    const referencedInMenu = await db
+      .select({ id: menuItemComponents.id })
+      .from(menuItemComponents)
+      .where(and(eq(menuItemComponents.tenantId, tenantId), eq(menuItemComponents.componentType, "prep"), eq(menuItemComponents.componentId, id)))
+      .limit(1);
+    if (referencedInMenu.length > 0) {
+      throw new Error("Impossibile eliminare: il preparato è usato nella ricetta di uno o più piatti del menu");
+    }
+    const referencedInBom = await db
+      .select({ id: bomComponents.id })
+      .from(bomComponents)
+      .where(and(eq(bomComponents.tenantId, tenantId), eq(bomComponents.componentType, "prep"), eq(bomComponents.componentId, id)))
+      .limit(1);
+    if (referencedInBom.length > 0) {
+      throw new Error("Impossibile eliminare: il preparato è usato in una o più schede tecniche");
+    }
+    const hasProductionRuns = await db
+      .select({ id: prepProductionRuns.id })
+      .from(prepProductionRuns)
+      .where(and(eq(prepProductionRuns.tenantId, tenantId), eq(prepProductionRuns.prepId, id)))
+      .limit(1);
+    if (hasProductionRuns.length > 0) {
+      throw new Error("Impossibile eliminare: il preparato ha produzione registrata in magazzino");
+    }
+    await db.delete(prepItems).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)));
   }
 
-  async preparePrepItem(id: string, quantity: number): Promise<{ prepItemId: string; name: string; previousStock: number; newStock: number; ingredientsDeducted: { name: string; id: string; quantity: number; unit: string; }[]; }> {
-if (!Number.isFinite(quantity) || quantity <= 0) {
-  throw new Error("Prepared quantity must be a finite positive number");
-}
-return withTenantTx(async (tx) => {
-  const tenantId = getTenantIdOrDefault();
-  const prepRows = await tx
-    .select()
-    .from(prepItems)
-    .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)))
-    .limit(1)
-    .for("update");
-  const prep = prepRows[0];
-  if (!prep) throw new Error(`Prep item ${id} not found`);
-  const prevStock = Number(prep.stockQuantity);
-  const ingredientsDeducted: { id: string; name: string; quantity: number; unit: string; }[] = [];
-
-  const canonicalComponents = await tx
-    .select()
-    .from(prepItemComponents)
-    .where(and(eq(prepItemComponents.tenantId, tenantId), eq(prepItemComponents.prepItemId, id)));
-
-  if (canonicalComponents.length > 0) {
-    // Canonical prep recipe: each component quantity is the raw ingredient
-    // quantity required for one finished prep unit.
-    const ingredientIds = [...new Set(canonicalComponents.map((component) => component.ingredientId))];
-    const ingredientRows = await tx
-      .select()
-      .from(inventory)
-      .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds)))
-      .for("update");
-    const ingredientById = new Map(ingredientRows.map((row) => [row.id, row]));
-
-    for (const component of canonicalComponents) {
-      const ingredient = ingredientById.get(component.ingredientId);
-      if (!ingredient) throw new Error(`Ingredient ${component.ingredientId} not found for prep ${prep.name}`);
-      if (ingredient.isActive !== 1) throw new Error(`Ingredient ${ingredient.name} is not active`);
-
-      const needed = Number(component.quantity) * quantity;
-      const previousQuantity = Number(ingredient.quantity);
-      if (previousQuantity < needed) {
-        throw new Error(`Insufficient ${ingredient.name}: need ${needed} ${ingredient.unit}, have ${previousQuantity}`);
-      }
-      const newQuantity = previousQuantity - needed;
-      await tx.update(inventory)
-        .set({ quantity: String(newQuantity) })
-        .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ingredient.id)));
-      await tx.insert(stockMovements).values({
-        id: crypto.randomUUID(),
-        tenantId,
-        ingredientId: ingredient.id,
-        orderId: null,
-        movementType: "prep_production",
-        quantity: String(-needed),
-        previousQuantity: String(previousQuantity),
-        newQuantity: String(newQuantity),
-        notes: `Produced ${quantity} ${prep.name}`,
-        staffId: null,
-      });
-      ingredientsDeducted.push({ id: ingredient.id, name: ingredient.name, quantity: needed, unit: ingredient.unit });
+  async preparePrepItem(id: string, quantity: number): Promise<PreparePrepItemResponse> {
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error("Prepared quantity must be a finite positive number");
     }
-  } else if (prep.bomId) {
-    // BoM-based variant: explode the recipe and deduct every raw ingredient
-    // (and any nested prep stock) in the same transaction, then add the
-    // finished units to this prep item's stock.
-    const [bomRows, componentRows] = await Promise.all([
-      // All tenant BoMs: explodeBomRequirements recurses into nested `bom`
-      // components, so the lookup map must contain every BoM in the tenant.
-      tx.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
-      tx.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
-    ]);
-    const bom = bomRows.find((row) => row.id === prep.bomId);
-    if (!bom) throw new Error(`BoM ${prep.bomId} not found for prep item ${prep.name}`);
-    const bomById = new Map(bomRows.map((row) => [row.id, row]));
-    const componentsByBomId = new Map<string, typeof componentRows>();
-    for (const component of componentRows) {
-      const existing = componentsByBomId.get(component.bomId) ?? [];
-      existing.push(component);
-      componentsByBomId.set(component.bomId, existing);
-    }
-    const exploded = this.explodeBomRequirements({
-      bomId: bom.id,
-      multiplier: quantity * Number(prep.quantityPerUnit || 1),
-      bomById,
-      componentsByBomId,
-    });
-
-    const prepNameById = new Map(
-      (await tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.unit })
-        .from(prepItems)
-        .where(eq(prepItems.tenantId, tenantId)))
-        .map((row) => [row.id, row]),
-    );
-
-    const ingredientIds = [...exploded.ingredients.keys()];
-    const ingredientRows = ingredientIds.length > 0
-      ? await tx.select().from(inventory).where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds))).for("update")
-      : [];
-    const ingredientById = new Map(ingredientRows.map((row) => [row.id, row]));
-    for (const [ingredientId, needed] of exploded.ingredients) {
-      const ing = ingredientById.get(ingredientId);
-      if (!ing) throw new Error(`Ingredient ${ingredientId} not found`);
-      const prevQty = Number(ing.quantity);
-      if (prevQty < needed) {
-        throw new Error(`Insufficient ${ing.name}: need ${needed} ${ing.unit}, have ${prevQty}`);
-      }
-      const newQty = prevQty - needed;
-      await tx.update(inventory).set({ quantity: String(newQty) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
-      await tx.insert(stockMovements).values({
-        id: crypto.randomUUID(),
-        tenantId,
-        ingredientId: ing.id,
-        orderId: null,
-        movementType: "manual_adjustment",
-        quantity: String(-needed),
-        previousQuantity: String(prevQty),
-        newQuantity: String(newQty),
-        notes: `Prepared ${quantity} ${prep.name}`,
-        staffId: null,
-      });
-      ingredientsDeducted.push({ id: ing.id, name: ing.name, quantity: needed, unit: ing.unit });
-    }
-
-    for (const [nestedPrepId, needed] of exploded.preps) {
-      if (nestedPrepId === prep.id) {
-        throw new Error(`BoM "${bom.name}" references its own prep item — cycle not allowed`);
-      }
-      const nested = prepNameById.get(nestedPrepId);
-      if (!nested) throw new Error(`Prep item ${nestedPrepId} not found`);
-      const nestedRows = await tx
+    return withTenantTx(async (tx) => {
+      const tenantId = getTenantIdOrDefault();
+      const prepRows = await tx
         .select()
         .from(prepItems)
-        .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, nestedPrepId)))
+        .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)))
         .limit(1)
         .for("update");
-      const nestedPrep = nestedRows[0];
-      if (!nestedPrep) throw new Error(`Prep item ${nestedPrepId} not found`);
-      const prevNested = Number(nestedPrep.stockQuantity);
-      if (prevNested < needed) {
-        throw new Error(`Insufficient ${nested.name}: need ${needed} ${nested.unit}, have ${prevNested}`);
+      const prep = prepRows[0];
+      if (!prep) throw new Error(`Prep item ${id} not found`);
+      if (prep.isActive !== 1) throw new Error(`Prep item "${prep.name}" is not active`);
+      const prevStock = Number(prep.stockQuantity);
+      const ingredientsDeducted: { id: string; name: string; quantity: number; unit: string; }[] = [];
+      const prepDeducted: { id: string; name: string; quantity: number; unit: string; }[] = [];
+
+      const scale = quantity / Number(prep.outputQuantity);
+      const sourceInputQty = Number(prep.inputQuantity) * scale;
+
+      if (prep.sourceType === "ingredient") {
+        const ing = (await tx
+          .select()
+          .from(inventory)
+          .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, prep.sourceId)))
+          .limit(1)
+          .for("update"))[0];
+        if (!ing) throw new Error(`Ingredient ${prep.sourceId} not found for prep ${prep.name}`);
+        if (ing.isActive !== 1) throw new Error(`Ingredient ${ing.name} is not active`);
+        const needed = convertUnit(sourceInputQty, prep.inputUnit, ing.unit);
+        if (needed === null) throw new Error(`Unit ${prep.inputUnit} incompatible with ingredient unit ${ing.unit}`);
+        const previousQuantity = Number(ing.quantity);
+        if (previousQuantity < needed) {
+          throw new Error(`Insufficient ${ing.name}: need ${needed} ${ing.unit}, have ${previousQuantity}`);
+        }
+        const newQuantity = previousQuantity - needed;
+        await tx.update(inventory).set({ quantity: String(newQuantity) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
+        await tx.insert(stockMovements).values({
+          id: crypto.randomUUID(),
+          tenantId,
+          ingredientId: ing.id,
+          prepItemId: null,
+          orderId: null,
+          movementType: "prep_production",
+          quantity: String(-needed),
+          previousQuantity: String(previousQuantity),
+          newQuantity: String(newQuantity),
+          notes: `Produced ${quantity} ${prep.name}`,
+          staffId: null,
+        });
+        ingredientsDeducted.push({ id: ing.id, name: ing.name, quantity: needed, unit: ing.unit });
+      } else {
+        const bom = (await tx
+          .select()
+          .from(bomItems)
+          .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, prep.sourceId)))
+          .limit(1))[0];
+        if (!bom) throw new Error(`BoM ${prep.sourceId} not found for prep item ${prep.name}`);
+        if (bom.isActive !== 1) throw new Error(`BoM "${bom.name}" is not active`);
+        const multiplier = convertUnit(sourceInputQty, prep.inputUnit, bom.outputUnit);
+        if (multiplier === null) throw new Error(`Unit ${prep.inputUnit} incompatible with BoM output unit ${bom.outputUnit}`);
+
+        const [bomRows, componentRows] = await Promise.all([
+          tx.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
+          tx.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
+        ]);
+        const bomById = new Map(bomRows.map((row) => [row.id, row]));
+        const componentsByBomId = new Map<string, typeof componentRows>();
+        for (const component of componentRows) {
+          const existing = componentsByBomId.get(component.bomId) ?? [];
+          existing.push(component);
+          componentsByBomId.set(component.bomId, existing);
+        }
+        const exploded = this.explodeBomRequirements({ bomId: bom.id, multiplier, bomById, componentsByBomId });
+
+        const prepNameById = new Map(
+          (await tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.outputUnit })
+            .from(prepItems)
+            .where(eq(prepItems.tenantId, tenantId)))
+            .map((row) => [row.id, row]),
+        );
+
+        const ingredientIds = [...exploded.ingredients.keys()];
+        const ingredientRows = ingredientIds.length > 0
+          ? await tx.select().from(inventory).where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds))).for("update")
+          : [];
+        const ingredientById = new Map(ingredientRows.map((row) => [row.id, row]));
+        for (const [ingredientId, needed] of exploded.ingredients) {
+          const ing = ingredientById.get(ingredientId);
+          if (!ing) throw new Error(`Ingredient ${ingredientId} not found`);
+          const prevQty = Number(ing.quantity);
+          if (prevQty < needed) {
+            throw new Error(`Insufficient ${ing.name}: need ${needed} ${ing.unit}, have ${prevQty}`);
+          }
+          const newQty = prevQty - needed;
+          await tx.update(inventory).set({ quantity: String(newQty) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
+          await tx.insert(stockMovements).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            ingredientId: ing.id,
+            prepItemId: null,
+            orderId: null,
+            movementType: "prep_production",
+            quantity: String(-needed),
+            previousQuantity: String(prevQty),
+            newQuantity: String(newQty),
+            notes: `Produced ${quantity} ${prep.name}`,
+            staffId: null,
+          });
+          ingredientsDeducted.push({ id: ing.id, name: ing.name, quantity: needed, unit: ing.unit });
+        }
+
+        for (const [nestedPrepId, needed] of exploded.preps) {
+          if (nestedPrepId === prep.id) {
+            throw new Error(`BoM "${bom.name}" references its own prep item — cycle not allowed`);
+          }
+          const nested = prepNameById.get(nestedPrepId);
+          if (!nested) throw new Error(`Prep item ${nestedPrepId} not found`);
+          const nestedRows = await tx
+            .select()
+            .from(prepItems)
+            .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, nestedPrepId)))
+            .limit(1)
+            .for("update");
+          const nestedPrep = nestedRows[0];
+          if (!nestedPrep) throw new Error(`Prep item ${nestedPrepId} not found`);
+          const prevNested = Number(nestedPrep.stockQuantity);
+          if (prevNested < needed) {
+            throw new Error(`Insufficient ${nested.name}: need ${needed} ${nested.unit}, have ${prevNested}`);
+          }
+          const newNested = prevNested - needed;
+          await tx.update(prepItems).set({ stockQuantity: String(newNested) }).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, nestedPrepId)));
+          await tx.insert(stockMovements).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            ingredientId: null,
+            prepItemId: nestedPrepId,
+            orderId: null,
+            movementType: "prep_production",
+            quantity: String(-needed),
+            previousQuantity: String(prevNested),
+            newQuantity: String(newNested),
+            notes: `Produced ${quantity} ${prep.name}`,
+            staffId: null,
+          });
+          prepDeducted.push({ id: nestedPrepId, name: nested.name, quantity: needed, unit: nested.unit });
+        }
       }
-      const newNested = prevNested - needed;
-      await tx.update(prepItems).set({ stockQuantity: String(newNested) }).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, nestedPrepId)));
-      await tx.insert(stockMovements).values({
-        id: crypto.randomUUID(),
+
+      const newStock = prevStock + quantity;
+      await tx.update(prepItems).set({ stockQuantity: String(newStock) }).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)));
+
+      const productionId = `pr_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 6)}`;
+      await tx.insert(prepProductionRuns).values({
+        id: productionId,
         tenantId,
-        ingredientId: null,
-        prepItemId: nestedPrepId,
-        orderId: null,
-        movementType: "manual_adjustment",
-        quantity: String(-needed),
-        previousQuantity: String(prevNested),
-        newQuantity: String(newNested),
-        notes: `Prepared ${quantity} ${prep.name}`,
+        prepId: prep.id,
+        quantity: String(quantity),
+        unit: prep.outputUnit,
         staffId: null,
       });
-      ingredientsDeducted.push({ id: nestedPrepId, name: nested.name, quantity: needed, unit: nested.unit });
-    }
-  } else {
-    if (!prep.ingredientId) throw new Error(`Prep item ${prep.name} has no ingredient source`);
-    const ingredientRows = await tx
-      .select()
-      .from(inventory)
-      .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, prep.ingredientId)))
-      .limit(1)
-      .for("update");
-    const ing = ingredientRows[0];
-    if (!ing) throw new Error(`Ingredient ${prep.ingredientId} not found`);
-    const rawNeeded = Number(prep.quantityPerUnit) * quantity;
-    const prevIngQty = Number(ing.quantity);
-    if (prevIngQty < rawNeeded) {
-      throw new Error(`Insufficient ${ing.name}: need ${rawNeeded} ${ing.unit}, have ${prevIngQty}`);
-    }
-    const newIngQty = prevIngQty - rawNeeded;
-    await tx.update(inventory).set({ quantity: String(newIngQty) }).where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ing.id)));
-    await tx.insert(stockMovements).values({
-      id: crypto.randomUUID(),
-      tenantId,
-      ingredientId: ing.id,
-      orderId: null,
-      movementType: "manual_adjustment",
-      quantity: String(-rawNeeded),
-      previousQuantity: String(prevIngQty),
-      newQuantity: String(newIngQty),
-      notes: `Prepared ${quantity} ${prep.name}`,
-      staffId: null,
-    });
-    ingredientsDeducted.push({ id: ing.id, name: ing.name, quantity: rawNeeded, unit: ing.unit });
-  }
+      const impacts = [
+        ...ingredientsDeducted.map((entry) => ({ id: crypto.randomUUID(), tenantId, productionId, componentType: "ingredient" as const, componentId: entry.id, quantity: String(entry.quantity), unit: entry.unit })),
+        ...prepDeducted.map((entry) => ({ id: crypto.randomUUID(), tenantId, productionId, componentType: "prep" as const, componentId: entry.id, quantity: String(entry.quantity), unit: entry.unit })),
+      ];
+      if (impacts.length > 0) {
+        await tx.insert(prepProductionImpacts).values(impacts);
+      }
 
-  const newStock = prevStock + quantity;
-  await tx.update(prepItems).set({ stockQuantity: String(newStock) }).where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, id)));
-  return {
-    name: prep.name,
-    prepItemId: prep.id,
-    previousStock: prevStock,
-    newStock,
-    ingredientsDeducted,
-  }; /* CASCADE2_PREP_PREPITEM_RETURN_DONE */
-});
+      return {
+        name: prep.name,
+        prepItemId: prep.id,
+        previousStock: prevStock,
+        newStock,
+        ingredientsDeducted: [...ingredientsDeducted, ...prepDeducted],
+      };
+    });
   }
 
   async listUnitConversions(inventoryId: string): Promise<{ id: string; tenantId: string; inventoryId: string; fromUnit: string; toUnit: string; factor: number; createdAt: string; }[]> {
@@ -1506,12 +1517,13 @@ return this.mapMenuItemsAdmin();
   }
 
   /**
-   * Canonical menu-first creation. Inline ingredients and reusable prep
-   * definitions are committed with one menu item transaction. Recipe edges
-   * contain only ingredient/prep references and quantities in canonical units.
+   * Canonical menu-first creation. Inline ingredients and prep materializations
+   * are committed with one menu item transaction. Inline prep must reference an
+   * explicit raw ingredient or an existing validated BoM source with an
+   * input/output ratio; no inline BoM headers are created here.
    */
-  async createMenuProduct(payload: CreateMenuProductRequest): Promise<MenuProductResponse> {
-    const parsed = createMenuProductRequestSchema.parse(payload);
+  async createMenuProduct(payload: CanonicalCreateMenuProductRequest): Promise<MenuProductResponse> {
+    const parsed = canonicalCreateMenuProductRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
     const inlineIngredientKeys = new Set<string>();
     for (const ingredient of parsed.inlineIngredients) {
@@ -1541,13 +1553,12 @@ return this.mapMenuItemsAdmin();
           unitCost: String(ingredient.unitCost),
           salePrice: null,
           isActive: 1,
-          isContainer: 0,
         });
       }
 
       const existingIngredientIds = [
         ...parsed.components.filter((component) => component.componentType === "ingredient").map((component) => component.componentId),
-        ...parsed.inlinePreps.flatMap((prep) => prep.components.map((component) => component.ingredientId)),
+        ...parsed.inlinePreps.filter((prep) => prep.source.sourceType === "ingredient").map((prep) => prep.source.sourceId),
       ];
       if (existingIngredientIds.length > 0) {
         const rows = await tx.select({ id: inventory.id, name: inventory.name, unit: inventory.unit, unitCost: inventory.unitCost, isActive: inventory.isActive })
@@ -1556,20 +1567,32 @@ return this.mapMenuItemsAdmin();
         for (const row of rows) ingredientById.set(row.id, { ...row, unitCost: Number(row.unitCost), isActive: row.isActive });
       }
 
+      const bomById = new Map<string, { id: string; name: string; unit: string; isActive: number }>();
+      const existingBomIds = [
+        ...parsed.components.filter((component) => component.componentType === "bom").map((component) => component.componentId),
+        ...parsed.inlinePreps.filter((prep) => prep.source.sourceType === "bom").map((prep) => prep.source.sourceId),
+      ];
+      if (existingBomIds.length > 0) {
+        const rows = await tx.select({ id: bomItems.id, name: bomItems.name, unit: bomItems.outputUnit, isActive: bomItems.isActive })
+          .from(bomItems)
+          .where(and(eq(bomItems.tenantId, tenantId), inArray(bomItems.id, existingBomIds)));
+        for (const row of rows) bomById.set(row.id, { ...row, isActive: row.isActive });
+      }
+
       const prepIdByKey = new Map<string, string>();
       const prepById = new Map<string, { id: string; name: string; unit: string; stockQuantity: number; isActive: number }>();
       for (const prep of parsed.inlinePreps) {
         const id = `prep_${crypto.randomUUID()}`;
         prepIdByKey.set(prep.clientKey, id);
-        prepById.set(id, { id, name: prep.name, unit: prep.unit, stockQuantity: 0, isActive: 1 });
+        prepById.set(id, { id, name: prep.name, unit: prep.source.outputUnit, stockQuantity: 0, isActive: 1 });
       }
 
       const existingPrepIds = parsed.components.filter((component) => component.componentType === "prep").map((component) => component.componentId);
       if (existingPrepIds.length > 0) {
-        const rows = await tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.unit, stockQuantity: prepItems.stockQuantity })
+        const rows = await tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.outputUnit, stockQuantity: prepItems.stockQuantity, isActive: prepItems.isActive })
           .from(prepItems)
           .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, existingPrepIds)));
-        for (const row of rows) prepById.set(row.id, { id: row.id, name: row.name, unit: row.unit, stockQuantity: Number(row.stockQuantity), isActive: 1 });
+        for (const row of rows) prepById.set(row.id, { id: row.id, name: row.name, unit: row.unit, stockQuantity: Number(row.stockQuantity), isActive: row.isActive });
       }
 
       const componentKeys = new Set<string>();
@@ -1578,51 +1601,62 @@ return this.mapMenuItemsAdmin();
         if (componentKeys.has(key)) throw new Error(`Duplicate menu component ${key}`);
         componentKeys.add(key);
       }
-      for (const prep of parsed.inlinePreps) {
-        const prepKeys = new Set<string>();
-        for (const component of prep.components) {
-          if (prepKeys.has(component.ingredientId)) throw new Error(`Duplicate ingredient ${component.ingredientId} in prep ${prep.name}`);
-          prepKeys.add(component.ingredientId);
-        }
-      }
 
       const resolveIngredientId = (id: string): string => ingredientIdByKey.get(id) ?? id;
       const resolvePrepId = (id: string): string => prepIdByKey.get(id) ?? id;
-      for (const component of parsed.components) {
-        const resolvedId = component.componentType === "ingredient" ? resolveIngredientId(component.componentId) : resolvePrepId(component.componentId);
-        const record = component.componentType === "ingredient" ? ingredientById.get(resolvedId) : prepById.get(resolvedId);
-        if (!record) throw new Error(`${component.componentType} ${component.componentId} not found`);
-        if (record.isActive !== 1) throw new Error(`${component.componentType} ${record.name} is not active`);
-        if (!canonicalUnitSchema.safeParse(record.unit).success) throw new Error(`Invalid canonical unit for ${record.name}`);
+      const resolvedPrepSourceByKey = new Map<string, { sourceType: "ingredient" | "bom"; sourceId: string }>();
+      for (const prep of parsed.inlinePreps) {
+        const sourceId = prep.source.sourceType === "ingredient" ? resolveIngredientId(prep.source.sourceId) : prep.source.sourceId;
+        if (prep.source.sourceType === "ingredient") {
+          const ingredient = ingredientById.get(sourceId);
+          if (!ingredient) throw new Error(`Ingredient ${prep.source.sourceId} not found for prep ${prep.name}`);
+          if (ingredient.isActive !== 1) throw new Error(`Ingredient ${ingredient.name} is not active`);
+          if (prep.source.inputUnit !== ingredient.unit) throw new Error(`Prep ${prep.name}: input unit ${prep.source.inputUnit} must match ingredient unit ${ingredient.unit}`);
+        } else {
+          const bom = bomById.get(sourceId);
+          if (!bom) throw new Error(`BoM ${prep.source.sourceId} not found for prep ${prep.name}`);
+          if (bom.isActive !== 1) throw new Error(`BoM ${bom.name} is not active`);
+          if (prep.source.inputUnit !== bom.unit) throw new Error(`Prep ${prep.name}: input unit ${prep.source.inputUnit} must match BoM output unit ${bom.unit}`);
+        }
+        resolvedPrepSourceByKey.set(prep.clientKey, { sourceType: prep.source.sourceType, sourceId });
       }
 
       for (const prep of parsed.inlinePreps) {
         const prepId = prepIdByKey.get(prep.clientKey)!;
-        const resolvedIngredients = prep.components.map((component) => {
-          const ingredientId = resolveIngredientId(component.ingredientId);
-          const ingredient = ingredientById.get(ingredientId);
-          if (!ingredient) throw new Error(`Ingredient ${component.ingredientId} not found for prep ${prep.name}`);
-          if (ingredient.isActive !== 1) throw new Error(`Ingredient ${ingredient.name} is not active`);
-          if (!canonicalUnitSchema.safeParse(ingredient.unit).success) throw new Error(`Invalid canonical unit for ${ingredient.name}`);
-          return { ingredientId, quantity: component.quantity };
-        });
+        const source = resolvedPrepSourceByKey.get(prep.clientKey)!;
         await tx.insert(prepItems).values({
           id: prepId,
           tenantId,
-          ingredientId: null,
-          bomId: null,
           name: prep.name,
-          quantityPerUnit: "1",
-          unit: prep.unit,
+          sourceType: source.sourceType,
+          sourceId: source.sourceId,
+          inputQuantity: String(prep.source.inputQuantity),
+          inputUnit: prep.source.inputUnit,
+          outputQuantity: String(prep.source.outputQuantity),
+          outputUnit: prep.source.outputUnit,
           stockQuantity: "0",
+          isActive: 1,
         });
-        await tx.insert(prepItemComponents).values(resolvedIngredients.map((component) => ({
-          id: `pic_${crypto.randomUUID()}`,
-          tenantId,
-          prepItemId: prepId,
-          ingredientId: component.ingredientId,
-          quantity: String(component.quantity),
-        })));
+      }
+
+      for (const component of parsed.components) {
+        const resolvedId = component.componentType === "ingredient" ? resolveIngredientId(component.componentId) : resolvePrepId(component.componentId);
+        if (component.componentType === "ingredient") {
+          const record = ingredientById.get(resolvedId);
+          if (!record) throw new Error(`Ingredient ${component.componentId} not found`);
+          if (record.isActive !== 1) throw new Error(`Ingredient ${record.name} is not active`);
+          if (component.unit !== record.unit) throw new Error(`Component unit ${component.unit} does not match ${record.name} unit ${record.unit}`);
+        } else if (component.componentType === "bom") {
+          const record = bomById.get(resolvedId);
+          if (!record) throw new Error(`BoM ${component.componentId} not found`);
+          if (record.isActive !== 1) throw new Error(`BoM ${record.name} is not active`);
+          if (component.unit !== record.unit) throw new Error(`Component unit ${component.unit} does not match ${record.name} unit ${record.unit}`);
+        } else {
+          const record = prepById.get(resolvedId);
+          if (!record) throw new Error(`Prep ${component.componentId} not found`);
+          if (record.isActive !== 1) throw new Error(`Prep ${record.name} is not active`);
+          if (component.unit !== record.unit) throw new Error(`Component unit ${component.unit} does not match ${record.name} unit ${record.unit}`);
+        }
       }
 
       const menuId = `m_${crypto.randomUUID()}`;
@@ -1635,7 +1669,6 @@ return this.mapMenuItemsAdmin();
         categoryId: parsed.categoryId ?? null,
         printAreas: JSON.stringify(parsed.printAreas),
         isActive: 1,
-        defaultContainerId: null,
       });
       const resolvedComponents = parsed.components.map((component) => ({
         ...component,
@@ -1649,6 +1682,7 @@ return this.mapMenuItemsAdmin();
           componentType: component.componentType,
           componentId: component.componentId,
           quantity: String(component.quantity),
+          unit: component.unit,
         })));
       }
 
@@ -1661,309 +1695,153 @@ return this.mapMenuItemsAdmin();
         printAreas: parsed.printAreas,
         isActive: true,
         components: resolvedComponents.map((component) => {
-          const record = component.componentType === "ingredient" ? ingredientById.get(component.componentId)! : prepById.get(component.componentId)!;
+          const record = component.componentType === "ingredient"
+            ? ingredientById.get(component.componentId)!
+            : component.componentType === "bom"
+              ? bomById.get(component.componentId)!
+              : prepById.get(component.componentId)!;
           return { ...component, name: record.name, unit: record.unit };
         }),
       });
     });
   }
 
-  async createMenuItem(payload: MenuItemCreateRequest): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; }> {
-const parsed = menuItemCreateRequestSchema.parse(payload);
-const tenantId = getTenantIdOrDefault();
-const recipeKeys = new Set<string>();
-for (const component of parsed.recipe) {
-  const key = `${component.componentType}:${component.componentId}`;
-  if (recipeKeys.has(key)) {
-    throw new Error(`Duplicate recipe component ${key}`);
-  }
+  async updateMenuItem(id: string, payload: MenuItemUpdateRequest): Promise<MenuItemAdmin | null> {
+    const parsed = menuItemUpdateRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
 
-  if (component.componentId === "ingredient" || component.componentId === "bom") {
-    throw new Error(`Invalid recipe component id ${component.componentId}`);
-  }
-  recipeKeys.add(key);
-}
+    const exists = await db
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)))
+      .limit(1);
+    if (exists.length === 0) {
+      return null;
+    }
 
-const ingredientIds = parsed.recipe.filter((item) => item.componentType === "ingredient").map((item) => item.componentId);
-const bomIds = parsed.recipe.filter((item) => item.componentType === "bom").map((item) => item.componentId);
-const prepIds = parsed.recipe.filter((item) => item.componentType === "prep").map((item) => item.componentId);
+    return withTenantTx(async (tx) => {
+      const scalarUpdates: Partial<Record<string, unknown>> = {};
+      if (parsed.name !== undefined) scalarUpdates.name = parsed.name;
+      if (parsed.category !== undefined) scalarUpdates.category = parsed.category;
+      if (parsed.categoryId !== undefined) scalarUpdates.categoryId = parsed.categoryId ?? null;
+      if (parsed.printAreas !== undefined) scalarUpdates.printAreas = JSON.stringify(parsed.printAreas);
+      if (parsed.price !== undefined) scalarUpdates.price = String(parsed.price);
+      if (Object.keys(scalarUpdates).length > 0) {
+        await tx.update(menuItems).set(scalarUpdates).where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)));
+      }
 
-if (ingredientIds.length > 0) {
-  const rows = await db
-    .select({ id: inventory.id })
-    .from(inventory)
-    .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds)));
-  if (rows.length !== new Set(ingredientIds).size) {
-    const found = new Set(rows.map((row) => row.id));
-    const missing = ingredientIds.find((id) => !found.has(id));
-    throw new Error(`Ingredient ${missing ?? "unknown"} not found`);
-  }
-}
-
-if (bomIds.length > 0) {
-  const rows = await db
-    .select({ id: bomItems.id })
-    .from(bomItems)
-    .where(and(eq(bomItems.tenantId, tenantId), inArray(bomItems.id, bomIds)));
-  if (rows.length !== new Set(bomIds).size) {
-    const found = new Set(rows.map((row) => row.id));
-    const missing = bomIds.find((id) => !found.has(id));
-    throw new Error(`BoM ${missing ?? "unknown"} not found`);
-  }
-}
-
-if (prepIds.length > 0) {
-  const rows = await db
-    .select({ id: prepItems.id })
-    .from(prepItems)
-    .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, prepIds)));
-  if (rows.length !== new Set(prepIds).size) {
-    const found = new Set(rows.map((row) => row.id));
-    const missing = prepIds.find((id) => !found.has(id));
-    throw new Error(`Prep item ${missing ?? "unknown"} not found`);
-  }
-}
-
-const menuId = `m_${Date.now().toString(36)}`;
-await withTenantTx(async (tx) => {
-  await tx.insert(menuItems).values({
-    id: menuId,
-    tenantId,
-    name: parsed.name,
-    price: String(parsed.price),
-    category: parsed.category,
-    categoryId: parsed.categoryId ?? null,
-    printAreas: JSON.stringify(parsed.printAreas),
-    isActive: 1,
-  });
-
-  const ingredientComponents = parsed.recipe.filter((item) => item.componentType === "ingredient");
-  const bomComponentsPayload = parsed.recipe.filter((item) => item.componentType === "bom");
-  const prepComponentsPayload = parsed.recipe.filter((item) => item.componentType === "prep");
-
-  if (ingredientComponents.length > 0) {
-    await tx.insert(menuItemIngredients).values(
-      ingredientComponents.map((component) => ({
-        tenantId,
-        menuItemId: menuId,
-        ingredientId: component.componentId,
-        quantity: String(component.quantity),
-        unit: component.unit,
-      })),
-    );
-  }
-
-  if (bomComponentsPayload.length > 0) {
-    await tx.insert(menuItemBomRequirements).values(
-      bomComponentsPayload.map((component) => ({
-        tenantId,
-        menuItemId: menuId,
-        bomId: component.componentId,
-        quantity: String(component.quantity),
-        unit: component.unit,
-      })),
-    );
-  }
-
-  if (prepComponentsPayload.length > 0) {
-    await tx.insert(menuItemPrepRequirements).values(
-      prepComponentsPayload.map((component) => ({
-        tenantId,
-        menuItemId: menuId,
-        prepItemId: component.componentId,
-        quantity: String(component.quantity),
-      })),
-    );
-  }
-
-  if (parsed.modifiers && parsed.modifiers.length > 0) {
-    await tx.insert(menuItemModifiers).values(
-      parsed.modifiers.map((mod, idx) => ({
-        id: `mim_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        tenantId,
-        menuItemId: menuId,
-        inventoryItemId: mod.inventoryItemId,
-        priceDelta: String(mod.priceDelta),
-        sortOrder: idx,
-      })),
-    );
-  }
-
-  if (parsed.modifierGroups && parsed.modifierGroups.length > 0) {
-    for (let groupIdx = 0; groupIdx < parsed.modifierGroups.length; groupIdx++) {
-      const group = parsed.modifierGroups[groupIdx];
-      const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-      await tx.insert(menuModifierGroups).values({
-        id: groupId,
-        tenantId,
-        menuItemId: menuId,
-        name: group.name,
-        required: group.required ? 1 : 0,
-        minSelections: group.minSelections,
-        maxSelections: group.maxSelections,
-        sortOrder: groupIdx,
-      });
-
-      for (let optIdx = 0; optIdx < group.options.length; optIdx++) {
-        const opt = group.options[optIdx];
-        const optId = opt.id || `mo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-        await tx.insert(menuModifierOptions).values({
-          id: optId,
-          tenantId,
-          groupId,
-          name: opt.name,
-          inventoryItemId: opt.inventoryItemId || null,
-          priceDelta: String(opt.priceDelta),
-          isDefault: opt.isDefault ? 1 : 0,
-          isActive: opt.isActive ? 1 : 0,
-          sortOrder: optIdx,
-        });
-
-        for (const override of opt.ingredientOverrides) {
-          await tx.insert(menuModifierOptionOverrides).values({
-            id: `moo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      if (parsed.components !== undefined) {
+        await tx.delete(menuItemComponents).where(and(eq(menuItemComponents.tenantId, tenantId), eq(menuItemComponents.menuItemId, id)));
+        if (parsed.components.length > 0) {
+          const ingredientIds = parsed.components.filter((c) => c.componentType === "ingredient").map((c) => c.componentId);
+          const bomIds = parsed.components.filter((c) => c.componentType === "bom").map((c) => c.componentId);
+          const prepIds = parsed.components.filter((c) => c.componentType === "prep").map((c) => c.componentId);
+          const [ingRows, bomRows, prepRows] = await Promise.all([
+            ingredientIds.length > 0
+              ? tx.select({ id: inventory.id, name: inventory.name, unit: inventory.unit, isActive: inventory.isActive })
+                .from(inventory)
+                .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds)))
+              : [],
+            bomIds.length > 0
+              ? tx.select({ id: bomItems.id, name: bomItems.name, unit: bomItems.outputUnit, isActive: bomItems.isActive })
+                .from(bomItems)
+                .where(and(eq(bomItems.tenantId, tenantId), inArray(bomItems.id, bomIds)))
+              : [],
+            prepIds.length > 0
+              ? tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.outputUnit, isActive: prepItems.isActive })
+                .from(prepItems)
+                .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, prepIds)))
+              : [],
+          ]);
+          const targetById = new Map<string, { name: string; unit: string; isActive: number }>();
+          for (const row of ingRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive });
+          for (const row of bomRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive });
+          for (const row of prepRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive });
+          for (const component of parsed.components) {
+            const target = targetById.get(component.componentId);
+            if (!target) throw new Error(`${component.componentType} ${component.componentId} not found`);
+            if (target.isActive !== 1) throw new Error(`${component.componentType} ${target.name} is not active`);
+            if (component.unit !== target.unit) throw new Error(`Component unit ${component.unit} does not match ${target.name} unit ${target.unit}`);
+          }
+          await tx.insert(menuItemComponents).values(parsed.components.map((component) => ({
+            id: `mic_${crypto.randomUUID()}`,
             tenantId,
-            optionId: optId,
-            ingredientId: override.ingredientId,
-            action: override.action,
-          });
+            menuItemId: id,
+            componentType: component.componentType,
+            componentId: component.componentId,
+            quantity: String(component.quantity),
+            unit: component.unit,
+          })));
         }
       }
-    }
-  }
 
-  await this.syncShadowBoM(tx, tenantId, menuId, parsed.recipe, parsed.categoryId ?? null);
-});
-
-const created = (await this.mapMenuItemsAdmin()).find((item) => item.id === menuId);
-if (!created) {
-  throw new Error("Failed to create menu item");
-}
-
-return created;
-  }
-
-  async updateMenuItem(id: string, payload: MenuItemUpdateRequest): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; } | null> {
-const parsed = menuItemUpdateRequestSchema.parse(payload);
-const tenantId = getTenantIdOrDefault();
-
-const updated = await db
-  .update(menuItems)
-  .set({
-    ...(parsed.name ? { name: parsed.name } : {}),
-    ...(parsed.category ? { category: parsed.category } : {}),
-    ...(parsed.categoryId !== undefined ? { categoryId: parsed.categoryId } : {}),
-    ...(parsed.defaultContainerId !== undefined ? { defaultContainerId: parsed.defaultContainerId } : {}),
-    ...(parsed.printAreas ? { printAreas: JSON.stringify(parsed.printAreas) } : {}),
-    ...(parsed.price !== undefined ? { price: String(parsed.price) } : {}),
-  })
-  .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)))
-  .returning({ id: menuItems.id });
-
-if (updated.length === 0) {
-  return null;
-}
-
-if (parsed.modifiers) {
-  await withTenantTx(async (tx) => {
-    await tx.delete(menuItemModifiers).where(
-      and(eq(menuItemModifiers.tenantId, tenantId), eq(menuItemModifiers.menuItemId, id)),
-    );
-    for (let idx = 0; idx < parsed.modifiers!.length; idx++) {
-      const mod = parsed.modifiers![idx];
-      await tx.insert(menuItemModifiers).values({
-        id: `mim_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        tenantId,
-        menuItemId: id,
-        inventoryItemId: mod.inventoryItemId,
-        priceDelta: String(mod.priceDelta),
-        sortOrder: idx,
-      });
-    }
-  });
-}
-
-if (parsed.modifierGroups !== undefined) {
-  await withTenantTx(async (tx) => {
-    // Elimina tutti i modifier groups esistenti per questo menu item
-    const existingGroups = await tx
-      .select({ id: menuModifierGroups.id })
-      .from(menuModifierGroups)
-      .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, id)));
-
-    for (const group of existingGroups) {
-      // Elimina overrides delle opzioni
-      const options = await tx
-        .select({ id: menuModifierOptions.id })
-        .from(menuModifierOptions)
-        .where(eq(menuModifierOptions.groupId, group.id));
-
-      for (const opt of options) {
+      if (parsed.modifierGroups !== undefined) {
+        const existingGroups = await tx
+          .select({ id: menuModifierGroups.id })
+          .from(menuModifierGroups)
+          .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, id)));
+        for (const group of existingGroups) {
+          const options = await tx
+            .select({ id: menuModifierOptions.id })
+            .from(menuModifierOptions)
+            .where(eq(menuModifierOptions.groupId, group.id));
+          for (const opt of options) {
+            await tx
+              .delete(menuModifierOptionOverrides)
+              .where(eq(menuModifierOptionOverrides.optionId, opt.id));
+          }
+          await tx.delete(menuModifierOptions).where(eq(menuModifierOptions.groupId, group.id));
+        }
         await tx
-          .delete(menuModifierOptionOverrides)
-          .where(eq(menuModifierOptionOverrides.optionId, opt.id));
-      }
+          .delete(menuModifierGroups)
+          .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, id)));
 
-      // Elimina opzioni
-      await tx.delete(menuModifierOptions).where(eq(menuModifierOptions.groupId, group.id));
-    }
+        for (let groupIdx = 0; groupIdx < parsed.modifierGroups.length; groupIdx++) {
+          const group = parsed.modifierGroups[groupIdx];
+          const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
-    // Elimina gruppi
-    await tx
-      .delete(menuModifierGroups)
-      .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, id)));
-
-    // Inserisci nuovi gruppi
-    for (let groupIdx = 0; groupIdx < parsed.modifierGroups!.length; groupIdx++) {
-      const group = parsed.modifierGroups![groupIdx];
-      const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-      await tx.insert(menuModifierGroups).values({
-        id: groupId,
-        tenantId,
-        menuItemId: id,
-        name: group.name,
-        required: group.required ? 1 : 0,
-        minSelections: group.minSelections,
-        maxSelections: group.maxSelections,
-        sortOrder: groupIdx,
-      });
-
-      // Inserisci opzioni
-      for (let optIdx = 0; optIdx < group.options.length; optIdx++) {
-        const opt = group.options[optIdx];
-        const optId = opt.id || `mo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-        await tx.insert(menuModifierOptions).values({
-          id: optId,
-          tenantId,
-          groupId,
-          name: opt.name,
-          inventoryItemId: opt.inventoryItemId || null,
-          priceDelta: String(opt.priceDelta),
-          isDefault: opt.isDefault ? 1 : 0,
-          isActive: opt.isActive ? 1 : 0,
-          sortOrder: optIdx,
-        });
-
-        // Inserisci overrides
-        for (const override of opt.ingredientOverrides) {
-          await tx.insert(menuModifierOptionOverrides).values({
-            id: `moo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          await tx.insert(menuModifierGroups).values({
+            id: groupId,
             tenantId,
-            optionId: optId,
-            ingredientId: override.ingredientId,
-            action: override.action,
+            menuItemId: id,
+            name: group.name,
+            required: group.required ? 1 : 0,
+            minSelections: group.minSelections,
+            maxSelections: group.maxSelections,
+            sortOrder: groupIdx,
           });
+
+          for (let optIdx = 0; optIdx < group.options.length; optIdx++) {
+            const opt = group.options[optIdx];
+            const optId = opt.id || `mo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+            await tx.insert(menuModifierOptions).values({
+              id: optId,
+              tenantId,
+              groupId,
+              name: opt.name,
+              inventoryItemId: opt.inventoryItemId || null,
+              priceDelta: String(opt.priceDelta),
+              isDefault: opt.isDefault ? 1 : 0,
+              isActive: opt.isActive ? 1 : 0,
+              sortOrder: optIdx,
+            });
+
+            for (const override of opt.ingredientOverrides) {
+              await tx.insert(menuModifierOptionOverrides).values({
+                id: `moo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                tenantId,
+                optionId: optId,
+                ingredientId: override.ingredientId,
+                action: override.action,
+              });
+            }
+          }
         }
       }
-    }
-  });
-}
 
-return (await this.mapMenuItemsAdmin()).find((item) => item.id === id) ?? null;
+      return (await this.mapMenuItemsAdmin()).find((item) => item.id === id) ?? null;
+    });
   }
 
   async deleteMenuItem(id: string): Promise<boolean> {
@@ -1981,441 +1859,176 @@ await db
   .delete(menuItems)
   .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)));
 
-await this.deleteShadowBoM(id);
 return true;
   }
 
-  async replaceMenuItemRecipe(id: string, payload: MenuItemReplaceRecipeRequest): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; } | null> {
-const parsed = menuItemReplaceRecipeRequestSchema.parse(payload);
-const tenantId = getTenantIdOrDefault();
-const exists = await db
-  .select({ id: menuItems.id, categoryId: menuItems.categoryId })
-  .from(menuItems)
-  .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)))
-  .limit(1);
-if (exists.length === 0) {
-  return null;
-}
-const existingCategoryId = exists[0].categoryId;
-
-const recipeKeys = new Set<string>();
-for (const component of parsed.recipe) {
-  const key = `${component.componentType}:${component.componentId}`;
-  if (recipeKeys.has(key)) {
-    throw new Error(`Duplicate recipe component ${key}`);
-  }
-
-  if (component.componentId === "ingredient" || component.componentId === "bom") {
-    throw new Error(`Invalid recipe component id ${component.componentId}`);
-  }
-  recipeKeys.add(key);
-}
-
-const ingredientIds = parsed.recipe.filter((item) => item.componentType === "ingredient").map((item) => item.componentId);
-const bomIds = parsed.recipe.filter((item) => item.componentType === "bom").map((item) => item.componentId);
-const prepIds = parsed.recipe.filter((item) => item.componentType === "prep").map((item) => item.componentId);
-
-if (ingredientIds.length > 0) {
-  const rows = await db
-    .select({ id: inventory.id })
-    .from(inventory)
-    .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds)));
-  if (rows.length !== new Set(ingredientIds).size) {
-    const found = new Set(rows.map((row) => row.id));
-    const missing = ingredientIds.find((entryId) => !found.has(entryId));
-    throw new Error(`Ingredient ${missing ?? "unknown"} not found`);
-  }
-}
-
-if (bomIds.length > 0) {
-  const rows = await db
-    .select({ id: bomItems.id })
-    .from(bomItems)
-    .where(and(eq(bomItems.tenantId, tenantId), inArray(bomItems.id, bomIds)));
-  if (rows.length !== new Set(bomIds).size) {
-    const found = new Set(rows.map((row) => row.id));
-    const missing = bomIds.find((entryId) => !found.has(entryId));
-    throw new Error(`BoM ${missing ?? "unknown"} not found`);
-  }
-}
-
-if (prepIds.length > 0) {
-  const rows = await db
-    .select({ id: prepItems.id })
-    .from(prepItems)
-    .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, prepIds)));
-  if (rows.length !== new Set(prepIds).size) {
-    const found = new Set(rows.map((row) => row.id));
-    const missing = prepIds.find((entryId) => !found.has(entryId));
-    throw new Error(`Prep item ${missing ?? "unknown"} not found`);
-  }
-}
-
-await withTenantTx(async (tx) => {
-  await tx
-    .delete(menuItemIngredients)
-    .where(and(eq(menuItemIngredients.tenantId, tenantId), eq(menuItemIngredients.menuItemId, id)));
-  await tx
-    .delete(menuItemBomRequirements)
-    .where(and(eq(menuItemBomRequirements.tenantId, tenantId), eq(menuItemBomRequirements.menuItemId, id)));
-  await tx
-    .delete(menuItemPrepRequirements)
-    .where(and(eq(menuItemPrepRequirements.tenantId, tenantId), eq(menuItemPrepRequirements.menuItemId, id)));
-
-  const ingredientComponents = parsed.recipe.filter((item) => item.componentType === "ingredient");
-  const bomComponentsPayload = parsed.recipe.filter((item) => item.componentType === "bom");
-  const prepComponentsPayload = parsed.recipe.filter((item) => item.componentType === "prep");
-
-  if (ingredientComponents.length > 0) {
-    await tx.insert(menuItemIngredients).values(
-      ingredientComponents.map((component) => ({
-        tenantId,
-        menuItemId: id,
-        ingredientId: component.componentId,
-        quantity: String(component.quantity),
-        unit: component.unit,
-      })),
-    );
-  }
-
-  if (bomComponentsPayload.length > 0) {
-    await tx.insert(menuItemBomRequirements).values(
-      bomComponentsPayload.map((component) => ({
-        tenantId,
-        menuItemId: id,
-        bomId: component.componentId,
-        quantity: String(component.quantity),
-        unit: component.unit,
-      })),
-    );
-  }
-
-  if (prepComponentsPayload.length > 0) {
-    await tx.insert(menuItemPrepRequirements).values(
-      prepComponentsPayload.map((component) => ({
-        tenantId,
-        menuItemId: id,
-        prepItemId: component.componentId,
-        quantity: String(component.quantity),
-      })),
-    );
-  }
-
-  await this.syncShadowBoM(tx, tenantId, id, parsed.recipe, existingCategoryId);
-});
-
-return (await this.mapMenuItemsAdmin()).find((item) => item.id === id) ?? null;
-  }
-
-  async addMenuItemRecipeComponent(id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; } | null> {
-const parsed = menuItemAddRecipeComponentRequestSchema.parse(payload);
-const tenantId = getTenantIdOrDefault();
-const exists = await db
-  .select({ id: menuItems.id })
-  .from(menuItems)
-  .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)))
-  .limit(1);
-if (exists.length === 0) return null;
-
-if (parsed.componentType === 'ingredient') {
-  const row = await db
-    .select({ id: inventory.id })
-    .from(inventory)
-    .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, parsed.componentId)))
-    .limit(1);
-  if (row.length === 0) throw new Error(`Ingredient ${parsed.componentId} not found`);
-} else if (parsed.componentType === 'bom') {
-  const row = await db
-    .select({ id: bomItems.id })
-    .from(bomItems)
-    .where(and(eq(bomItems.tenantId, tenantId), eq(bomItems.id, parsed.componentId)))
-    .limit(1);
-  if (row.length === 0) throw new Error(`BoM ${parsed.componentId} not found`);
-} else {
-  const row = await db
-    .select({ id: prepItems.id })
-    .from(prepItems)
-    .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, parsed.componentId)))
-    .limit(1);
-  if (row.length === 0) throw new Error(`Prep item ${parsed.componentId} not found`);
-}
-
-await withTenantTx(async (tx) => {
-  if (parsed.componentType === 'ingredient') {
-    const existing = await tx
-      .select()
-      .from(menuItemIngredients)
-      .where(and(eq(menuItemIngredients.tenantId, tenantId), eq(menuItemIngredients.menuItemId, id), eq(menuItemIngredients.ingredientId, parsed.componentId)))
-      .limit(1);
-    if (existing.length > 0) throw new Error(`Ingredient ${parsed.componentId} already in recipe`);
-    await tx.insert(menuItemIngredients).values({ tenantId, menuItemId: id, ingredientId: parsed.componentId, quantity: String(parsed.quantity), unit: parsed.unit });
-  } else if (parsed.componentType === 'bom') {
-    const existing = await tx
-      .select()
-      .from(menuItemBomRequirements)
-      .where(and(eq(menuItemBomRequirements.tenantId, tenantId), eq(menuItemBomRequirements.menuItemId, id), eq(menuItemBomRequirements.bomId, parsed.componentId)))
-      .limit(1);
-    if (existing.length > 0) throw new Error(`BoM ${parsed.componentId} already in recipe`);
-    await tx.insert(menuItemBomRequirements).values({ tenantId, menuItemId: id, bomId: parsed.componentId, quantity: String(parsed.quantity), unit: parsed.unit });
-  } else {
-    const existing = await tx
-      .select()
-      .from(menuItemPrepRequirements)
-      .where(and(eq(menuItemPrepRequirements.tenantId, tenantId), eq(menuItemPrepRequirements.menuItemId, id), eq(menuItemPrepRequirements.prepItemId, parsed.componentId)))
-      .limit(1);
-    if (existing.length > 0) throw new Error(`Prep item ${parsed.componentId} already in recipe`);
-    await tx.insert(menuItemPrepRequirements).values({ tenantId, menuItemId: id, prepItemId: parsed.componentId, quantity: String(parsed.quantity) });
-  }
-
-  const shadowBomId = await this.findShadowBoMId(id);
-  if (shadowBomId) {
-    const currentRows = await tx
-      .select()
-      .from(bomComponents)
-      .where(and(eq(bomComponents.tenantId, tenantId), eq(bomComponents.bomId, shadowBomId)));
-    const recipe = currentRows.map((r) => ({ componentType: r.componentType, componentId: r.componentId, quantity: Number(r.quantity), unit: r.unit }));
-    recipe.push({ componentType: parsed.componentType, componentId: parsed.componentId, quantity: parsed.quantity, unit: parsed.unit });
-    const menuRow = await tx.select({ categoryId: menuItems.categoryId }).from(menuItems).where(eq(menuItems.id, id)).limit(1);
-    await this.syncShadowBoM(tx, tenantId, id, recipe, menuRow[0]?.categoryId ?? null);
-  }
-});
-
-return (await this.mapMenuItemsAdmin()).find((item) => item.id === id) ?? null;
-  }
-
-  async removeMenuItemRecipeComponent(id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string }): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; } | null> {
-const parsed = menuItemRemoveRecipeComponentRequestSchema.parse(payload);
-const tenantId = getTenantIdOrDefault();
-const exists = await db
-  .select({ id: menuItems.id })
-  .from(menuItems)
-  .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)))
-  .limit(1);
-if (exists.length === 0) return null;
-
-await withTenantTx(async (tx) => {
-  if (parsed.componentType === 'ingredient') {
-    await tx.delete(menuItemIngredients).where(and(eq(menuItemIngredients.tenantId, tenantId), eq(menuItemIngredients.menuItemId, id), eq(menuItemIngredients.ingredientId, parsed.componentId)));
-  } else if (parsed.componentType === 'bom') {
-    await tx.delete(menuItemBomRequirements).where(and(eq(menuItemBomRequirements.tenantId, tenantId), eq(menuItemBomRequirements.menuItemId, id), eq(menuItemBomRequirements.bomId, parsed.componentId)));
-  } else {
-    await tx.delete(menuItemPrepRequirements).where(and(eq(menuItemPrepRequirements.tenantId, tenantId), eq(menuItemPrepRequirements.menuItemId, id), eq(menuItemPrepRequirements.prepItemId, parsed.componentId)));
-  }
-
-  const shadowBomId = await this.findShadowBoMId(id);
-  if (shadowBomId) {
-    const currentRows = await tx
-      .select()
-      .from(bomComponents)
-      .where(and(eq(bomComponents.tenantId, tenantId), eq(bomComponents.bomId, shadowBomId)));
-    const recipe = currentRows
-      .filter((r) => !(r.componentType === parsed.componentType && r.componentId === parsed.componentId))
-      .map((r) => ({ componentType: r.componentType, componentId: r.componentId, quantity: Number(r.quantity), unit: r.unit }));
-    const menuRow = await tx.select({ categoryId: menuItems.categoryId }).from(menuItems).where(eq(menuItems.id, id)).limit(1);
-    await this.syncShadowBoM(tx, tenantId, id, recipe, menuRow[0]?.categoryId ?? null);
-  }
-});
-
-return (await this.mapMenuItemsAdmin()).find((item) => item.id === id) ?? null;
-  }
-
   async getFoodCostMatrix(): Promise<{ rows: { menuItemId: string; menuItemName: string; category: string; ingredientId: string; ingredientName: string; quantity: number; unit: string; ingredientCost: number; totalCost: number; menuItemPrice: number; margin: number; marginPercent: number; recommendedPrice: number; status: "ok" | "needs_change"; }[]; summary: { menuItemId: string; menuItemName: string; category: string; totalCost: number; currentPrice: number; recommendedPrice: number; margin: number; marginPercent: number; status: "ok" | "needs_change"; ingredientCount: number; }[]; }> {
-const tenantId = getTenantIdOrDefault();
+    const tenantId = getTenantIdOrDefault();
 
-// Fetch all menu items, ingredients, and recipe links in parallel
-const [menuRows, ingRows, recipeRows] = await Promise.all([
-  db
-    .select({
-      id: menuItems.id,
-      name: menuItems.name,
-      category: menuItems.category,
-      price: menuItems.price,
-      defaultContainerId: menuItems.defaultContainerId,
-    })
-    .from(menuItems)
-    .where(eq(menuItems.tenantId, tenantId)),
-  db
-    .select({
-      id: inventory.id,
-      name: inventory.name,
-      unitCost: inventory.unitCost,
-      unit: inventory.unit,
-    })
-    .from(inventory)
-    .where(eq(inventory.tenantId, tenantId)),
-  db
-    .select({
-      menuItemId: menuItemIngredients.menuItemId,
-      ingredientId: menuItemIngredients.ingredientId,
-      quantity: menuItemIngredients.quantity,
-      unit: menuItemIngredients.unit,
-    })
-    .from(menuItemIngredients)
-    .where(eq(menuItemIngredients.tenantId, tenantId)),
-]);
+    const [menuRows, ingRows, bomRows, bomComponentRows, prepRows, componentRows] = await Promise.all([
+      db.select({ id: menuItems.id, name: menuItems.name, category: menuItems.category, price: menuItems.price })
+        .from(menuItems)
+        .where(eq(menuItems.tenantId, tenantId)),
+      db.select({ id: inventory.id, name: inventory.name, unitCost: inventory.unitCost, unit: inventory.unit })
+        .from(inventory)
+        .where(eq(inventory.tenantId, tenantId)),
+      db.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
+      db.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
+      db.select().from(prepItems).where(eq(prepItems.tenantId, tenantId)),
+      db.select({ menuItemId: menuItemComponents.menuItemId, componentType: menuItemComponents.componentType, componentId: menuItemComponents.componentId, quantity: menuItemComponents.quantity, unit: menuItemComponents.unit })
+        .from(menuItemComponents)
+        .where(eq(menuItemComponents.tenantId, tenantId)),
+    ]);
 
-// Fetch container costs
-const containerIds = [...new Set(menuRows.map((m) => m.defaultContainerId).filter((id): id is string => Boolean(id)))];
-const containerRows = containerIds.length > 0
-  ? await db
-      .select({ id: inventory.id, name: inventory.name, unitCost: inventory.unitCost })
-      .from(inventory)
-      .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, containerIds)))
-  : [];
-const containerById = new Map(containerRows.map((c) => [c.id, c]));
+    const ingById = new Map(ingRows.map((i) => [i.id, { name: i.name, unitCost: toNumeric(i.unitCost), unit: i.unit }]));
+    const bomById = new Map(bomRows.map((b) => [b.id, b]));
+    const prepById = new Map(prepRows.map((p) => [p.id, p]));
+    const componentsByBomId = new Map<string, typeof bomComponentRows>();
+    for (const component of bomComponentRows) {
+      const existing = componentsByBomId.get(component.bomId) ?? [];
+      existing.push(component);
+      componentsByBomId.set(component.bomId, existing);
+    }
+    const componentsByMenuId = new Map<string, Array<{ componentType: string; componentId: string; quantity: number; unit: string }>>();
+    for (const component of componentRows) {
+      const existing = componentsByMenuId.get(component.menuItemId) ?? [];
+      existing.push({ componentType: component.componentType, componentId: component.componentId, quantity: toNumeric(component.quantity), unit: component.unit });
+      componentsByMenuId.set(component.menuItemId, existing);
+    }
 
-// Build lookup maps
-const menuById = new Map(menuRows.map((m) => [m.id, m]));
-const ingById = new Map(ingRows.map((i) => [i.id, i]));
+    const TARGET_MARGIN = 0.6667;
 
-// Target margin: 66.67% (1/3 food cost)
-const TARGET_MARGIN = 0.6667;
+    const expand = (
+      type: string,
+      id: string,
+      qty: number,
+      unit: string,
+      totals: Map<string, number>,
+      visited: Set<string>,
+    ): void => {
+      if (type === "ingredient") {
+        const ing = ingById.get(id);
+        if (!ing) return;
+        const converted = convertUnit(qty, unit, ing.unit);
+        totals.set(id, (totals.get(id) ?? 0) + (converted === null ? qty : converted));
+        return;
+      }
+      if (type === "prep") {
+        const prep = prepById.get(id);
+        if (!prep) return;
+        const key = `prep:${id}`;
+        if (visited.has(key)) return;
+        visited.add(key);
+        const neededInput = qty * (toNumeric(prep.inputQuantity) / toNumeric(prep.outputQuantity));
+        if (prep.sourceType === "ingredient") {
+          expand("ingredient", prep.sourceId, neededInput, prep.inputUnit, totals, visited);
+        } else {
+          const bom = bomById.get(prep.sourceId);
+          const bomQty = bom ? (convertUnit(neededInput, prep.inputUnit, bom.outputUnit) ?? neededInput) : neededInput;
+          expand("bom", prep.sourceId, bomQty, bom?.outputUnit ?? prep.inputUnit, totals, visited);
+        }
+        visited.delete(key);
+        return;
+      }
+      const key = `bom:${id}`;
+      if (visited.has(key)) return;
+      visited.add(key);
+      for (const component of componentsByBomId.get(id) ?? []) {
+        expand(component.componentType, component.componentId, toNumeric(component.quantity) * qty, component.unit, totals, visited);
+      }
+      visited.delete(key);
+    };
 
-// Build matrix rows
-const rows: Array<{
-  menuItemId: string;
-  menuItemName: string;
-  category: string;
-  ingredientId: string;
-  ingredientName: string;
-  quantity: number;
-  unit: string;
-  ingredientCost: number;
-  totalCost: number;
-  menuItemPrice: number;
-  margin: number;
-  marginPercent: number;
-  recommendedPrice: number;
-  status: 'ok' | 'needs_change';
-}> = [];
+    const rows: Array<{
+      menuItemId: string;
+      menuItemName: string;
+      category: string;
+      ingredientId: string;
+      ingredientName: string;
+      quantity: number;
+      unit: string;
+      ingredientCost: number;
+      totalCost: number;
+      menuItemPrice: number;
+      margin: number;
+      marginPercent: number;
+      recommendedPrice: number;
+      status: "ok" | "needs_change";
+    }> = [];
+    const summaryMap = new Map<string, {
+      menuItemId: string;
+      menuItemName: string;
+      category: string;
+      totalCost: number;
+      currentPrice: number;
+      recommendedPrice: number;
+      margin: number;
+      marginPercent: number;
+      status: "ok" | "needs_change";
+      ingredientCount: number;
+    }>();
 
-const summaryMap = new Map<string, {
-  menuItemId: string;
-  menuItemName: string;
-  category: string;
-  totalCost: number;
-  currentPrice: number;
-  recommendedPrice: number;
-  margin: number;
-  marginPercent: number;
-  status: 'ok' | 'needs_change';
-  ingredientCount: number;
-}>();
+    for (const menu of menuRows) {
+      const totals = new Map<string, number>();
+      for (const component of componentsByMenuId.get(menu.id) ?? []) {
+        expand(component.componentType, component.componentId, component.quantity, component.unit, totals, new Set<string>());
+      }
 
-// Initialize summary for all menu items
-for (const menu of menuRows) {
-  summaryMap.set(menu.id, {
-    menuItemId: menu.id,
-    menuItemName: menu.name,
-    category: menu.category,
-    totalCost: 0,
-    currentPrice: toNumeric(menu.price as unknown as string),
-    recommendedPrice: 0,
-    margin: 0,
-    marginPercent: 0,
-    status: 'ok',
-    ingredientCount: 0,
-  });
-}
+      let totalCost = 0;
+      for (const [ingredientId, quantity] of totals) {
+        const ing = ingById.get(ingredientId);
+        if (!ing) continue;
+        const rowCost = quantity * ing.unitCost;
+        totalCost += rowCost;
+        rows.push({
+          menuItemId: menu.id,
+          menuItemName: menu.name,
+          category: menu.category,
+          ingredientId,
+          ingredientName: ing.name,
+          quantity,
+          unit: ing.unit,
+          ingredientCost: ing.unitCost,
+          totalCost: rowCost,
+          menuItemPrice: toNumeric(menu.price),
+          margin: 0,
+          marginPercent: 0,
+          recommendedPrice: 0,
+          status: "ok",
+        });
+      }
 
-// Add container cost if selected
-for (const menu of menuRows) {
-  if (menu.defaultContainerId) {
-    const container = containerById.get(menu.defaultContainerId);
-    if (container) {
-      const containerCost = toNumeric(container.unitCost as unknown as string);
-
-      rows.push({
+      const currentPrice = toNumeric(menu.price);
+      summaryMap.set(menu.id, {
         menuItemId: menu.id,
         menuItemName: menu.name,
         category: menu.category,
-        ingredientId: container.id,
-        ingredientName: `[Container] ${container.name}`,
-        quantity: 1,
-        unit: 'pz',
-        ingredientCost: containerCost,
-        totalCost: containerCost,
-        menuItemPrice: toNumeric(menu.price as unknown as string),
+        totalCost,
+        currentPrice,
+        recommendedPrice: 0,
         margin: 0,
         marginPercent: 0,
-        recommendedPrice: 0,
-        status: 'ok',
+        status: "ok",
+        ingredientCount: totals.size,
       });
-
-      const summary = summaryMap.get(menu.id);
-      if (summary) {
-        summary.totalCost += containerCost;
-        summary.ingredientCount++;
-      }
     }
-  }
-}
 
-// Process each recipe link
-for (const recipe of recipeRows) {
-  const menu = menuById.get(recipe.menuItemId);
-  const ing = ingById.get(recipe.ingredientId);
-  if (!menu || !ing) continue;
+    const summary = Array.from(summaryMap.values()).map((s) => {
+      const margin = s.currentPrice - s.totalCost;
+      const marginPercent = s.currentPrice > 0 ? margin / s.currentPrice : 0;
+      const recommendedPrice = marginPercent < TARGET_MARGIN && marginPercent > 0
+        ? s.totalCost / (1 - TARGET_MARGIN)
+        : s.currentPrice;
+      return {
+        ...s,
+        margin,
+        marginPercent,
+        recommendedPrice,
+        status: marginPercent >= TARGET_MARGIN ? "ok" as const : "needs_change" as const,
+      };
+    });
 
-  const qty = toNumeric(recipe.quantity as unknown as string);
-  const unitCost = toNumeric(ing.unitCost as unknown as string);
-  const menuItemPrice = toNumeric(menu.price as unknown as string);
-
-  // Cost = quantity × unit cost (both in inventory-native units)
-  const totalCost = qty * unitCost;
-
-  // Margin calculation
-  const margin = menuItemPrice - totalCost;
-  const marginPercent = menuItemPrice > 0 ? margin / menuItemPrice : 0;
-  const recommendedPrice = marginPercent < TARGET_MARGIN && marginPercent > 0
-    ? totalCost / (1 - TARGET_MARGIN)
-    : menuItemPrice;
-
-  const status: 'ok' | 'needs_change' = marginPercent >= TARGET_MARGIN ? 'ok' : 'needs_change';
-
-  rows.push({
-    menuItemId: recipe.menuItemId,
-    menuItemName: menu.name,
-    category: menu.category,
-    ingredientId: recipe.ingredientId,
-    ingredientName: ing.name,
-    quantity: qty,
-    unit: recipe.unit || ing.unit,
-    ingredientCost: unitCost,
-    totalCost,
-    menuItemPrice,
-    margin,
-    marginPercent,
-    recommendedPrice,
-    status,
-  });
-
-  // Update summary
-  const summary = summaryMap.get(recipe.menuItemId);
-  if (summary) {
-    summary.totalCost += totalCost;
-    summary.ingredientCount++;
-  }
-}
-
-// Finalize summary
-const summary = Array.from(summaryMap.values()).map((s) => {
-  const margin = s.currentPrice - s.totalCost;
-  const marginPercent = s.currentPrice > 0 ? margin / s.currentPrice : 0;
-  const recommendedPrice = marginPercent < TARGET_MARGIN && marginPercent > 0
-    ? s.totalCost / (1 - TARGET_MARGIN)
-    : s.currentPrice;
-
-  return {
-    ...s,
-    margin,
-    marginPercent,
-    recommendedPrice,
-    status: marginPercent >= TARGET_MARGIN ? 'ok' as const : 'needs_change' as const,
-  };
-});
-
-return { rows, summary };
+    return { rows, summary };
   }
 
   // ─── Food Cost Matrix mutations ──────────────────────────────────────
@@ -2428,53 +2041,66 @@ return { rows, summary };
   ): Promise<void> {
     const tenantId = getTenantIdOrDefault();
 
-    // Check if the link exists
     const existing = await db
-      .select()
-      .from(menuItemIngredients)
+      .select({ id: menuItemComponents.id })
+      .from(menuItemComponents)
       .where(
         and(
-          eq(menuItemIngredients.tenantId, tenantId),
-          eq(menuItemIngredients.menuItemId, menuItemId),
-          eq(menuItemIngredients.ingredientId, ingredientId),
+          eq(menuItemComponents.tenantId, tenantId),
+          eq(menuItemComponents.menuItemId, menuItemId),
+          eq(menuItemComponents.componentType, "ingredient"),
+          eq(menuItemComponents.componentId, ingredientId),
         ),
       )
       .limit(1);
 
     if (quantity <= 0) {
-      // Remove the link if quantity is 0 or negative
       if (existing.length > 0) {
         await db
-          .delete(menuItemIngredients)
+          .delete(menuItemComponents)
           .where(
             and(
-              eq(menuItemIngredients.tenantId, tenantId),
-              eq(menuItemIngredients.menuItemId, menuItemId),
-              eq(menuItemIngredients.ingredientId, ingredientId),
+              eq(menuItemComponents.tenantId, tenantId),
+              eq(menuItemComponents.menuItemId, menuItemId),
+              eq(menuItemComponents.componentType, "ingredient"),
+              eq(menuItemComponents.componentId, ingredientId),
             ),
           );
       }
       return;
     }
 
+    const ing = await db
+      .select({ id: inventory.id, unit: inventory.unit })
+      .from(inventory)
+      .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ingredientId)))
+      .limit(1);
+    if (ing.length === 0) {
+      throw new Error(`Ingredient ${ingredientId} not found`);
+    }
+    if (unit !== ing[0].unit) {
+      throw new Error(`Unit ${unit} incompatible with ingredient unit ${ing[0].unit}`);
+    }
+
     if (existing.length > 0) {
-      // Update existing link
       await db
-        .update(menuItemIngredients)
+        .update(menuItemComponents)
         .set({ quantity: quantity.toString(), unit })
         .where(
           and(
-            eq(menuItemIngredients.tenantId, tenantId),
-            eq(menuItemIngredients.menuItemId, menuItemId),
-            eq(menuItemIngredients.ingredientId, ingredientId),
+            eq(menuItemComponents.tenantId, tenantId),
+            eq(menuItemComponents.menuItemId, menuItemId),
+            eq(menuItemComponents.componentType, "ingredient"),
+            eq(menuItemComponents.componentId, ingredientId),
           ),
         );
     } else {
-      // Create new link
-      await db.insert(menuItemIngredients).values({
+      await db.insert(menuItemComponents).values({
+        id: `mic_${crypto.randomUUID()}`,
         tenantId,
         menuItemId,
-        ingredientId,
+        componentType: "ingredient",
+        componentId: ingredientId,
         quantity: quantity.toString(),
         unit,
       });

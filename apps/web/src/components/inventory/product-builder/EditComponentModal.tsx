@@ -57,21 +57,21 @@ export default function EditComponentModal({
   }, [component, inventory, bomItems, prepItems]);
 
   const prep = component?.componentType === 'prep' ? prepItems.find((p) => p.id === component.componentId) : null;
-  const ingredient = prep ? inventory.find((i) => i.id === prep.ingredientId) : null;
+  const ingredient = prep && prep.sourceType === 'ingredient' ? inventory.find((i) => i.id === prep.sourceId) : null;
 
   const swapCandidates = useMemo(() => {
     if (!component || !swapSearch) return [];
     const q = swapSearch.toLowerCase();
     if (component.componentType === 'ingredient') {
-      return inventory.filter((i) => i.id !== component.componentId && i.isContainer !== 1 && i.name.toLowerCase().includes(q))
+      return inventory.filter((i) => i.id !== component.componentId && i.name.toLowerCase().includes(q))
         .map((i) => ({ type: 'ingredient' as const, id: i.id, name: i.name, unit: i.unit }));
     }
     if (component.componentType === 'prep') {
       return prepItems.filter((p) => p.id !== component.componentId && p.name.toLowerCase().includes(q))
-        .map((p) => ({ type: 'prep' as const, id: p.id, name: p.name, unit: p.unit }));
+        .map((p) => ({ type: 'prep' as const, id: p.id, name: p.name, unit: p.outputUnit }));
     }
     return bomItems.filter((b) => b.id !== component.componentId && b.name.toLowerCase().includes(q))
-      .map((b) => ({ type: 'bom' as const, id: b.id, name: b.name, unit: b.unit }));
+      .map((b) => ({ type: 'bom' as const, id: b.id, name: b.name, unit: b.outputUnit }));
   }, [component, swapSearch, inventory, bomItems, prepItems]);
 
   const handleSave = () => {
@@ -145,7 +145,7 @@ export default function EditComponentModal({
                 <Package size={12} />
                 <span className="font-medium">{ingredient.name}</span>
                 <span>→</span>
-                <span>{Number(prep.quantityPerUnit)} {prep.unit}</span>
+                <span>{Number(prep.inputQuantity)} {prep.outputUnit}</span>
               </div>
             </div>
           )}

@@ -93,9 +93,12 @@ export function explodeBomCost(
       if (ing?.unitCost) total += comp.quantity * ing.unitCost;
     } else if (comp.componentType === 'prep') {
       const prep = prepItems.find((p) => p.id === comp.componentId);
-      if (prep) {
-        const ing = inventory.find((i) => i.id === prep.ingredientId);
-        if (ing?.unitCost) total += comp.quantity * prep.quantityPerUnit * ing.unitCost;
+      if (prep && prep.sourceType === 'ingredient') {
+        const ing = inventory.find((i) => i.id === prep.sourceId);
+        if (ing?.unitCost) {
+          const perUnit = prep.outputQuantity > 0 ? prep.inputQuantity / prep.outputQuantity : 0;
+          total += comp.quantity * perUnit * ing.unitCost;
+        }
       }
     } else if (comp.componentType === 'bom') {
       if (visited.has(comp.componentId)) continue;

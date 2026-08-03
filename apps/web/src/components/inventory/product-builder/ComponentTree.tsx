@@ -149,7 +149,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
   }, [component, inventory, bomItems, prepItems]);
 
   const prep = component.componentType === 'prep' ? prepItems.find((p) => p.id === component.componentId) : null;
-  const ingredient = prep ? inventory.find((i) => i.id === prep.ingredientId) : null;
+  const ingredient = prep && prep.sourceType === 'ingredient' ? inventory.find((i) => i.id === prep.sourceId) : null;
   const bom = component.componentType === 'bom' ? bomItems.find((b) => b.id === component.componentId) : null;
 
   const icon = component.componentType === 'prep'
@@ -217,8 +217,8 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
             <Package size={12} />
             <span className="font-medium">{ingredient.name}</span>
             <span>→</span>
-            <span>{Number(prep.quantityPerUnit)} {prep.unit}</span>
-            <span className="text-[9px] text-text-muted ml-auto">Costo: €{(Number(prep.quantityPerUnit) * (ingredient.unitCost ?? 0)).toFixed(2)}</span>
+            <span>{Number(prep.inputQuantity)} {prep.outputUnit}</span>
+            <span className="text-[9px] text-text-muted ml-auto">Costo: €{(Number(prep.inputQuantity) * (ingredient.unitCost ?? 0)).toFixed(2)}</span>
           </div>
         </div>
       )}
@@ -246,7 +246,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
             <div className="flex items-center justify-between px-2 pt-1">
               {bom.components.length > 0 && (
                 <p className="text-[9px] text-text-muted italic">
-                  Resa: {bom.yieldQuantity} {bom.unit} — Le modifiche si applicano al BoM
+                  Resa: {bom.yieldQuantity} {bom.outputUnit} — Le modifiche si applicano al BoM
                 </p>
               )}
               {onOpenBomTab && (

@@ -28,7 +28,6 @@ export default function CreateIngredientInlineModal({
   const [threshold, setThreshold] = useState('');
   const [unitCost, setUnitCost] = useState('');
   const [salePrice, setSalePrice] = useState('');
-  const [isContainer, setIsContainer] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [error, setError] = useState('');
@@ -41,7 +40,6 @@ export default function CreateIngredientInlineModal({
     setThreshold('');
     setUnitCost('');
     setSalePrice('');
-    setIsContainer(false);
     setErrors({});
     setError('');
     onClose();
@@ -64,7 +62,6 @@ export default function CreateIngredientInlineModal({
         minThreshold: threshold ? Number(threshold) : 0,
         unitCost: unitCost ? Number(unitCost) : 0,
         salePrice: salePrice ? Number(salePrice) : undefined,
-        isContainer: isContainer ? 1 : 0,
       });
       setSaving(false);
       onSuccess(result);
@@ -173,12 +170,6 @@ export default function CreateIngredientInlineModal({
             />
           )}
         </Field>
-        <div className="flex items-center">
-          <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
-            <input type="checkbox" checked={isContainer} onChange={(e) => setIsContainer(e.target.checked)} className="accent-accent" />
-            Contenitore (packaging)
-          </label>
-        </div>
       </div>
       {error && <p className="text-xs text-danger mt-2">{error}</p>}
     </Modal>

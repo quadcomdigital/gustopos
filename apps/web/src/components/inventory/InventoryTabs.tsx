@@ -13,7 +13,7 @@ import type {
   CategoryCreateRequest,
   CategoryUpdateRequest,
   MenuItemCreateRequest,
-  CreateMenuProductRequest,
+  CanonicalCreateMenuProductRequest,
   MenuItemReplaceRecipeRequest,
   MenuItemUpdateRequest,
   PrepItem,
@@ -58,9 +58,8 @@ interface InventoryTabsProps {
   onAdjustIngredient?: (id: string, payload: { quantity: number; notes?: string }) => Promise<void>;
   onFetchMovements?: (ingredientId: string) => Promise<{ movements: any[] }>;
   onCreateMenuItem?: (payload: MenuItemCreateRequest) => Promise<void>;
-  onCreateMenuProduct?: (payload: CreateMenuProductRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
-  onReplaceMenuRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   onSetMenuItemActive?: (id: string, active: boolean) => Promise<void>;
   onDeleteMenuItem?: (id: string) => Promise<void>;
   onCreateCategoryForMenu?: (name: string, scope: Category['scope']) => Promise<void>;
@@ -163,7 +162,6 @@ export default function InventoryTabs({
   onCreateMenuItem,
   onCreateMenuProduct,
   onUpdateMenuItem,
-  onReplaceMenuRecipe,
   onSetMenuItemActive,
   onDeleteMenuItem,
   onCreateCategoryForMenu,
@@ -403,7 +401,6 @@ export default function InventoryTabs({
             onRefresh={onRefreshMenu}             onCreate={onCreateMenuItem}
              onCreateMenuProduct={onCreateMenuProduct}
              onUpdate={onUpdateMenuItem}
-            onReplaceRecipe={onReplaceMenuRecipe}
             onSetMenuItemActive={onSetMenuItemActive}
             onDelete={onDeleteMenuItem}
             onCreateCategory={onCreateCategoryForMenu}

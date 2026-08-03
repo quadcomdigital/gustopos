@@ -36,7 +36,7 @@ export default function AddComponentModal({
   const filteredIngredients = useMemo(() => {
     const q = search.toLowerCase();
     return inventory
-      .filter((i) => i.isActive && i.isContainer !== 1 && (i.name.toLowerCase().includes(q)))
+      .filter((i) => i.isActive && (i.name.toLowerCase().includes(q)))
       .map((i) => ({
         type: 'ingredient' as const,
         id: i.id,
@@ -56,7 +56,7 @@ export default function AddComponentModal({
         type: 'prep' as const,
         id: p.id,
         name: p.name,
-        unit: p.unit,
+        unit: p.outputUnit,
         stock: p.stockQuantity,
         existing: existingSet.has(`prep:${p.id}`),
       }));
@@ -70,7 +70,7 @@ export default function AddComponentModal({
         type: 'bom' as const,
         id: b.id,
         name: b.name,
-        unit: b.unit,
+        unit: b.outputUnit,
         stock: null,
         existing: existingSet.has(`bom:${b.id}`),
       }));

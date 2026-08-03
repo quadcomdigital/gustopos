@@ -11,7 +11,7 @@ import type {
   CategoryCreateRequest,
   CategoryUpdateRequest,
   MenuItemCreateRequest,
-  CreateMenuProductRequest,
+  CanonicalCreateMenuProductRequest,
   MenuItemReplaceRecipeRequest,
   MenuItemUpdateRequest,
   CategoryModifierPool,
@@ -46,9 +46,8 @@ interface InventoryViewProps {
   onFetchMovements?: (ingredientId: string) => Promise<{ movements: any[] }>;
   onRefreshMenu?: () => Promise<void>;
   onCreateMenuItem?: (payload: MenuItemCreateRequest) => Promise<void>;
-  onCreateMenuProduct?: (payload: CreateMenuProductRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
-  onReplaceMenuRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   onSetMenuItemActive?: (id: string, active: boolean) => Promise<void>;
   onDeleteMenuItem?: (id: string) => Promise<void>;
   onRefreshCategoryModifierPools?: () => Promise<void>;
@@ -150,7 +149,6 @@ export default function InventoryView({
   onCreateMenuItem,
   onCreateMenuProduct,
   onUpdateMenuItem,
-  onReplaceMenuRecipe,
   onSetMenuItemActive,
   onDeleteMenuItem,
   onRefreshCategoryModifierPools,
@@ -201,7 +199,6 @@ export default function InventoryView({
       onFetchMovements={onFetchMovements}       onCreateMenuItem={onCreateMenuItem}
        onCreateMenuProduct={onCreateMenuProduct}
        onUpdateMenuItem={onUpdateMenuItem}
-      onReplaceMenuRecipe={onReplaceMenuRecipe}
       onSetMenuItemActive={onSetMenuItemActive}
       onDeleteMenuItem={onDeleteMenuItem}
       onRefreshCategoryModifierPools={onRefreshCategoryModifierPools}

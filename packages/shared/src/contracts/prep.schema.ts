@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { canonicalUnitSchema, prepSourceTypeSchema } from "./inventory-workflow.schema";
+import { canonicalUnitSchema, prepSourceSchema, prepSourceTypeSchema } from "./inventory-workflow.schema";
 
 // ─── Prep Items ────────────────────────────────────────────────────────
 
@@ -30,6 +30,11 @@ export const prepItemSchema = z.object({
   isActive: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
+});
+
+export const prepItemCreateRequestSchema = z.object({
+  name: z.string().min(2),
+  source: prepSourceSchema,
 });
 
 export const prepItemUpdateRequestSchema = z.object({
@@ -63,6 +68,7 @@ export const unitConversionCreateRequestSchema = z.object({
 
 export type PreparePrepItemResponse = z.infer<typeof preparePrepItemResponseSchema>;
 export type PrepItem = z.infer<typeof prepItemSchema>;
+export type PrepItemCreateRequest = z.infer<typeof prepItemCreateRequestSchema>;
 export type PrepItemUpdateRequest = z.infer<typeof prepItemUpdateRequestSchema>;
 export type UnitConversion = z.infer<typeof unitConversionSchema>;
 export type UnitConversionCreateRequest = z.infer<typeof unitConversionCreateRequestSchema>;

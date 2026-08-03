@@ -99,26 +99,26 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
     const term = searchTerm.trim().toLowerCase();
     const filtered = term
       ? prepItems.filter((item) => {
-          if (item.bomId) {
-            const bom = bomItems.find((b) => b.id === item.bomId);
+          if (item.sourceType === 'bom') {
+            const bom = bomItems.find((b) => b.id === item.sourceId);
             return bom?.name.toLowerCase().includes(term) || item.name.toLowerCase().includes(term);
           }
-          const ing = inventory.find((i) => i.id === item.ingredientId);
+          const ing = inventory.find((i) => i.id === item.sourceId);
           return ing?.name.toLowerCase().includes(term) || item.name.toLowerCase().includes(term);
         })
       : prepItems;
 
     const groups = new Map<string, PrepGroup>();
     for (const item of filtered) {
-      if (item.bomId) {
-        const bom = bomItems.find((b) => b.id === item.bomId);
+      if (item.sourceType === 'bom') {
+        const bom = bomItems.find((b) => b.id === item.sourceId);
         if (!bom) continue;
-        const key = `bom:${item.bomId}`;
+        const key = `bom:${item.sourceId}`;
         const existing = groups.get(key) ?? {
           key,
           kind: 'bom' as const,
           label: bom.name,
-          unit: bom.unit,
+          unit: bom.outputUnit,
           stockQty: null,
           bomYield: Number(bom.yieldQuantity ?? 1),
           items: [],
@@ -126,9 +126,9 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
         existing.items.push(item);
         groups.set(key, existing);
       } else {
-        const ing = inventory.find((i) => i.id === item.ingredientId);
+        const ing = inventory.find((i) => i.id === item.sourceId);
         if (!ing) continue;
-        const key = `ing:${item.ingredientId}`;
+        const key = `ing:${item.sourceId}`;
         const existing = groups.get(key) ?? {
           key,
           kind: 'ingredient' as const,
@@ -189,7 +189,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
     const bom = bomItems.find((b) => b.id === bomId);
     if (bom) {
       setCreateName((prev) => (prev.trim() ? prev : bom.name));
-      setCreateUnit(bom.unit);
+      setCreateUnit(bom.outputUnit);
       setCreateQtyPerUnit('1');
     }
   };
@@ -252,10 +252,15 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
       setCreating(true);
       try {
         await createPrepItem({
-          ingredientId: createIngredientId,
           name: createName.trim(),
-          quantityPerUnit: finalQty,
-          unit: finalUnit,
+          source: {
+            sourceType: 'ingredient',
+            sourceId: createIngredientId,
+            inputQuantity: finalQty,
+            inputUnit: finalUnit as PrepItem['inputUnit'],
+            outputQuantity: 1,
+            outputUnit: ing.unit as PrepItem['outputUnit'],
+          },
         });
         resetCreateModal();
         await onRefresh?.();
@@ -275,10 +280,15 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
     setCreating(true);
     try {
       await createPrepItem({
-        bomId: createBomId,
         name: createName.trim(),
-        quantityPerUnit: 1,
-        unit: createUnit,
+        source: {
+          sourceType: 'bom',
+          sourceId: createBomId,
+          inputQuantity: 1,
+          inputUnit: createUnit as PrepItem['inputUnit'],
+          outputQuantity: 1,
+          outputUnit: createUnit as PrepItem['outputUnit'],
+        },
       });
       resetCreateModal();
       await onRefresh?.();
@@ -305,8 +315,8 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
   const openEditModal = (item: PrepItem) => {
     setEditingItem(item);
     setEditName(item.name);
-    setEditQtyPerUnit(String(item.quantityPerUnit));
-    setEditUnit(item.unit);
+    setEditQtyPerUnit(String(item.inputQuantity));
+    setEditUnit(item.inputUnit);
   };
 
   const closeEditModal = () => {
@@ -324,8 +334,8 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
     try {
       await updatePrepItem(editingItem.id, {
         name: editName.trim(),
-        quantityPerUnit: qtyPerUnit,
-        unit: editUnit,
+        inputQuantity: qtyPerUnit,
+        inputUnit: editUnit as PrepItem['inputUnit'],
       });
       closeEditModal();
       await onRefresh?.();
@@ -411,8 +421,8 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
                 {group.items.map((item) => {
                   const qty = Number(quantities[item.id] || '0');
                   const isPreparing = preparingId === item.id;
-                  const isBomItem = !!item.bomId;
-                  const needed = !isBomItem && item.quantityPerUnit > 0 ? qty * item.quantityPerUnit : 0;
+                  const isBomItem = item.sourceType === 'bom';
+                  const needed = !isBomItem && item.inputQuantity > 0 ? qty * item.inputQuantity : 0;
                   const hasStock = !isBomItem && group.stockQty != null ? group.stockQty >= needed : false;
                   const showCheck = qty > 0 && !isBomItem;
 
@@ -451,7 +461,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
                                 {group.stockQty} {group.unit}
                               </p>
                               <p className="text-[10px] text-text-muted">
-                                1 {item.unit} = {item.quantityPerUnit} {group.unit}
+                                1 {item.outputUnit} = {item.inputQuantity} {item.inputUnit}
                               </p>
                             </>
                           )}
@@ -463,7 +473,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
                             Stock Lavorato
                           </p>
                           <p className="text-sm font-bold text-secondary">
-                            {item.stockQuantity} {item.unit}
+                            {item.stockQuantity} {item.outputUnit}
                           </p>
                         </div>
 
@@ -583,7 +593,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
             <>
               {/* Existing variants for selected ingredient */}
               {createIngredientId && (() => {
-                const existingVariants = prepItems.filter((i) => i.ingredientId === createIngredientId);
+                const existingVariants = prepItems.filter((i) => i.sourceType === 'ingredient' && i.sourceId === createIngredientId);
                 if (existingVariants.length === 0) return null;
                 return (
                   <div className="bg-bg rounded-lg border border-border p-3">
@@ -594,7 +604,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
                       {existingVariants.map((v) => (
                         <div key={v.id} className="flex items-center justify-between text-sm">
                           <span className="font-medium text-secondary">{v.name}</span>
-                          <span className="text-text-muted">{v.stockQuantity} {v.unit}</span>
+                          <span className="text-text-muted">{v.stockQuantity} {v.outputUnit}</span>
                         </div>
                       ))}
                     </div>
@@ -716,7 +726,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
                     id={id}
                     ariaLabel="Ricetta BoM"
                     items={bomItems.filter((b) => b.isActive)}
-                    getLabel={(b) => `${b.name} — resa ${b.yieldQuantity} ${b.unit} (${b.components.length} componenti)`}
+                    getLabel={(b) => `${b.name} — resa ${b.yieldQuantity} ${b.outputUnit} (${b.components.length} componenti)`}
                     getValue={(b) => b.id}
                     selectedValue={createBomId}
                     onSelect={handleBomSelect}

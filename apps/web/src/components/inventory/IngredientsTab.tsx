@@ -65,8 +65,6 @@ export default function IngredientsTab({
   const [newIngredientThreshold, setNewIngredientThreshold] = useState('0');
   const [newIngredientUnitCost, setNewIngredientUnitCost] = useState('0');
   const [newIngredientSalePrice, setNewIngredientSalePrice] = useState('');
-  const [newIngredientIsContainer, setNewIngredientIsContainer] = useState(false);
-  const [ingredientEditIsContainer, setIngredientEditIsContainer] = useState(false);
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [filterLowStock, setFilterLowStock] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -195,7 +193,6 @@ export default function IngredientsTab({
       || ingredientEditThreshold !== String(selectedIngredient.minThreshold)
       || ingredientEditUnitCost !== String(selectedIngredient.unitCost ?? 0)
       || ingredientEditSalePrice !== (selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '')
-      || ingredientEditIsContainer !== (selectedIngredient.isContainer === 1)
     );
   }, [
     selectedIngredient,
@@ -206,7 +203,6 @@ export default function IngredientsTab({
     ingredientEditThreshold,
     ingredientEditUnitCost,
     ingredientEditSalePrice,
-    ingredientEditIsContainer,
   ]);
 
   useEffect(() => {
@@ -225,7 +221,6 @@ export default function IngredientsTab({
     setIngredientEditThreshold(String(selectedIngredient.minThreshold));
     setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));
     setIngredientEditSalePrice(selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '');
-    setIngredientEditIsContainer(selectedIngredient.isContainer === 1);
 
     // Load unit conversions for this ingredient
     void fetchUnitConversions(selectedIngredient.id).then(setConversions);
@@ -293,7 +288,6 @@ export default function IngredientsTab({
         categoryId: newIngredientCategoryId || undefined,
         unitCost,
         salePrice: newIngredientSalePrice ? Number(newIngredientSalePrice) : null,
-        isContainer: newIngredientIsContainer ? 1 : 0,
       });
       setNewIngredientName('');
       setNewIngredientQty('0');
@@ -301,7 +295,6 @@ export default function IngredientsTab({
       setNewIngredientUnitCost('0');
       setNewIngredientSalePrice('');
       setNewIngredientCategoryId('');
-      setNewIngredientIsContainer(false);
       setCreateErrors({});
       return true;
     } catch {
@@ -334,7 +327,6 @@ export default function IngredientsTab({
         categoryId: ingredientEditCategoryId || undefined,
         unitCost,
         salePrice: ingredientEditSalePrice ? Number(ingredientEditSalePrice) : null,
-        isContainer: ingredientEditIsContainer ? 1 : 0,
       });
       void onRefresh?.();
     } catch (err) {
@@ -345,12 +337,6 @@ export default function IngredientsTab({
   const toggleIngredientActive = async (ingredient: Ingredient) => {
     if (!onUpdate) return;
     await onUpdate(ingredient.id, { isActive: !ingredient.isActive });
-    void onRefresh?.();
-  };
-
-  const toggleContainer = async (ingredient: Ingredient) => {
-    if (!onUpdate) return;
-    await onUpdate(ingredient.id, { isContainer: ingredient.isContainer === 1 ? 0 : 1 });
     void onRefresh?.();
   };
 
@@ -587,16 +573,6 @@ export default function IngredientsTab({
               />
             )}
           </Field>
-
-          <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={newIngredientIsContainer}
-              onChange={(e) => setNewIngredientIsContainer(e.target.checked)}
-              className="accent-accent"
-            />
-            Contenitore
-          </label>
         </div>
       </Modal>
 
@@ -781,23 +757,6 @@ export default function IngredientsTab({
                               )}
                               <span className={item.isActive ? 'text-accent' : 'text-text-muted'}>
                                 {item.isActive ? 'Si' : 'No'}
-                              </span>
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Contenitore</p>
-                            <button
-                              onClick={() => void toggleContainer(item)}
-                              className="inline-flex items-center gap-1 text-xs font-bold"
-                              aria-label={`Contenitore: ${item.isContainer === 1 ? 'Si' : 'No'}`}
-                            >
-                              {item.isContainer === 1 ? (
-                                <ToggleRight size={18} className="text-accent" />
-                              ) : (
-                                <ToggleLeft size={18} className="text-text-muted" />
-                              )}
-                              <span className={item.isContainer === 1 ? 'text-accent' : 'text-text-muted'}>
-                                {item.isContainer === 1 ? 'Si' : 'No'}
                               </span>
                             </button>
                           </div>
@@ -1047,15 +1006,6 @@ export default function IngredientsTab({
               label="Categoria"
             />
           </div>
-          <label className="flex items-center gap-2 px-3 py-2 rounded border border-border text-xs font-bold cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={ingredientEditIsContainer}
-              onChange={(e) => setIngredientEditIsContainer(e.target.checked)}
-              className="accent-accent"
-            />
-            Container
-          </label>
           <div className="md:col-span-2 flex items-center gap-3 pt-2 border-t border-border">
             <span className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</span>
             {selectedIngredient && (

@@ -7,14 +7,14 @@ import type { Ingredient, BomItem, PrepItem, MenuRecipeComponent } from '@gustop
 // ─── Mock data ──────────────────────────────────────────────────────────────
 
 const mockInventory: Ingredient[] = [
-  { id: 'ing-1', name: 'Pomodoro', unit: 'kg', quantity: 10, unitCost: 3.5, isActive: true, isContainer: 0, categoryId: 'cat-1', minThreshold: 1, sku: '', salePrice: 0 },
-  { id: 'ing-2', name: 'Mozzarella', unit: 'kg', quantity: 5, unitCost: 12, isActive: true, isContainer: 0, categoryId: 'cat-1', minThreshold: 1, sku: '', salePrice: 0 },
-  { id: 'ing-container', name: 'Bun classico', unit: 'pz', quantity: 30, unitCost: 0.5, isActive: true, isContainer: 1, categoryId: 'cat-1', minThreshold: 5, sku: '', salePrice: 0 },
+  { id: 'ing-1', name: 'Pomodoro', unit: 'kg', quantity: 10, unitCost: 3.5, isActive: true, categoryId: 'cat-1', minThreshold: 1, sku: '', salePrice: 0 },
+  { id: 'ing-2', name: 'Mozzarella', unit: 'kg', quantity: 5, unitCost: 12, isActive: true, categoryId: 'cat-1', minThreshold: 1, sku: '', salePrice: 0 },
+  { id: 'ing-container', name: 'Bun classico', unit: 'pz', quantity: 30, unitCost: 0.5, isActive: true, categoryId: 'cat-1', minThreshold: 5, sku: '', salePrice: 0 },
 ] as Ingredient[];
 
 const mockBomItems: BomItem[] = [
   {
-    id: 'bom-1', name: 'Impasto Pizza', unit: 'kg', yieldQuantity: 5, isActive: true, categoryId: 'cat-bom',
+    id: 'bom-1', name: 'Impasto Pizza', outputUnit: 'kg', yieldQuantity: 5, isActive: true, categoryId: 'cat-bom',
     components: [
       { id: 'bc-1', componentType: 'ingredient', componentId: 'ing-1', quantity: 2, unit: 'kg' },
       { id: 'bc-2', componentType: 'ingredient', componentId: 'ing-2', quantity: 1, unit: 'kg' },

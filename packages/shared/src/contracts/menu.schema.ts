@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { printAreaSchema, bomComponentTypeSchema } from "../contracts/shared.schema";
+import { canonicalMenuComponentSchema } from "../contracts/inventory-workflow.schema";
 
 // ─── Category ───────────────────────────────────────────────────────────────
 
@@ -34,6 +35,7 @@ export const categoryUpdateRequestSchema = z.object({
 export const categoryModifierPoolOptionSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
+  inventoryItemId: z.string().optional(),
   priceDelta: z.number().default(0),
   sortOrder: z.number().int().default(0),
 });
@@ -182,7 +184,7 @@ export const menuItemUpdateRequestSchema = z.object({
   category: z.string().min(2).optional(),
   categoryId: z.string().optional(),
   printAreas: z.array(printAreaSchema).optional(),
-  modifiers: z.array(menuItemModifierSchema.omit({ id: true, name: true, effectivePrice: true })).optional(),
+  components: z.array(canonicalMenuComponentSchema).optional(),
   modifierGroups: z.array(modifierGroupInputSchema).optional(),
 });
 

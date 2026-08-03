@@ -21,7 +21,6 @@ import type {
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { RolesGuard } from "./auth/roles.guard";
 import { Roles } from "./auth/roles.decorator";
-import { AppRepository } from "./repository/app.repository";
 import { InventoryRepository } from "./repository/inventory.repository";
 import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
 import { RequiresModule } from "./tenant/requires-module.decorator";
@@ -32,7 +31,6 @@ import { RequiresModule } from "./tenant/requires-module.decorator";
 @RequiresModule("inventory")
 export class BomController {
   constructor(
-    @Inject(AppRepository) private readonly appRepository: AppRepository,
     @Inject(InventoryRepository) private readonly inventoryRepo: InventoryRepository,
   ) {}
 
@@ -58,7 +56,7 @@ export class BomController {
 
   @Post(":id/components")
   async replaceComponents(@Param("id") id: string, @Body() payload: BomUpsertComponentsRequest): Promise<BomItem> {
-    const updated = await this.appRepository.replaceBomComponents(id, payload);
+    const updated = await this.inventoryRepo.replaceBomComponents(id, payload);
     if (!updated) {
       throw new NotFoundException("BoM item not found");
     }
