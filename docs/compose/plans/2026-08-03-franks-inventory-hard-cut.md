@@ -44,7 +44,7 @@ There is no automatic fallback from `prep` to its BoM, or from `bom` to a prep t
 
 - A menu may use ingredients, BoMs, and preps.
 - A BoM may exist without a prep/materialized stock.
-- A prep must be produced from a BoM.
+- A prep is a stockable materialization with an explicit source: raw ingredient or BoM, plus an input/output ratio.
 - A BoM may contain ingredients, other BoMs, and preps.
 - Quantities are normalized and persisted in the referenced component's canonical/output unit.
 - Sale and production resolve explicit component references; they never guess the user's intent.
@@ -73,7 +73,7 @@ There is no automatic fallback from `prep` to its BoM, or from `bom` to a prep t
 - Preserving old Franks menu/ingredient/prep rows.
 - Supporting old API payloads or old recipe endpoints.
 - Keeping shadow BoMs as a compatibility mechanism.
-- Automatically producing missing preps during sale.
+- Silently producing missing preps during sale. If an operator explicitly confirms an authorized override, production may recursively materialize the missing prep chain in the same transaction.
 - Automatically switching a `bom` reference to a `prep` reference.
 - Migrating old catalog rows in place.
 
@@ -152,14 +152,15 @@ A prep is an optional stockable materialization of a BoM.
 
 ```text
 Prep Mix A+B
-- source_bom: Mix A+B
+- source: BoM Mix A+B
+- input/output ratio: 1 kg → 1 kg
 - output unit: kg
 - stock: 10 kg
 ```
 
 A prep has exactly one production source. It must not have an alternative ingredient recipe or a second component table.
 
-The current fields `ingredient_id`, `bom_id` alternative semantics, `quantity_per_unit`, and `prep_item_components` are replaced by one explicit `source_bom_id` relationship.
+The current fields `ingredient_id`, `bom_id` alternative semantics, `quantity_per_unit`, and `prep_item_components` are replaced by one explicit source record: `source_type`, `source_id`, `input_quantity`, `input_unit`, `output_quantity`, `output_unit`. A prep can therefore be produced from raw ingredient or BoM without an artificial shadow BoM.
 
 ### 2.4 Menu components
 
@@ -278,26 +279,29 @@ The service must also reject cycles before saving a changed BoM. SQL constraints
 CREATE TABLE prep_items (
   id              text PRIMARY KEY,
   tenant_id       text NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  source_bom_id   text NOT NULL REFERENCES bom_items(id) ON DELETE RESTRICT,
+  source_type     text NOT NULL CHECK (source_type IN ('ingredient','bom')),
+  source_id       text NOT NULL,
   name            text NOT NULL,
+  input_quantity  numeric(14,6) NOT NULL CHECK (input_quantity > 0),
+  input_unit      text NOT NULL CHECK (input_unit IN ('mg','g','kg','ml','L','pz')),
+  output_quantity numeric(14,6) NOT NULL CHECK (output_quantity > 0),
   output_unit     text NOT NULL CHECK (output_unit IN ('mg','g','kg','ml','L','pz')),
   stock_quantity  numeric(14,6) NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
   is_active       integer NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, name),
   UNIQUE (tenant_id, name)
 );
 
 CREATE INDEX prep_items_lookup_idx
-  ON prep_items (tenant_id, source_bom_id);
+  ON prep_items (tenant_id, source_type, source_id);
 ```
 
-There is intentionally no uniqueness constraint on `source_bom_id`: the same formula may be materialized into more than one named stock identity when the operation needs it. The prep name is the stock identity and must remain unique per tenant.
+There is intentionally no uniqueness constraint on `source_id`: the same raw ingredient or formula may be materialized into more than one named stock identity. The prep name is the stock identity and must remain unique per tenant.
 
-The service must validate `prep_items.output_unit = bom_items.output_unit` on create/update. Once a prep exists for a BoM, the BoM output unit and yield are immutable unless a single transaction explicitly recalculates/approves every dependent prep and stock impact. The first hard-cut implementation will simply reject changes to a BoM's output unit or yield while materialized preps exist.
+The service must validate the source/output dimensions and ratio on create/update. Once a prep exists for a BoM, that BoM's output unit and yield are immutable; the first hard-cut implementation rejects changes while materialized preps exist. The same rule applies to a prep's input/output ratio after stock or production exists.
 
-It must also validate the complete dependency graph `bom → prep → source_bom` so an indirect cycle cannot be introduced.
+It must also validate the complete dependency graph `bom → prep → source_bom` so an indirect cycle cannot be introduced. A raw-ingredient source is a terminal production input and adds no graph edge.
 
 ### 3.5 Menu items and one component table
 
@@ -360,7 +364,7 @@ CREATE TABLE prep_production_impacts (
 );
 ```
 
-The production engine resolves `bom` nodes recursively while producing a prep. A `prep` node consumes existing prep stock; it is not automatically produced.
+The production engine resolves `bom` nodes recursively while producing a prep. A `prep` node consumes existing prep stock by default; when a sale requests a prep with insufficient stock, chef/waiter confirmation may authorize recursive materialization of missing prep nodes in the same transaction. The operator ID and confirmation are audited.
 
 ### 3.7 Order stock impacts
 
@@ -499,13 +503,13 @@ The reset must report counts deleted per table and refuse to run if the tenant I
 The new import is deterministic and re-runnable only after reset. Because BoMs may reference other BoMs and preps may reference BoMs, use a two-pass graph import:
 
 1. catalog categories;
-2. ingredients with canonical units and opening stock;
+2. ingredients with canonical units and `opening_balance` movements; prep opening stock is also imported as an `opening_balance`, never as a historical production run;
 3. create BoM headers and prep headers, collecting stable external keys;
-4. resolve and insert all BoM components and prep `source_bom_id` references;
-5. validate the complete graph, including indirect `bom → prep → source_bom` cycles;
+4. resolve and insert all BoM components and prep `source_type/source_id` plus input/output ratios;
+5. validate the complete graph, including indirect `bom → prep → source_bom` cycles; raw-ingredient prep sources are terminal edges;
 6. menu items and explicit menu components;
 7. supplier links and purchasing metadata;
-8. optional initial prep stock through production runs, not direct silent stock writes;
+8. optional initial ingredient and prep stock through explicit `opening_balance` movements; do not consume raw inputs or create a historical production run;
 9. final validation report.
 
 Import failures must roll back the entire catalog import. The importer must reject:
@@ -514,7 +518,7 @@ Import failures must roll back the entire catalog import. The importer must reje
 - unit incompatibility;
 - duplicate names within a tenant;
 - recursive cycles;
-- prep references without a source BoM;
+- prep references without a valid raw ingredient or BoM source;
 - menu component quantities that cannot be normalized;
 - active menu components pointing at inactive targets.
 
@@ -534,7 +538,7 @@ Remove from `schema.ts` and the hard-cut database:
 - `prep_item_components`;
 - `prep_items.ingredient_id`;
 - `prep_items.quantity_per_unit`;
-- the old ambiguous `prep_items.bom_id` semantics, replaced by `source_bom_id`;
+- the old ambiguous `prep_items.ingredient_id`, `prep_items.bom_id`, and `quantity_per_unit` semantics, replaced by explicit source type/id and input/output ratio fields;
 - `bom_items.is_pre_batched` and `bom_items.stock_quantity` if present in any environment;
 - `bom_items.is_container` unless separately justified;
 - legacy `menuItemModifiers`, `menuModifierOptions.bomId`, `defaultContainerId`, and category-pool inventory references from the Franks catalog path;
@@ -558,7 +562,7 @@ Keep and normalize:
 - delete `shadowBomName`, `findShadowBoMId`, `syncShadowBoM`;
 - remove all reads/writes to the three legacy menu recipe tables;
 - remove all reads/writes to `prepItemComponents`;
-- replace prep creation/update with `sourceBomId` only;
+- replace prep creation/update with explicit `sourceType/sourceId` and input/output ratio;
 - make BoM component validation traverse both direct BoM edges and prep source-BOM edges;
 - validate recursive BoM references and target units in one service;
 - make `createMenuProduct` the only menu creation path for inventory mode;
@@ -597,7 +601,7 @@ componentType: 'ingredient' | 'bom' | 'prep'
 Keep separate contracts for:
 
 - creating/updating a BoM formula;
-- creating a materialized prep from a BoM;
+- creating a materialized prep from a raw ingredient or BoM with an input/output ratio;
 - producing prep quantity;
 - creating a menu product atomically.
 
@@ -608,7 +612,7 @@ Keep separate contracts for:
 - remove separate persistence from `CreateIngredientInlineModal` and `CreatePrepInlineModal`;
 - inline ingredient creation may produce drafts passed to the atomic menu-product request;
 - inline BoM creation is not part of the first menu transaction: BoMs are authored and validated in the dedicated formula workflow before they can be selected by a menu product;
-- inline prep creation is allowed only when it references an existing validated source BoM in the same atomic menu request;
+- inline prep creation is allowed only when it references a raw ingredient or existing validated BoM and includes an input/output ratio in the same atomic menu request;
 - remove shadow-BoM creation from `FoodProductModal`;
 - make the component selector expose ingredient, BoM and prep explicitly;
 - show the resolved canonical unit beside every component;
@@ -651,7 +655,7 @@ Before deleting or changing the active/unit state of a catalog object, the API m
 
 ```text
 ingredient → bom_components / menu_item_components
-bom        → bom_components / menu_item_components / prep_items.source_bom_id
+bom        → bom_components / menu_item_components / prep source edges where `source_type = 'bom'`
 prep       → bom_components / menu_item_components
 ```
 
@@ -688,9 +692,9 @@ The only allowed matches should be historical documentation explicitly marked as
 - [ ] Define one target-aware normalization service for ingredient, BoM and prep component edges.
 - [ ] Define recursive resolver input/output types.
 - [ ] Define production and order impact response contracts.
-- [ ] Add pure tests for unit normalization and cycle detection.
+- [ ] Add pure shared tests for target-aware unit normalization, incompatible dimensions, and direct/mixed BOM-prep cycle detection.
 
-**Exit gate:** Contracts express `ingredient | bom | prep`; no menu contract uses the three legacy recipe shapes.
+**Exit gate:** The new menu-product contract requires a canonical target unit and expresses `ingredient | bom | prep`; legacy prep payloads remain isolated behind the old endpoint until Phase 2/4 removes that endpoint.
 
 ### Phase 2 — Schema hard cut
 
@@ -706,11 +710,11 @@ The only allowed matches should be historical documentation explicitly marked as
 
 ### Phase 3 — Recursive domain engine
 
-- [ ] Implement a single recursive resolver for `ingredient | bom | prep`.
+- [ ] Implement a single recursive resolver for `ingredient | bom | prep` and call the complete graph guard from every BoM/prep create/update write.
 - [ ] Resolve quantities against each target's canonical/output unit.
 - [ ] Detect cycles, inactive targets, missing targets and incompatible units.
-- [ ] Implement production from `prep.source_bom_id`.
-- [ ] Ensure production consumes prep stock for explicit `prep` nodes and expands explicit `bom` nodes.
+- [ ] Implement production from prep `source_type/source_id` and input/output ratio; raw ingredient sources consume raw stock, BoM sources resolve recursively.
+- [ ] Ensure production consumes prep stock for explicit `prep` nodes and expands explicit `bom` nodes; allow authorized recursive auto-production only when a sale explicitly confirms it.
 - [ ] Implement final stock impact collection for menu sale.
 - [ ] Persist production and order impacts transactionally.
 
@@ -720,11 +724,11 @@ The only allowed matches should be historical documentation explicitly marked as
 
 - [ ] Rewrite `createMenuProduct` to create inline ingredients, menu item and canonical components in one transaction.
 - [ ] Keep BoM authoring as a separate explicit formula workflow in the first hard-cut release. The menu transaction references an existing, already validated BoM or an existing prep; it does not create inline BoM headers.
-- [ ] Remove `inlinePreps` from the first menu payload unless the prep is created atomically with a pre-existing source BoM. Do not allow a menu save to create an unvalidated formula graph.
+- [ ] Allow `inlinePreps` only for an explicit raw-ingredient or existing validated BoM source with input/output ratio; do not create inline BoM headers or unvalidated formula graphs.
 - [ ] Normalize all component quantities before persistence.
 - [ ] Remove all shadow-BoM logic.
 - [ ] Remove legacy menu endpoints and repository branches.
-- [ ] Remove legacy modifier/container stock paths from the Franks catalog, or rewrite them as explicit canonical component edges before enabling the module.
+- [ ] Model modifiers as canonical component deltas: `add` or `remove` an explicit ingredient, BoM or prep quantity; represent replacement as remove + add, never a third action.
 - [ ] Replace menu admin/public mapping with canonical-only reads.
 - [ ] Rework menu edit to atomically replace canonical components.
 
@@ -802,7 +806,8 @@ Prep:
 
 ```text
 Patty Burger
-source_bom: Patty formula
+source: Patty formula BoM
+input/output ratio: 1 pz → 1 pz
 stock: 20 pz
 ```
 
@@ -867,7 +872,8 @@ Create:
 
 ```text
 Prep Salsa
-source_bom: Salsa espressa
+source: Salsa espressa BoM
+input/output ratio: 1 kg → 1 kg
 stock: 5 kg
 ```
 

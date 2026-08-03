@@ -258,11 +258,7 @@ export default function ModifierModal({
         const option = group.options.find((o: ModifierOption) => o.id === optionId);
         if (!option) continue;
         for (const override of option.ingredientOverrides ?? []) {
-          if (override.action === 'replace') {
-            overrides.push({ ingredientId: override.ingredientId, action: 'remove' });
-          } else {
-            overrides.push({ ingredientId: override.ingredientId, action: override.action as 'add' | 'remove' });
-          }
+          overrides.push({ ingredientId: override.ingredientId, action: override.action as 'add' | 'remove' });
         }
       }
     }

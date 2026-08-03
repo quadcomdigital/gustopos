@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { canonicalUnitSchema, prepSourceTypeSchema } from "./inventory-workflow.schema";
 
 // ─── Prep Items ────────────────────────────────────────────────────────
 
@@ -18,21 +19,26 @@ export const preparePrepItemResponseSchema = z.object({
 export const prepItemSchema = z.object({
   id: z.string(),
   tenantId: z.string(),
-  // Exactly one of ingredientId / bomId is set: ingredientId for the classic
-  // single-ingredient variant, bomId for a variant whose recipe is a BoM.
-  ingredientId: z.string().nullable(),
-  bomId: z.string().nullable(),
+  sourceType: prepSourceTypeSchema,
+  sourceId: z.string(),
   name: z.string(),
-  quantityPerUnit: z.number(),
-  unit: z.string(),
+  inputQuantity: z.number(),
+  inputUnit: canonicalUnitSchema,
+  outputQuantity: z.number(),
+  outputUnit: canonicalUnitSchema,
   stockQuantity: z.number(),
+  isActive: z.boolean(),
   createdAt: z.string(),
+  updatedAt: z.string(),
 });
 
 export const prepItemUpdateRequestSchema = z.object({
   name: z.string().optional(),
-  quantityPerUnit: z.number().positive().optional(),
-  unit: z.string().optional(),
+  inputQuantity: z.number().positive().optional(),
+  inputUnit: canonicalUnitSchema.optional(),
+  outputQuantity: z.number().positive().optional(),
+  outputUnit: canonicalUnitSchema.optional(),
+  isActive: z.boolean().optional(),
 });
 
 // ─── Unit Conversion ───────────────────────────────────────────────────

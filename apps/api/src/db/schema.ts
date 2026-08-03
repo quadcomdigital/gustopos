@@ -42,17 +42,18 @@ export const inventory = pgTable(
   "inventory",
   {
     id: text("id").primaryKey(),
-    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     sku: text("sku"),
-    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull(),
     unit: text("unit").notNull(),
-    minThreshold: numeric("min_threshold", { precision: 12, scale: 3 }).notNull(),
+    minThreshold: numeric("min_threshold", { precision: 14, scale: 6 }).notNull(),
     categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
-    unitCost: numeric("unit_cost", { precision: 12, scale: 3 }).notNull().default("0"),
-    salePrice: numeric("sale_price", { precision: 12, scale: 3 }),
+    unitCost: numeric("unit_cost", { precision: 14, scale: 6 }).notNull().default("0"),
+    salePrice: numeric("sale_price", { precision: 14, scale: 6 }),
     isActive: integer("is_active").notNull().default(1),
-    isContainer: integer("is_container").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("inventory_tenant_idx").on(t.tenantId),
@@ -61,69 +62,29 @@ export const inventory = pgTable(
   ],
 );
 
-export const menuItems = pgTable("menu_items", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  name: text("name").notNull(),
-  price: numeric("price", { precision: 12, scale: 2 }).notNull(),
-  category: text("category").notNull(),
-  categoryId: text("category_id"),
-  printAreas: text("print_areas").notNull().default('["kitchen"]'),
-  isActive: integer("is_active").notNull().default(1),
-  defaultContainerId: text("default_container_id"),
-});
-
-export const menuItemIngredients = pgTable(
-  "menu_item_ingredients",
+export const menuItems = pgTable(
+  "menu_items",
   {
-    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-    menuItemId: text("menu_item_id")
-      .notNull()
-      .references(() => menuItems.id, { onDelete: "cascade" }),
-    ingredientId: text("ingredient_id")
-      .notNull()
-      .references(() => inventory.id, { onDelete: "cascade" }),
-    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull().default("1"),
-    unit: text("unit").notNull().default("pz"),
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    price: numeric("price", { precision: 14, scale: 2 }).notNull(),
+    category: text("category").notNull(),
+    categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
+    printAreas: text("print_areas").notNull().default('["kitchen"]'),
+    isActive: integer("is_active").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => ({
-    pk: primaryKey({ columns: [table.menuItemId, table.ingredientId] }),
-  }),
+  (t) => [
+    uniqueIndex("menu_items_tenant_name_idx").on(t.tenantId, t.name),
+    index("menu_items_tenant_idx").on(t.tenantId),
+  ],
 );
 
-export const menuItemBomRequirements = pgTable(
-  "menu_item_bom_requirements",
-  {
-    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-    menuItemId: text("menu_item_id")
-      .notNull()
-      .references(() => menuItems.id, { onDelete: "cascade" }),
-    bomId: text("bom_id")
-      .notNull()
-      .references(() => bomItems.id, { onDelete: "cascade" }),
-    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
-    unit: text("unit").notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.menuItemId, table.bomId] }),
-  }),
-);
 
-export const menuItemModifiers = pgTable("menu_item_modifiers", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  menuItemId: text("menu_item_id")
-    .notNull()
-    .references(() => menuItems.id, { onDelete: "cascade" }),
-  inventoryItemId: text("inventory_item_id")
-    .notNull()
-    .references(() => inventory.id, { onDelete: "cascade" }),
-  priceDelta: numeric("price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (table) => ({
-  uniq: primaryKey({ columns: [table.menuItemId, table.inventoryItemId] }),
-}));
+
+
 
 export const menuModifierGroups = pgTable("menu_item_modifier_groups", {
   id: text("id").primaryKey(),
@@ -147,7 +108,6 @@ export const menuModifierOptions = pgTable("menu_item_modifier_options", {
     .references(() => menuModifierGroups.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   inventoryItemId: text("inventory_item_id").references(() => inventory.id, { onDelete: "set null" }),
-  bomId: text("bom_id").references(() => bomItems.id, { onDelete: "set null" }),
   priceDelta: numeric("price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
   isDefault: integer("is_default").notNull().default(0),
   isActive: integer("is_active").notNull().default(1),
@@ -201,28 +161,44 @@ export const categoryModifierPoolCategories = pgTable("category_modifier_pool_ca
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export const bomItems = pgTable("bom_items", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  name: text("name").notNull(),
-  unit: text("unit").notNull(),
-  yieldQuantity: numeric("yield_quantity", { precision: 12, scale: 3 }).notNull(),
-  categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
-  isActive: integer("is_active").notNull().default(1),
-  isContainer: integer("is_container").notNull().default(0),
-});
+export const bomItems = pgTable(
+  "bom_items",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    outputUnit: text("output_unit").notNull(),
+    yieldQuantity: numeric("yield_quantity", { precision: 14, scale: 6 }).notNull(),
+    categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
+    isActive: integer("is_active").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("bom_items_tenant_name_idx").on(t.tenantId, t.name),
+    index("bom_items_tenant_idx").on(t.tenantId),
+  ],
+);
 
-export const bomComponents = pgTable("bom_components", {
-  id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  bomId: text("bom_id")
-    .notNull()
-    .references(() => bomItems.id, { onDelete: "cascade" }),
-  componentType: text("component_type").notNull(),
-  componentId: text("component_id").notNull(),
-  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
-  unit: text("unit").notNull(),
-});
+export const bomComponents = pgTable(
+  "bom_components",
+  {
+    id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    bomId: text("bom_id")
+      .notNull()
+      .references(() => bomItems.id, { onDelete: "cascade" }),
+    componentType: text("component_type").notNull(),
+    componentId: text("component_id").notNull(),
+    quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull(),
+    unit: text("unit").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("bom_components_tenant_bom_type_id_idx").on(t.tenantId, t.bomId, t.componentType, t.componentId),
+    index("bom_components_tenant_bom_idx").on(t.tenantId, t.bomId),
+  ],
+);
 
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
@@ -964,24 +940,29 @@ export const inventoryAudit = pgTable("inventory_audit", {
   index("inventory_audit_item_idx").on(t.inventoryId),
 ]);
 
-export const prepItems = pgTable("prep_items", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  // Exactly one of ingredient_id / bom_id is set. ingredient_id keeps the
-  // original single-ingredient variants; bom_id links a prep item to a BoM
-  // recipe so preparing it deducts every component of the recipe (Cartoccio).
-  ingredientId: text("ingredient_id").references(() => inventory.id, { onDelete: "cascade" }),
-  bomId: text("bom_id").references(() => bomItems.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  quantityPerUnit: numeric("quantity_per_unit", { precision: 12, scale: 3 }).notNull(),
-  unit: text("unit").notNull(),
-  stockQuantity: numeric("stock_quantity", { precision: 12, scale: 3 }).notNull().default("0"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  index("prep_items_tenant_idx").on(t.tenantId),
-  index("prep_items_ingredient_idx").on(t.ingredientId),
-  index("prep_items_bom_idx").on(t.bomId),
-]);
+export const prepItems = pgTable(
+  "prep_items",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    sourceType: text("source_type").notNull(),
+    sourceId: text("source_id").notNull(),
+    name: text("name").notNull(),
+    inputQuantity: numeric("input_quantity", { precision: 14, scale: 6 }).notNull(),
+    inputUnit: text("input_unit").notNull(),
+    outputQuantity: numeric("output_quantity", { precision: 14, scale: 6 }).notNull(),
+    outputUnit: text("output_unit").notNull(),
+    stockQuantity: numeric("stock_quantity", { precision: 14, scale: 6 }).notNull().default("0"),
+    isActive: integer("is_active").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("prep_items_tenant_name_idx").on(t.tenantId, t.name),
+    index("prep_items_tenant_idx").on(t.tenantId),
+    index("prep_items_tenant_source_idx").on(t.tenantId, t.sourceType, t.sourceId),
+  ],
+);
 
 export const printBridgeOnboardingSecrets = pgTable("print_bridge_onboarding_secrets", {
   id: text("id").primaryKey(),
@@ -1004,88 +985,115 @@ export const printBridgeOnboardingSecrets = pgTable("print_bridge_onboarding_sec
     .where(sql`${t.shortCodeHash} IS NOT NULL`),
 ]);
 
-export const menuItemPrepRequirements = pgTable("menu_item_prep_requirements", {
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  menuItemId: text("menu_item_id")
-    .notNull()
-    .references(() => menuItems.id, { onDelete: "cascade" }),
-  prepItemId: text("prep_item_id")
-    .notNull()
-    .references(() => prepItems.id, { onDelete: "cascade" }),
-  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull().default("1"),
-}, (t) => [
-  primaryKey({ columns: [t.menuItemId, t.prepItemId] }),
-  index("menu_item_prep_requirements_tenant_idx").on(t.tenantId),
-]);
+
 
 /**
- * Canonical menu-first recipe edges. These replace the three parallel menu
- * recipe tables once the hard-cut migration is complete. Quantities are
- * always expressed in the referenced component's canonical unit.
+ * Canonical menu-first recipe edges. Replaces the three legacy menu recipe
+ * tables. Quantities are always expressed in the referenced component's
+ * canonical/output unit.
  */
-export const menuItemComponents = pgTable("menu_item_components", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  menuItemId: text("menu_item_id")
-    .notNull()
-    .references(() => menuItems.id, { onDelete: "cascade" }),
-  componentType: text("component_type").notNull(),
-  componentId: text("component_id").notNull(),
-  quantity: numeric("quantity", { precision: 12, scale: 6 }).notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [
-  uniqueIndex("menu_item_components_unique_idx").on(t.tenantId, t.menuItemId, t.componentType, t.componentId),
-  index("menu_item_components_menu_idx").on(t.tenantId, t.menuItemId),
-]);
+export const menuItemComponents = pgTable(
+  "menu_item_components",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    menuItemId: text("menu_item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    componentType: text("component_type").notNull(),
+    componentId: text("component_id").notNull(),
+    quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull(),
+    unit: text("unit").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("menu_item_components_unique_idx").on(t.tenantId, t.menuItemId, t.componentType, t.componentId),
+    index("menu_item_components_menu_idx").on(t.tenantId, t.menuItemId),
+  ],
+);
 
-/** Ingredient-only recipe edges used to produce reusable prep stock. */
-export const prepItemComponents = pgTable("prep_item_components", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  prepItemId: text("prep_item_id")
-    .notNull()
-    .references(() => prepItems.id, { onDelete: "cascade" }),
-  ingredientId: text("ingredient_id")
-    .notNull()
-    .references(() => inventory.id, { onDelete: "restrict" }),
-  quantity: numeric("quantity", { precision: 12, scale: 6 }).notNull(),
-}, (t) => [
-  uniqueIndex("prep_item_components_unique_idx").on(t.tenantId, t.prepItemId, t.ingredientId),
-  index("prep_item_components_prep_idx").on(t.tenantId, t.prepItemId),
-]);
+
 
 /** Immutable stock effect captured when an order is created. */
-export const orderStockImpacts = pgTable("order_stock_impacts", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  orderId: text("order_id")
-    .notNull()
-    .references(() => orders.id, { onDelete: "cascade" }),
-  orderItemId: integer("order_item_id")
-    .notNull()
-    .references(() => orderItems.id, { onDelete: "cascade" }),
-  componentType: text("component_type").notNull(),
-  componentId: text("component_id").notNull(),
-  quantity: numeric("quantity", { precision: 12, scale: 6 }).notNull(),
-  unit: text("unit").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [
-  index("order_stock_impacts_order_idx").on(t.tenantId, t.orderId),
-  index("order_stock_impacts_item_idx").on(t.tenantId, t.orderItemId),
-]);
+export const orderStockImpacts = pgTable(
+  "order_stock_impacts",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    orderItemId: integer("order_item_id")
+      .notNull()
+      .references(() => orderItems.id, { onDelete: "cascade" }),
+    componentType: text("component_type").notNull(),
+    componentId: text("component_id").notNull(),
+    quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull(),
+    unit: text("unit").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("order_stock_impacts_tenant_order_idx").on(t.tenantId, t.orderId),
+    index("order_stock_impacts_tenant_item_idx").on(t.tenantId, t.orderItemId),
+  ],
+);
 
-export const inventoryUnitConversions = pgTable("inventory_unit_conversions", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
-  inventoryId: text("inventory_id")
-    .notNull()
-    .references(() => inventory.id, { onDelete: "cascade" }),
-  fromUnit: text("from_unit").notNull(),
-  toUnit: text("to_unit").notNull(),
-  factor: numeric("factor", { precision: 12, scale: 6 }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  index("inventory_unit_conversions_tenant_idx").on(t.tenantId),
-  index("inventory_unit_conversions_inventory_idx").on(t.inventoryId),
-  uniqueIndex("inventory_unit_conversions_unique_idx").on(t.tenantId, t.inventoryId, t.fromUnit),
-]);
+export const inventoryUnitConversions = pgTable(
+  "inventory_unit_conversions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    inventoryId: text("inventory_id")
+      .notNull()
+      .references(() => inventory.id, { onDelete: "cascade" }),
+    fromUnit: text("from_unit").notNull(),
+    toUnit: text("to_unit").notNull(),
+    factor: numeric("factor", { precision: 14, scale: 8 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("inventory_unit_conversions_tenant_idx").on(t.tenantId),
+    index("inventory_unit_conversions_inventory_idx").on(t.inventoryId),
+    uniqueIndex("inventory_unit_conversions_unique_idx").on(t.tenantId, t.inventoryId, t.fromUnit),
+  ],
+);
+
+// ─── Production tracking ─────────────────────────────────────────────────────
+
+/** Audit trail for prep production runs. */
+export const prepProductionRuns = pgTable(
+  "prep_production_runs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    prepId: text("prep_id")
+      .notNull()
+      .references(() => prepItems.id, { onDelete: "restrict" }),
+    quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull(),
+    unit: text("unit").notNull(),
+    staffId: text("staff_id").references(() => staff.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("prep_production_runs_tenant_prep_idx").on(t.tenantId, t.prepId),
+  ],
+);
+
+/** Ingredient/prep consumption during a production run. */
+export const prepProductionImpacts = pgTable(
+  "prep_production_impacts",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+    productionId: text("production_id")
+      .notNull()
+      .references(() => prepProductionRuns.id, { onDelete: "cascade" }),
+    componentType: text("component_type").notNull(),
+    componentId: text("component_id").notNull(),
+    quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull(),
+    unit: text("unit").notNull(),
+  },
+  (t) => [
+    index("prep_production_impacts_tenant_production_idx").on(t.tenantId, t.productionId),
+  ],
+);

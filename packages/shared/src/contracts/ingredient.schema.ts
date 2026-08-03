@@ -8,8 +8,6 @@ export const ingredientSchema = z.object({
   name: z.string(),
   sku: z.string().nullable().optional(),
   quantity: z.number().nonnegative(),
-  // Legacy inventory responses remain string-compatible during the hard cut;
-  // new menu/prep recipe contracts enforce canonical units.
   unit: z.string(),
   minThreshold: z.number().nonnegative(),
   categoryId: z.string().optional(),
@@ -18,7 +16,8 @@ export const ingredientSchema = z.object({
   isActive: z.boolean().default(true),
   supplierName: z.string().nullable().optional(),
   brandName: z.string().nullable().optional(),
-  isContainer: z.number().default(0),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
 });
 
 export const ingredientCreateRequestSchema = z.object({
@@ -30,7 +29,6 @@ export const ingredientCreateRequestSchema = z.object({
   categoryId: z.string().optional(),
   unitCost: z.number().nonnegative().default(0),
   salePrice: z.number().nonnegative().nullable().optional(),
-  isContainer: z.number().optional().default(0),
 });
 
 export const ingredientUpdateRequestSchema = z.object({
@@ -43,7 +41,6 @@ export const ingredientUpdateRequestSchema = z.object({
   unitCost: z.number().nonnegative().optional(),
   salePrice: z.number().nonnegative().nullable().optional(),
   isActive: z.boolean().optional(),
-  isContainer: z.number().optional(),
 });
 
 export const ingredientAdjustRequestSchema = z.object({
@@ -54,11 +51,14 @@ export const ingredientAdjustRequestSchema = z.object({
 // ─── Stock Movements ────────────────────────────────────────────────────────
 
 export const stockMovementTypeSchema = z.enum([
+  "opening_balance",
   "order_deduction",
   "order_reversal",
   "manual_adjustment",
   "purchase_receipt",
+  "prep_production",
   "prep_consumption",
+  "prep_restoration",
 ]);
 
 export const stockMovementSchema = z.object({

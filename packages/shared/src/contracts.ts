@@ -5,7 +5,25 @@ export * from "./contracts/shared.schema";
 
 // ─── Re-export ingredient domain ──────────────────────────────────────────
 import { ingredientSchema } from "./contracts/ingredient.schema";
-export * from "./contracts/ingredient.schema";
+export {
+  ingredientSchema,
+  ingredientCreateRequestSchema,
+  ingredientUpdateRequestSchema,
+  ingredientAdjustRequestSchema,
+  stockMovementSchema,
+  stockMovementsQuerySchema,
+  reorderSuggestionSchema,
+  ingredientCostImportSchema,
+} from "./contracts/ingredient.schema";
+export type {
+  Ingredient,
+  IngredientCreateRequest,
+  IngredientUpdateRequest,
+  IngredientAdjustRequest,
+  StockMovement,
+  StockMovementsQuery,
+  IngredientCostImport,
+} from "./contracts/ingredient.schema";
 
 // ─── Re-export order domain ───────────────────────────────────────────────
 import { orderSchema } from "./contracts/order.schema";

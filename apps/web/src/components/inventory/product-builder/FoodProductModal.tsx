@@ -251,7 +251,7 @@ export default function FoodProductModal({
           categoryId: categoryId || undefined,
           printAreas,
           components: finalRecipe.map((component) => ({
-            componentType: component.componentType as 'ingredient' | 'prep',
+            componentType: component.componentType as 'ingredient' | 'bom' | 'prep',
             componentId: component.componentId,
             quantity: component.quantity,
           })),

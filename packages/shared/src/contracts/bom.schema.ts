@@ -16,11 +16,11 @@ export const bomComponentSchema = z.object({
 export const bomItemSchema = z.object({
   id: z.string(),
   name: z.string(),
-  unit: z.string(),
+  outputUnit: z.string(),
   yieldQuantity: z.number().positive(),
   isActive: z.boolean(),
   categoryId: z.string().optional(),
-  components: z.array(bomComponentSchema),      isContainer: z.number().default(0),
+  components: z.array(bomComponentSchema),
 });
 
 export const bomListResponseSchema = z.array(bomItemSchema);
@@ -29,9 +29,9 @@ export const bomListResponseSchema = z.array(bomItemSchema);
 
 export const bomCreateRequestSchema = z.object({
   name: z.string().min(2),
-  unit: z.string().min(1),
+  outputUnit: z.string().min(1),
   yieldQuantity: z.number().positive(),
-  categoryId: z.string().optional(),      isContainer: z.number().optional().default(0),
+  categoryId: z.string().optional(),
   components: z.array(
     z.object({
       componentType: bomComponentTypeSchema,
@@ -44,10 +44,10 @@ export const bomCreateRequestSchema = z.object({
 
 export const bomUpdateRequestSchema = z.object({
   name: z.string().min(2).optional(),
-  unit: z.string().min(1).optional(),
+  outputUnit: z.string().min(1).optional(),
   yieldQuantity: z.number().positive().optional(),
   categoryId: z.string().optional(),
-  isActive: z.boolean().optional(),      isContainer: z.number().optional(),
+  isActive: z.boolean().optional(),
 });
 
 export const bomUpsertComponentsRequestSchema = z.object({
