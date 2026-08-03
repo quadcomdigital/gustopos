@@ -18,6 +18,11 @@ import {
   categoryScopeSchema,
   menuItemAdminListResponseSchema,
   menuItemAdminSchema,
+  createMenuProductRequestSchema,
+  menuProductResponseSchema,
+  canonicalUnitSchema,
+  type CreateMenuProductRequest,
+  type MenuProductResponse,
   menuItemCreateRequestSchema,
   menuItemUpdateRequestSchema,
   menuItemReplaceRecipeRequestSchema,
@@ -62,6 +67,9 @@ import {
   menuItemIngredients,
   menuItemBomRequirements,
   menuItemPrepRequirements,
+  menuItemComponents,
+  prepItemComponents,
+  orderStockImpacts,
   menuModifierGroups,
   menuModifierOptions,
   menuModifierOptionOverrides,
@@ -190,11 +198,12 @@ export class InventoryRepository {
 
   private async mapMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
     const tenantId = getTenantIdOrDefault();
-    const [menuRows, ingredientRows, bomRows, prepRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows, menuItemModifierRows] = await Promise.all([
+    const [menuRows, ingredientRows, bomRows, prepRows, canonicalRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows, menuItemModifierRows] = await Promise.all([
       db.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
       db.select().from(menuItemIngredients).where(eq(menuItemIngredients.tenantId, tenantId)),
       db.select().from(menuItemBomRequirements).where(eq(menuItemBomRequirements.tenantId, tenantId)),
       db.select().from(menuItemPrepRequirements).where(eq(menuItemPrepRequirements.tenantId, tenantId)),
+      db.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenantId)),
       db.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
       db.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
       db.select().from(prepItems).where(eq(prepItems.tenantId, tenantId)),
@@ -207,18 +216,39 @@ export class InventoryRepository {
     const bomNameById = new Map(bomItemRows.map((row) => [row.id, row.name]));
     const prepNameById = new Map(prepItemRows.map((row) => [row.id, row.name]));
     const prepUnitById = new Map(prepItemRows.map((row) => [row.id, row.unit]));
+    const canonicalMenuIds = new Set(canonicalRows.map((row) => row.menuItemId));
     const recipeByMenuId = new Map<string, MenuItemAdmin["recipe"]>();
+    for (const component of canonicalRows) {
+      const existing = recipeByMenuId.get(component.menuItemId) ?? [];
+      const name = component.componentType === "ingredient"
+        ? ingredientNameById.get(component.componentId) ?? component.componentId
+        : prepNameById.get(component.componentId) ?? component.componentId;
+      const unit = component.componentType === "ingredient"
+        ? inventoryRows.find((row) => row.id === component.componentId)?.unit ?? ""
+        : prepUnitById.get(component.componentId) ?? "";
+      existing.push({
+        componentType: component.componentType as "ingredient" | "prep",
+        componentId: component.componentId,
+        componentName: name,
+        quantity: toNumeric(component.quantity),
+        unit,
+      });
+      recipeByMenuId.set(component.menuItemId, existing);
+    }
     for (const ingredient of ingredientRows) {
+      if (canonicalMenuIds.has(ingredient.menuItemId)) continue;
       const existing = recipeByMenuId.get(ingredient.menuItemId) ?? [];
       existing.push({ componentType: "ingredient", componentId: ingredient.ingredientId, componentName: ingredientNameById.get(ingredient.ingredientId) ?? ingredient.ingredientId, quantity: toNumeric(ingredient.quantity), unit: ingredient.unit });
       recipeByMenuId.set(ingredient.menuItemId, existing);
     }
     for (const bom of bomRows) {
+      if (canonicalMenuIds.has(bom.menuItemId)) continue;
       const existing = recipeByMenuId.get(bom.menuItemId) ?? [];
       existing.push({ componentType: "bom", componentId: bom.bomId, componentName: bomNameById.get(bom.bomId) ?? bom.bomId, quantity: toNumeric(bom.quantity), unit: bom.unit });
       recipeByMenuId.set(bom.menuItemId, existing);
     }
     for (const prep of prepRows) {
+      if (canonicalMenuIds.has(prep.menuItemId)) continue;
       const existing = recipeByMenuId.get(prep.menuItemId) ?? [];
       existing.push({ componentType: "prep", componentId: prep.prepItemId, componentName: prepNameById.get(prep.prepItemId) ?? prep.prepItemId, quantity: toNumeric(prep.quantity), unit: prepUnitById.get(prep.prepItemId) ?? "" });
       recipeByMenuId.set(prep.menuItemId, existing);
@@ -953,7 +983,51 @@ return withTenantTx(async (tx) => {
   const prevStock = Number(prep.stockQuantity);
   const ingredientsDeducted: { id: string; name: string; quantity: number; unit: string; }[] = [];
 
-  if (prep.bomId) {
+  const canonicalComponents = await tx
+    .select()
+    .from(prepItemComponents)
+    .where(and(eq(prepItemComponents.tenantId, tenantId), eq(prepItemComponents.prepItemId, id)));
+
+  if (canonicalComponents.length > 0) {
+    // Canonical prep recipe: each component quantity is the raw ingredient
+    // quantity required for one finished prep unit.
+    const ingredientIds = [...new Set(canonicalComponents.map((component) => component.ingredientId))];
+    const ingredientRows = await tx
+      .select()
+      .from(inventory)
+      .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds)))
+      .for("update");
+    const ingredientById = new Map(ingredientRows.map((row) => [row.id, row]));
+
+    for (const component of canonicalComponents) {
+      const ingredient = ingredientById.get(component.ingredientId);
+      if (!ingredient) throw new Error(`Ingredient ${component.ingredientId} not found for prep ${prep.name}`);
+      if (ingredient.isActive !== 1) throw new Error(`Ingredient ${ingredient.name} is not active`);
+
+      const needed = Number(component.quantity) * quantity;
+      const previousQuantity = Number(ingredient.quantity);
+      if (previousQuantity < needed) {
+        throw new Error(`Insufficient ${ingredient.name}: need ${needed} ${ingredient.unit}, have ${previousQuantity}`);
+      }
+      const newQuantity = previousQuantity - needed;
+      await tx.update(inventory)
+        .set({ quantity: String(newQuantity) })
+        .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ingredient.id)));
+      await tx.insert(stockMovements).values({
+        id: crypto.randomUUID(),
+        tenantId,
+        ingredientId: ingredient.id,
+        orderId: null,
+        movementType: "prep_production",
+        quantity: String(-needed),
+        previousQuantity: String(previousQuantity),
+        newQuantity: String(newQuantity),
+        notes: `Produced ${quantity} ${prep.name}`,
+        staffId: null,
+      });
+      ingredientsDeducted.push({ id: ingredient.id, name: ingredient.name, quantity: needed, unit: ingredient.unit });
+    }
+  } else if (prep.bomId) {
     // BoM-based variant: explode the recipe and deduct every raw ingredient
     // (and any nested prep stock) in the same transaction, then add the
     // finished units to this prep item's stock.
@@ -1429,6 +1503,169 @@ return (result.rowCount ?? 0) > 0;
 
   async listMenuItemsAdmin(): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; }[]> {
 return this.mapMenuItemsAdmin();
+  }
+
+  /**
+   * Canonical menu-first creation. Inline ingredients and reusable prep
+   * definitions are committed with one menu item transaction. Recipe edges
+   * contain only ingredient/prep references and quantities in canonical units.
+   */
+  async createMenuProduct(payload: CreateMenuProductRequest): Promise<MenuProductResponse> {
+    const parsed = createMenuProductRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+    const inlineIngredientKeys = new Set<string>();
+    for (const ingredient of parsed.inlineIngredients) {
+      if (inlineIngredientKeys.has(ingredient.clientKey)) throw new Error(`Duplicate inline ingredient key ${ingredient.clientKey}`);
+      inlineIngredientKeys.add(ingredient.clientKey);
+    }
+    const inlinePrepKeys = new Set<string>();
+    for (const prep of parsed.inlinePreps) {
+      if (inlinePrepKeys.has(prep.clientKey)) throw new Error(`Duplicate inline prep key ${prep.clientKey}`);
+      inlinePrepKeys.add(prep.clientKey);
+    }
+
+    return withTenantTx(async (tx) => {
+      const ingredientIdByKey = new Map<string, string>();
+      const ingredientById = new Map<string, { id: string; name: string; unit: string; unitCost: number; isActive: number }>();
+      for (const ingredient of parsed.inlineIngredients) {
+        const id = `i_${crypto.randomUUID()}`;
+        ingredientIdByKey.set(ingredient.clientKey, id);
+        ingredientById.set(id, { id, name: ingredient.name, unit: ingredient.unit, unitCost: ingredient.unitCost, isActive: 1 });
+        await tx.insert(inventory).values({
+          id,
+          tenantId,
+          name: ingredient.name,
+          quantity: "0",
+          unit: ingredient.unit,
+          minThreshold: "0",
+          unitCost: String(ingredient.unitCost),
+          salePrice: null,
+          isActive: 1,
+          isContainer: 0,
+        });
+      }
+
+      const existingIngredientIds = [
+        ...parsed.components.filter((component) => component.componentType === "ingredient").map((component) => component.componentId),
+        ...parsed.inlinePreps.flatMap((prep) => prep.components.map((component) => component.ingredientId)),
+      ];
+      if (existingIngredientIds.length > 0) {
+        const rows = await tx.select({ id: inventory.id, name: inventory.name, unit: inventory.unit, unitCost: inventory.unitCost, isActive: inventory.isActive })
+          .from(inventory)
+          .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, existingIngredientIds)));
+        for (const row of rows) ingredientById.set(row.id, { ...row, unitCost: Number(row.unitCost), isActive: row.isActive });
+      }
+
+      const prepIdByKey = new Map<string, string>();
+      const prepById = new Map<string, { id: string; name: string; unit: string; stockQuantity: number; isActive: number }>();
+      for (const prep of parsed.inlinePreps) {
+        const id = `prep_${crypto.randomUUID()}`;
+        prepIdByKey.set(prep.clientKey, id);
+        prepById.set(id, { id, name: prep.name, unit: prep.unit, stockQuantity: 0, isActive: 1 });
+      }
+
+      const existingPrepIds = parsed.components.filter((component) => component.componentType === "prep").map((component) => component.componentId);
+      if (existingPrepIds.length > 0) {
+        const rows = await tx.select({ id: prepItems.id, name: prepItems.name, unit: prepItems.unit, stockQuantity: prepItems.stockQuantity })
+          .from(prepItems)
+          .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, existingPrepIds)));
+        for (const row of rows) prepById.set(row.id, { id: row.id, name: row.name, unit: row.unit, stockQuantity: Number(row.stockQuantity), isActive: 1 });
+      }
+
+      const componentKeys = new Set<string>();
+      for (const component of parsed.components) {
+        const key = `${component.componentType}:${component.componentId}`;
+        if (componentKeys.has(key)) throw new Error(`Duplicate menu component ${key}`);
+        componentKeys.add(key);
+      }
+      for (const prep of parsed.inlinePreps) {
+        const prepKeys = new Set<string>();
+        for (const component of prep.components) {
+          if (prepKeys.has(component.ingredientId)) throw new Error(`Duplicate ingredient ${component.ingredientId} in prep ${prep.name}`);
+          prepKeys.add(component.ingredientId);
+        }
+      }
+
+      const resolveIngredientId = (id: string): string => ingredientIdByKey.get(id) ?? id;
+      const resolvePrepId = (id: string): string => prepIdByKey.get(id) ?? id;
+      for (const component of parsed.components) {
+        const resolvedId = component.componentType === "ingredient" ? resolveIngredientId(component.componentId) : resolvePrepId(component.componentId);
+        const record = component.componentType === "ingredient" ? ingredientById.get(resolvedId) : prepById.get(resolvedId);
+        if (!record) throw new Error(`${component.componentType} ${component.componentId} not found`);
+        if (record.isActive !== 1) throw new Error(`${component.componentType} ${record.name} is not active`);
+        if (!canonicalUnitSchema.safeParse(record.unit).success) throw new Error(`Invalid canonical unit for ${record.name}`);
+      }
+
+      for (const prep of parsed.inlinePreps) {
+        const prepId = prepIdByKey.get(prep.clientKey)!;
+        const resolvedIngredients = prep.components.map((component) => {
+          const ingredientId = resolveIngredientId(component.ingredientId);
+          const ingredient = ingredientById.get(ingredientId);
+          if (!ingredient) throw new Error(`Ingredient ${component.ingredientId} not found for prep ${prep.name}`);
+          if (ingredient.isActive !== 1) throw new Error(`Ingredient ${ingredient.name} is not active`);
+          if (!canonicalUnitSchema.safeParse(ingredient.unit).success) throw new Error(`Invalid canonical unit for ${ingredient.name}`);
+          return { ingredientId, quantity: component.quantity };
+        });
+        await tx.insert(prepItems).values({
+          id: prepId,
+          tenantId,
+          ingredientId: null,
+          bomId: null,
+          name: prep.name,
+          quantityPerUnit: "1",
+          unit: prep.unit,
+          stockQuantity: "0",
+        });
+        await tx.insert(prepItemComponents).values(resolvedIngredients.map((component) => ({
+          id: `pic_${crypto.randomUUID()}`,
+          tenantId,
+          prepItemId: prepId,
+          ingredientId: component.ingredientId,
+          quantity: String(component.quantity),
+        })));
+      }
+
+      const menuId = `m_${crypto.randomUUID()}`;
+      await tx.insert(menuItems).values({
+        id: menuId,
+        tenantId,
+        name: parsed.name,
+        price: String(parsed.price),
+        category: parsed.category,
+        categoryId: parsed.categoryId ?? null,
+        printAreas: JSON.stringify(parsed.printAreas),
+        isActive: 1,
+        defaultContainerId: null,
+      });
+      const resolvedComponents = parsed.components.map((component) => ({
+        ...component,
+        componentId: component.componentType === "ingredient" ? resolveIngredientId(component.componentId) : resolvePrepId(component.componentId),
+      }));
+      if (resolvedComponents.length > 0) {
+        await tx.insert(menuItemComponents).values(resolvedComponents.map((component) => ({
+          id: `mic_${crypto.randomUUID()}`,
+          tenantId,
+          menuItemId: menuId,
+          componentType: component.componentType,
+          componentId: component.componentId,
+          quantity: String(component.quantity),
+        })));
+      }
+
+      return menuProductResponseSchema.parse({
+        id: menuId,
+        name: parsed.name,
+        price: parsed.price,
+        category: parsed.category,
+        categoryId: parsed.categoryId,
+        printAreas: parsed.printAreas,
+        isActive: true,
+        components: resolvedComponents.map((component) => {
+          const record = component.componentType === "ingredient" ? ingredientById.get(component.componentId)! : prepById.get(component.componentId)!;
+          return { ...component, name: record.name, unit: record.unit };
+        }),
+      });
+    });
   }
 
   async createMenuItem(payload: MenuItemCreateRequest): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; }> {

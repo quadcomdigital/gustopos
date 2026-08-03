@@ -43,6 +43,8 @@ import {
   menuItemAdminListResponseSchema,
   menuItemAdminSchema,
   menuItemCreateRequestSchema,
+  createMenuProductRequestSchema,
+  menuProductResponseSchema,
   menuItemReplaceRecipeRequestSchema,
   menuItemUpdateRequestSchema,
   orderSchema,
@@ -186,6 +188,8 @@ import {
   type LogoutResponse,
   type MenuItemAdmin,
   type MenuItemCreateRequest,
+  type CreateMenuProductRequest,
+  type MenuProductResponse,
   type MenuItemReplaceRecipeRequest,
   type MenuItemUpdateRequest,
   type Order,
@@ -1939,6 +1943,16 @@ export async function fetchMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
 export async function fetchSimpleCatalogItemsAdmin(): Promise<MenuItemAdmin[]> {
   const response = await authorizedFetch(`${API_URL}/api/simple-catalog/items`);
   return readJson(response, menuItemAdminListResponseSchema);
+}
+
+export async function createMenuProduct(payload: CreateMenuProductRequest): Promise<MenuProductResponse> {
+  const request = createMenuProductRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/menu-products`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, menuProductResponseSchema);
 }
 
 export async function createMenuItem(payload: MenuItemCreateRequest): Promise<MenuItemAdmin> {

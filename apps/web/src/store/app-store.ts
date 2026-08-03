@@ -24,6 +24,7 @@ import {
   type MenuItemAdmin,
   type ModuleKey,
   type MenuItemCreateRequest,
+  type CreateMenuProductRequest,
   type MenuItemReplaceRecipeRequest,
   type MenuItemUpdateRequest,
   type Order,
@@ -137,6 +138,7 @@ import {
   createIngredient as createIngredientRequest,
   createAdminStaff,
   createMenuItem as createMenuItemRequest,
+  createMenuProduct as createMenuProductRequest,
   createSimpleCatalogItem as createSimpleCatalogItemRequest,
   closeTable as closeTableRequest,
   createOrder,
@@ -814,6 +816,7 @@ interface AppState {
   adjustIngredient: (id: string, payload: { quantity: number; notes?: string }) => Promise<void>;
   refreshMenuItemsAdmin: () => Promise<void>;
   createMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
+  createMenuProduct: (payload: CreateMenuProductRequest) => Promise<void>;
   updateMenuItem: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   replaceMenuItemRecipe: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   addMenuItemRecipeComponent: (id: string, payload: { componentType: 'ingredient' | 'bom' | 'prep'; componentId: string; quantity: number; unit: string }) => Promise<void>;
@@ -992,6 +995,8 @@ export function replayOfflineQueue(): void {
               await state.deleteBomItem(action.id as string);
             } else if (action.action === 'replaceBomComponents') {
               await state.replaceBomComponents(action.id as string, action.payload as BomUpsertComponentsRequest);
+            } else if (action.action === 'createMenuProduct') {
+              await state.createMenuProduct(action.payload as CreateMenuProductRequest);
             } else if (action.action === 'createMenuItem') {
               await state.createMenuItem(action.payload as MenuItemCreateRequest);
             } else if (action.action === 'updateMenuItem') {
@@ -2676,6 +2681,21 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       if (!currentUser) return;
       if (!hasModuleEnabled(get(), 'inventory') && !hasModuleEnabled(get(), 'simple_catalog')) return;
       const menuItemsAdmin = await (isSimpleCatalogOnly(get()) ? fetchSimpleCatalogItemsAdmin() : fetchMenuItemsAdmin());
+      set({ menuItemsAdmin });
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  createMenuProduct: async (payload) => {
+    try {
+      if (!hasModuleEnabled(get(), 'inventory')) {
+        enqueueBlockedAction(set as StoreSet, 'inventory', { action: 'createMenuProduct', payload });
+        throw new Error('Modulo inventory disabilitato per questo tenant');
+      }
+      await createMenuProductRequest(payload);
+      const menuItemsAdmin = await fetchMenuItemsAdmin();
       set({ menuItemsAdmin });
     } catch (err) {
       set({ error: handleActionError(err) });

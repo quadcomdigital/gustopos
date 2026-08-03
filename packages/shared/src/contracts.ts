@@ -57,6 +57,7 @@ export * from "./contracts/fiscal.schema";
 
 // ─── Re-export misc domains ───────────────────────────────────────────────
 export * from "./contracts/prep.schema";
+export * from "./contracts/inventory-workflow.schema";
 export * from "./contracts/coupon.schema";
 export * from "./contracts/cart.schema";
 export * from "./contracts/food-cost.schema";

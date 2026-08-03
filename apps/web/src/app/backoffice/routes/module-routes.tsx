@@ -114,6 +114,7 @@ export function InventoryRoute() {
   const adjustIngredient = useAppStore((s) => s.adjustIngredient);
   const refreshMenuItemsAdmin = useAppStore((s) => s.refreshMenuItemsAdmin);
   const createMenuItem = useAppStore((s) => s.createMenuItem);
+  const createMenuProduct = useAppStore((s) => s.createMenuProduct);
   const updateMenuItem = useAppStore((s) => s.updateMenuItem);
   const replaceMenuItemRecipe = useAppStore((s) => s.replaceMenuItemRecipe);
   const setMenuItemActiveAdmin = useAppStore((s) => s.setMenuItemActiveAdmin);
@@ -207,6 +208,7 @@ export function InventoryRoute() {
       onFetchMovements={onFetchMovements}
       onRefreshMenu={refreshMenuItemsAdmin}
       onCreateMenuItem={createMenuItem}
+      onCreateMenuProduct={createMenuProduct}
       onUpdateMenuItem={updateMenuItem}
       onReplaceMenuRecipe={replaceMenuItemRecipe}
       onSetMenuItemActive={setMenuItemActiveAdmin}

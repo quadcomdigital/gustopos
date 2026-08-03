@@ -1,4 +1,4 @@
-import type { Ingredient, Category, IngredientCreateRequest, IngredientUpdateRequest, UnitConversion } from '@gustopos/shared';
+import type { Ingredient, Category, IngredientCreateRequest, IngredientUpdateRequest, UnitConversion, CanonicalUnit } from '@gustopos/shared';
 import { AlertTriangle, RotateCcw, ToggleRight, ToggleLeft, Eye, Search, ChevronUp, ChevronDown, ChevronRight, Plus, Trash2, Package, ChefHat, ArrowLeftRight } from 'lucide-react';
 import { Fragment, useMemo, useState, useEffect, useCallback } from 'react';
 import Button from '../../shared/ui/atoms/Button';
@@ -54,14 +54,14 @@ export default function IngredientsTab({
   const [ingredientEditName, setIngredientEditName] = useState('');
   const [ingredientEditCategoryId, setIngredientEditCategoryId] = useState('');
   const [ingredientEditQty, setIngredientEditQty] = useState('0');
-  const [ingredientEditUnit, setIngredientEditUnit] = useState('kg');
+  const [ingredientEditUnit, setIngredientEditUnit] = useState<CanonicalUnit>('kg');
   const [ingredientEditThreshold, setIngredientEditThreshold] = useState('0');
   const [ingredientEditUnitCost, setIngredientEditUnitCost] = useState('0');
   const [ingredientEditSalePrice, setIngredientEditSalePrice] = useState('');
   const [newIngredientName, setNewIngredientName] = useState('');
   const [newIngredientCategoryId, setNewIngredientCategoryId] = useState('');
   const [newIngredientQty, setNewIngredientQty] = useState('0');
-  const [newIngredientUnit, setNewIngredientUnit] = useState('kg');
+  const [newIngredientUnit, setNewIngredientUnit] = useState<CanonicalUnit>('kg');
   const [newIngredientThreshold, setNewIngredientThreshold] = useState('0');
   const [newIngredientUnitCost, setNewIngredientUnitCost] = useState('0');
   const [newIngredientSalePrice, setNewIngredientSalePrice] = useState('');
@@ -219,11 +219,11 @@ export default function IngredientsTab({
   useEffect(() => {
     if (!selectedIngredient) return;
     setIngredientEditName(selectedIngredient.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize edit fields from selected ingredient; safe because all values are primitives
-    setIngredientEditCategoryId(selectedIngredient.categoryId ?? '');  
-    setIngredientEditQty(String(selectedIngredient.quantity));  
-    setIngredientEditUnit(selectedIngredient.unit);  
-    setIngredientEditThreshold(String(selectedIngredient.minThreshold));  
-    setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));  
+    setIngredientEditCategoryId(selectedIngredient.categoryId ?? '');
+    setIngredientEditQty(String(selectedIngredient.quantity));
+    setIngredientEditUnit(selectedIngredient.unit as CanonicalUnit);
+    setIngredientEditThreshold(String(selectedIngredient.minThreshold));
+    setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));
     setIngredientEditSalePrice(selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '');
     setIngredientEditIsContainer(selectedIngredient.isContainer === 1);
 
@@ -535,7 +535,7 @@ export default function IngredientsTab({
                 id={props.id}
                 ariaLabel="Unità"
                 value={newIngredientUnit}
-                onChange={setNewIngredientUnit}
+                onChange={(value) => setNewIngredientUnit(value as CanonicalUnit)}
                 placeholder="Seleziona unità..."
               />
             )}
@@ -947,7 +947,8 @@ export default function IngredientsTab({
             {saveError && <p className="text-xs text-danger mr-auto">{saveError}</p>}
             <Button variant="primary" onClick={() => void saveIngredient()}>
               Salva ingrediente
-            </Button>              {selectedIngredient && (
+            </Button>
+            {selectedIngredient && (
               <Button variant="danger" onClick={() => void removeIngredient(selectedIngredient.id)}>
                 Elimina
               </Button>
@@ -1002,7 +1003,7 @@ export default function IngredientsTab({
                 id={props.id}
                 ariaLabel="Unità di misura"
                 value={ingredientEditUnit}
-                onChange={setIngredientEditUnit}
+                onChange={(value) => setIngredientEditUnit(value as CanonicalUnit)}
               />
             )}
           </Field>

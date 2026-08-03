@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { canonicalUnitSchema } from "./inventory-workflow.schema";
 
 // ─── Ingredient ──────────────────────────────────────────────────────────────
 
@@ -7,6 +8,8 @@ export const ingredientSchema = z.object({
   name: z.string(),
   sku: z.string().nullable().optional(),
   quantity: z.number().nonnegative(),
+  // Legacy inventory responses remain string-compatible during the hard cut;
+  // new menu/prep recipe contracts enforce canonical units.
   unit: z.string(),
   minThreshold: z.number().nonnegative(),
   categoryId: z.string().optional(),
@@ -22,7 +25,7 @@ export const ingredientCreateRequestSchema = z.object({
   name: z.string().min(2),
   sku: z.string().min(1).optional(),
   quantity: z.number().nonnegative(),
-  unit: z.string().min(1),
+  unit: canonicalUnitSchema,
   minThreshold: z.number().nonnegative(),
   categoryId: z.string().optional(),
   unitCost: z.number().nonnegative().default(0),
@@ -34,7 +37,7 @@ export const ingredientUpdateRequestSchema = z.object({
   name: z.string().min(2).optional(),
   sku: z.string().min(1).nullable().optional(),
   quantity: z.number().nonnegative().optional(),
-  unit: z.string().min(1).optional(),
+  unit: canonicalUnitSchema.optional(),
   minThreshold: z.number().nonnegative().optional(),
   categoryId: z.string().optional(),
   unitCost: z.number().nonnegative().optional(),

@@ -1,6 +1,6 @@
 import type {
   Ingredient, BomItem, PrepItem, MenuItemAdmin, Category,
-  MenuItemCreateRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest,
+  MenuItemCreateRequest, CreateMenuProductRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest,
   MenuItemModifier, PrintArea, ModifierGroup, CategoryModifierPool,
   IngredientCreateRequest, UnitConversion,
 } from '@gustopos/shared';
@@ -52,6 +52,7 @@ interface MenuItemsTabProps {
   loading?: boolean;
   onRefresh?: () => Promise<void>;
   onCreate?: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CreateMenuProductRequest) => Promise<void>;
   onUpdate?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   onReplaceRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
   onSetMenuItemActive?: (id: string, active: boolean) => Promise<void>;
@@ -74,6 +75,7 @@ export default function MenuItemsTab({
   loading = false,
   onRefresh,
   onCreate,
+  onCreateMenuProduct,
   onUpdate,
   onReplaceRecipe,
   onSetMenuItemActive,
@@ -731,6 +733,7 @@ export default function MenuItemsTab({
         prepItems={prepItems}
         categoryModifierPools={categoryModifierPools}
         onCreateCategory={onCreateCategory}
+        onCreateMenuProduct={onCreateMenuProduct}
         onCreateMenuItem={onCreate!}
         onUpdateMenuItem={onUpdate}
         onReplaceRecipe={onReplaceRecipe}

@@ -112,6 +112,7 @@ import {
   menuItemIngredients,
   menuItemBomRequirements,
   menuItemPrepRequirements,
+  menuItemComponents,
   menuItems,
   menuModifierGroups,
   menuModifierOptions,
@@ -146,6 +147,7 @@ import {
   menuItemModifiers,
   prepItems,
   inventoryUnitConversions,
+  orderStockImpacts,
   printBridges,
   printBridgeOnboardingSecrets,
 } from "../db/schema";
@@ -1316,7 +1318,7 @@ export class AppRepository {
 
   async getPublicData(): Promise<AppData> {
     const tenantId = getTenantIdOrDefault();
-    const [staffRows, tableRows, inventoryRows, menuRows, ingredientLinks, menuBomLinks, orderRows, orderItemRows, mappedBomItems, modifierGroupRows, modifierOptionRows, modifierOptionOverrideRows, catPoolRows, catPoolOptionRows, catPoolCategoryRows, menuItemModifierRows, categoryRows, deliveryOrderRows] =
+    const [staffRows, tableRows, inventoryRows, menuRows, ingredientLinks, menuBomLinks, canonicalMenuComponents, prepRows, orderRows, orderItemRows, mappedBomItems, modifierGroupRows, modifierOptionRows, modifierOptionOverrideRows, catPoolRows, catPoolOptionRows, catPoolCategoryRows, menuItemModifierRows, categoryRows, deliveryOrderRows] =
       // Run the whole read set on ONE pooled connection inside a transaction
       // with a single transaction-local RLS set_config. Previously each of the
       // ~20 standalone queries paid connect + set_config + query + clear (4
@@ -1329,6 +1331,8 @@ export class AppRepository {
         executor.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
         executor.select().from(menuItemIngredients).where(eq(menuItemIngredients.tenantId, tenantId)),
         executor.select().from(menuItemBomRequirements).where(eq(menuItemBomRequirements.tenantId, tenantId)),
+        executor.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenantId)),
+        executor.select().from(prepItems).where(eq(prepItems.tenantId, tenantId)),
         executor.select().from(orders).where(and(eq(orders.tenantId, tenantId), ne(orders.status, "paid"), ne(orders.status, "cancelled"))),
         // Solo item degli ordini aperti (specchia il filtro su orders): gli item
         // degli ordini paid/cancelled non servono mai a getPublicData e, senza
@@ -1397,6 +1401,9 @@ export class AppRepository {
     const mappedInventory = this.mapInventoryRows(inventoryRows);
 
     const ingredientNameById = new Map(inventoryRows.map((row) => [row.id, row.name]));
+    const ingredientUnitById = new Map(inventoryRows.map((row) => [row.id, row.unit]));
+    const prepNameById = new Map(prepRows.map((row) => [row.id, row.name]));
+    const prepUnitById = new Map(prepRows.map((row) => [row.id, row.unit]));
     const bomNameById = new Map(mappedBomItems.map((item) => [item.id, item.name]));
 
     const ingredientsByMenuId = new Map<string, string[]>();
@@ -1405,7 +1412,14 @@ export class AppRepository {
       existing.push(link.ingredientId);
       ingredientsByMenuId.set(link.menuItemId, existing);
     }
+    for (const component of canonicalMenuComponents) {
+      if (component.componentType !== "ingredient") continue;
+      const existing = ingredientsByMenuId.get(component.menuItemId) ?? [];
+      existing.push(component.componentId);
+      ingredientsByMenuId.set(component.menuItemId, existing);
+    }
 
+    const canonicalMenuIds = new Set(canonicalMenuComponents.map((component) => component.menuItemId));
     const bomLinksByMenuId = new Map<string, string[]>();
     for (const link of menuBomLinks) {
       const existing = bomLinksByMenuId.get(link.menuItemId) ?? [];
@@ -1413,8 +1427,30 @@ export class AppRepository {
       bomLinksByMenuId.set(link.menuItemId, existing);
     }
 
-    const recipeByMenuId = new Map<string, Array<{ componentType: "ingredient" | "bom"; componentId: string; componentName: string; quantity: number; unit: string }>>();
+    const recipeByMenuId = new Map<string, Array<{ componentType: "ingredient" | "bom" | "prep"; componentId: string; componentName: string; quantity: number; unit: string }>>();
+    for (const component of canonicalMenuComponents) {
+      const existing = recipeByMenuId.get(component.menuItemId) ?? [];
+      const name = component.componentType === "ingredient"
+        ? ingredientNameById.get(component.componentId) ?? component.componentId
+        : component.componentType === "prep"
+          ? prepNameById.get(component.componentId) ?? component.componentId
+          : bomNameById.get(component.componentId) ?? component.componentId;
+      const unit = component.componentType === "ingredient"
+        ? ingredientUnitById.get(component.componentId) ?? ""
+        : component.componentType === "prep"
+          ? prepUnitById.get(component.componentId) ?? ""
+          : mappedBomItems.find((item) => item.id === component.componentId)?.unit ?? "";
+      existing.push({
+        componentType: component.componentType as "ingredient" | "bom" | "prep",
+        componentId: component.componentId,
+        componentName: name,
+        quantity: toNumeric(component.quantity),
+        unit,
+      });
+      recipeByMenuId.set(component.menuItemId, existing);
+    }
     for (const link of ingredientLinks) {
+      if (canonicalMenuIds.has(link.menuItemId)) continue;
       const existing = recipeByMenuId.get(link.menuItemId) ?? [];
       existing.push({
         componentType: "ingredient",
@@ -1426,6 +1462,7 @@ export class AppRepository {
       recipeByMenuId.set(link.menuItemId, existing);
     }
     for (const link of menuBomLinks) {
+      if (canonicalMenuIds.has(link.menuItemId)) continue;
       const existing = recipeByMenuId.get(link.menuItemId) ?? [];
       existing.push({
         componentType: "bom",
@@ -1557,10 +1594,17 @@ export class AppRepository {
         const row = menuRows.find((menu) => menu.id === item.id);
         const hasIngredientRecipe = (ingredientsByMenuId.get(item.id)?.length ?? 0) > 0;
         const hasBomRecipe = (bomLinksByMenuId.get(item.id)?.length ?? 0) > 0;
+        // No-stock menu items are valid catalog products. Inventory is
+        // deducted only when one of the recipe paths above contributes stock.
+        const hasCanonicalRecipe = (recipeByMenuId.get(item.id)?.length ?? 0) > 0;
         const hasModifierGroupsWithInventory = (modifierGroupsByMenuId.get(item.id) ?? []).some((group) =>
           group.options.some((opt) => opt.inventoryItemId),
         );
-        return row?.isActive === 1 && (hasIngredientRecipe || hasBomRecipe || hasModifierGroupsWithInventory);
+        void hasIngredientRecipe;
+        void hasBomRecipe;
+        void hasCanonicalRecipe;
+        void hasModifierGroupsWithInventory;
+        return row?.isActive === 1;
       });
 
     const itemsByOrderId = new Map<string, Order["items"]>();
@@ -2878,8 +2922,9 @@ export class AppRepository {
         staffId: order.staffId,
       });
 
-      await tx.insert(orderItems).values(
-        order.items.map((item) => ({
+      const insertedOrderItems: Array<{ id: number; menuItemId: string }> = [];
+      for (const item of order.items) {
+        const [insertedItem] = await tx.insert(orderItems).values({
           tenantId,
           orderId: order.id,
           menuItemId: item.id,
@@ -2889,8 +2934,10 @@ export class AppRepository {
           ingredientOverrides: JSON.stringify(item.ingredientOverrides ?? []),
           notes: item.notes ?? null,
           selectedModifiers: JSON.stringify(item.selectedModifiers ?? []),
-        })),
-      );
+        }).returning({ id: orderItems.id, menuItemId: orderItems.menuItemId });
+        if (!insertedItem) throw new Error("Failed to persist order item");
+        insertedOrderItems.push(insertedItem);
+      }
 
       if (order.orderType === "dine_in" && order.table) {
         await tx
@@ -2945,6 +2992,14 @@ export class AppRepository {
               .select()
               .from(menuItemPrepRequirements)
               .where(and(eq(menuItemPrepRequirements.tenantId, tenantId), inArray(menuItemPrepRequirements.menuItemId, menuIds)))
+          : [];
+
+      const canonicalComponents =
+        menuIds.length > 0
+          ? await tx
+              .select()
+              .from(menuItemComponents)
+              .where(and(eq(menuItemComponents.tenantId, tenantId), inArray(menuItemComponents.menuItemId, menuIds)))
           : [];
 
       // Load modifier options with inventoryItemId for selectedModifiers deduction
@@ -3008,16 +3063,6 @@ export class AppRepository {
         }
       }
 
-      const recipeCountByMenuId = new Map<string, number>();
-      for (const link of links) {
-        const current = recipeCountByMenuId.get(link.menuItemId) ?? 0;
-        recipeCountByMenuId.set(link.menuItemId, current + 1);
-      }
-      for (const requirement of bomRequirements) {
-        const current = recipeCountByMenuId.get(requirement.menuItemId) ?? 0;
-        recipeCountByMenuId.set(requirement.menuItemId, current + 1);
-      }
-
       // Check which menu items have modifier options with inventoryItemId (e.g., Heineken 33cl/66cl)
       const menuIdsWithModifierInventory = new Set<string>();
       for (const item of order.items) {
@@ -3033,15 +3078,6 @@ export class AppRepository {
 
       const enabledModules = await this.getEnabledModulesRows(tenantId);
       const enforceRecipe = enabledModules.includes("inventory") && !enabledModules.includes("simple_catalog");
-
-      // Allow menu items without recipe if they have modifier options with inventory links
-      const menuItemWithoutRecipe = menuIds.find(
-        (id) => (recipeCountByMenuId.get(id) ?? 0) === 0 && !menuIdsWithModifierInventory.has(id),
-      );
-      if (enforceRecipe && menuItemWithoutRecipe) {
-        const name = menuNameById.get(menuItemWithoutRecipe) ?? order.items.find((i) => i.id === menuItemWithoutRecipe)?.name;
-        throw new Error(`Menu item "${name ?? menuItemWithoutRecipe}" has no recipe configured`);
-      }
 
       const bomIds = [...new Set(bomRequirements.map((row) => row.bomId))];
       let bomRows: BomRow[] = [];
@@ -3079,6 +3115,19 @@ export class AppRepository {
         existing.push({ ingredientId: link.ingredientId, quantity: Number(link.quantity) });
         linksByMenuId.set(link.menuItemId, existing);
       }
+      const canonicalIngredientsByMenuId = new Map<string, Array<{ ingredientId: string; quantity: number }>>();
+      const canonicalPrepsByMenuId = new Map<string, Array<{ prepItemId: string; quantity: number }>>();
+      for (const component of canonicalComponents) {
+        if (component.componentType === "ingredient") {
+          const existing = canonicalIngredientsByMenuId.get(component.menuItemId) ?? [];
+          existing.push({ ingredientId: component.componentId, quantity: Number(component.quantity) });
+          canonicalIngredientsByMenuId.set(component.menuItemId, existing);
+        } else if (component.componentType === "prep") {
+          const existing = canonicalPrepsByMenuId.get(component.menuItemId) ?? [];
+          existing.push({ prepItemId: component.componentId, quantity: Number(component.quantity) });
+          canonicalPrepsByMenuId.set(component.menuItemId, existing);
+        }
+      }
 
       const consumptionByIngredient = new Map<string, number>();
       const consumptionByPrep = new Map<string, number>();
@@ -3093,7 +3142,10 @@ export class AppRepository {
       }
 
       for (const item of order.items) {
-        const baseIngredients = linksByMenuId.get(item.id) ?? [];
+        const baseIngredients = [
+          ...(linksByMenuId.get(item.id) ?? []),
+          ...(canonicalIngredientsByMenuId.get(item.id) ?? []),
+        ];
         const removedIngredientIds = new Set(
           (item.ingredientOverrides ?? []).filter((entry) => entry.action === "remove").map((entry) => entry.ingredientId),
         );
@@ -3140,7 +3192,10 @@ export class AppRepository {
           }
         }
 
-        const prepReqs = prepByMenuId.get(item.id) ?? [];
+        const prepReqs = [
+          ...(prepByMenuId.get(item.id) ?? []),
+          ...(canonicalPrepsByMenuId.get(item.id) ?? []),
+        ];
         for (const req of prepReqs) {
           const current = consumptionByPrep.get(req.prepItemId) ?? 0;
           consumptionByPrep.set(req.prepItemId, current + req.quantity * item.quantity);
@@ -3310,6 +3365,39 @@ export class AppRepository {
         }
       }
 
+      const canonicalPrepIds = [...new Set(canonicalComponents
+        .filter((component) => component.componentType === "prep")
+        .map((component) => component.componentId))];
+      const canonicalPrepRows = canonicalPrepIds.length > 0
+        ? await tx.select({ id: prepItems.id, unit: prepItems.unit })
+            .from(prepItems)
+            .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, canonicalPrepIds)))
+        : [];
+      const canonicalPrepUnitById = new Map(canonicalPrepRows.map((row) => [row.id, row.unit]));
+
+      const canonicalImpactRows = insertedOrderItems.flatMap((insertedItem, itemIndex) => {
+        const source = canonicalComponents.filter((component) => component.menuItemId === insertedItem.menuItemId);
+        // Keep the returned row paired with its original input position. Using
+        // find(menuItemId) is incorrect when an order contains the same menu
+        // item on more than one line with different quantities.
+        const itemQuantity = order.items[itemIndex]?.quantity ?? 0;
+        return source.map((component) => ({
+          id: crypto.randomUUID(),
+          tenantId,
+          orderId: order.id,
+          orderItemId: insertedItem.id,
+          componentType: component.componentType,
+          componentId: component.componentId,
+          quantity: String(Number(component.quantity) * itemQuantity),
+          unit: component.componentType === "ingredient"
+            ? (inventoryRowsForValidation.find((row) => row.id === component.componentId)?.unit ?? "")
+            : (canonicalPrepUnitById.get(component.componentId) ?? ""),
+        }));
+      }).filter((impact) => Number(impact.quantity) > 0 && impact.unit.length > 0);
+      if (canonicalImpactRows.length > 0) {
+        await tx.insert(orderStockImpacts).values(canonicalImpactRows);
+      }
+
       const prepIds = [...consumptionByPrep.keys()];
       if (prepIds.length > 0) {
         const prepRows = await tx
@@ -3397,10 +3485,176 @@ export class AppRepository {
 
   async updateOrderItemQuantity(orderId: string, orderItemId: number, quantity: number): Promise<Order | null> {
     const tenantId = getTenantIdOrDefault();
-    await db
-      .update(orderItems)
-      .set({ quantity })
-      .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId), eq(orderItems.id, orderItemId)));
+
+    await withTenantTx(async (tx) => {
+      const orderRows = await tx
+        .select({ id: orders.id, status: orders.status, staffId: orders.staffId, total: orders.total })
+        .from(orders)
+        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+        .limit(1)
+        .for("update");
+      const order = orderRows[0];
+      if (!order) return;
+      if (order.status === "paid" || order.status === "cancelled") {
+        throw new Error(`Cannot change quantity for a ${order.status} order`);
+      }
+
+      const itemRows = await tx
+        .select({ id: orderItems.id, menuItemId: orderItems.menuItemId, quantity: orderItems.quantity, price: orderItems.price })
+        .from(orderItems)
+        .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId), eq(orderItems.id, orderItemId)))
+        .for("update");
+      const item = itemRows[0];
+      if (!item) return;
+
+      const impacts = await tx
+        .select()
+        .from(orderStockImpacts)
+        .where(and(
+          eq(orderStockImpacts.tenantId, tenantId),
+          eq(orderStockImpacts.orderId, orderId),
+          eq(orderStockImpacts.orderItemId, orderItemId),
+        ))
+        .for("update");
+
+      if (impacts.length === 0) {
+        throw new Error("Quantity editing is available only for menu items with persisted canonical stock impacts");
+      }
+
+      const deltaByComponent = new Map<string, { componentType: string; componentId: string; delta: number; unit: string }>();
+      for (const impact of impacts) {
+        const oldQuantity = Number(impact.quantity);
+        const unitQuantity = oldQuantity / item.quantity;
+        const nextQuantity = unitQuantity * quantity;
+        const key = `${impact.componentType}:${impact.componentId}`;
+        const existing = deltaByComponent.get(key);
+        if (existing) {
+          existing.delta += nextQuantity - oldQuantity;
+        } else {
+          deltaByComponent.set(key, {
+            componentType: impact.componentType,
+            componentId: impact.componentId,
+            delta: nextQuantity - oldQuantity,
+            unit: impact.unit,
+          });
+        }
+      }
+
+      const ingredientDeltas = [...deltaByComponent.values()].filter((entry) => entry.componentType === "ingredient" && entry.delta !== 0);
+      const prepDeltas = [...deltaByComponent.values()].filter((entry) => entry.componentType === "prep" && entry.delta !== 0);
+
+      if (ingredientDeltas.length > 0) {
+        const rows = await tx
+          .select()
+          .from(inventory)
+          .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientDeltas.map((entry) => entry.componentId))))
+          .for("update");
+        const rowsById = new Map(rows.map((row) => [row.id, row]));
+        for (const entry of ingredientDeltas) {
+          const row = rowsById.get(entry.componentId);
+          if (!row) throw new Error(`Ingredient ${entry.componentId} not found`);
+          if (row.isActive !== 1) throw new Error(`Ingredient "${row.name}" is not active`);
+          const currentQuantity = Number(row.quantity);
+          const nextQuantity = currentQuantity - entry.delta;
+          if (nextQuantity < 0) {
+            throw new Error(`Insufficient stock for ingredient "${row.name}"`);
+          }
+          await tx.update(inventory)
+            .set({ quantity: String(nextQuantity) })
+            .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, row.id)));
+          await tx.insert(stockMovements).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            ingredientId: row.id,
+            prepItemId: null,
+            orderId,
+            movementType: entry.delta > 0 ? "order_deduction" : "order_reversal",
+            quantity: String(-entry.delta),
+            previousQuantity: String(currentQuantity),
+            newQuantity: String(nextQuantity),
+            notes: `Order item quantity updated: ${orderId}`,
+            staffId: order.staffId ?? null,
+          });
+        }
+      }
+
+      if (prepDeltas.length > 0) {
+        const rows = await tx
+          .select()
+          .from(prepItems)
+          .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, prepDeltas.map((entry) => entry.componentId))))
+          .for("update");
+        const rowsById = new Map(rows.map((row) => [row.id, row]));
+        for (const entry of prepDeltas) {
+          const row = rowsById.get(entry.componentId);
+          if (!row) throw new Error(`Prep item ${entry.componentId} not found`);
+          const currentQuantity = Number(row.stockQuantity);
+          const nextQuantity = currentQuantity - entry.delta;
+          if (nextQuantity < 0) {
+            throw new Error(`Insufficient stock for prep "${row.name}"`);
+          }
+          await tx.update(prepItems)
+            .set({ stockQuantity: String(nextQuantity) })
+            .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, row.id)));
+          await tx.insert(stockMovements).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            ingredientId: null,
+            prepItemId: row.id,
+            orderId,
+            movementType: entry.delta > 0 ? "prep_consumption" : "prep_restoration",
+            quantity: String(-entry.delta),
+            previousQuantity: String(currentQuantity),
+            newQuantity: String(nextQuantity),
+            notes: `Order item quantity updated: ${orderId}`,
+            staffId: order.staffId ?? null,
+          });
+        }
+      }
+
+      if (quantity === 0) {
+        await tx
+          .delete(orderItems)
+          .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId), eq(orderItems.id, orderItemId)));
+      } else {
+        await tx
+          .update(orderItems)
+          .set({ quantity })
+          .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId), eq(orderItems.id, orderItemId)));
+      }
+
+      await tx
+        .update(orders)
+        .set({ total: String(Number(order.total) + (quantity - item.quantity) * Number(item.price)) })
+        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+
+      if (impacts.length > 0 && quantity > 0) {
+        await tx
+          .delete(orderStockImpacts)
+          .where(and(
+            eq(orderStockImpacts.tenantId, tenantId),
+            eq(orderStockImpacts.orderId, orderId),
+            eq(orderStockImpacts.orderItemId, orderItemId),
+          ));
+
+        const replacementImpacts = impacts
+          .map((impact) => ({
+            id: crypto.randomUUID(),
+            tenantId,
+            orderId,
+            orderItemId,
+            componentType: impact.componentType,
+            componentId: impact.componentId,
+            quantity: String((Number(impact.quantity) / item.quantity) * quantity),
+            unit: impact.unit,
+          }))
+          .filter((impact) => Number(impact.quantity) > 0);
+        if (replacementImpacts.length > 0) {
+          await tx.insert(orderStockImpacts).values(replacementImpacts);
+        }
+      }
+    });
+
     return this.getOrderById(orderId);
   }
 
@@ -3720,6 +3974,78 @@ export class AppRepository {
             .set({ stockQuantity: String(restoredQty) })
             .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, prepId)));
 
+          await tx.insert(stockMovements).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            ingredientId: null,
+            prepItemId: prepId,
+            orderId: id,
+            movementType: "prep_restoration",
+            quantity: String(delta),
+            previousQuantity: String(previousQty),
+            newQuantity: String(restoredQty),
+            notes: `Order cancelled: ${parsed.reason}`,
+            staffId: actorStaffId,
+          });
+        }
+      }
+
+      const persistedCanonicalImpacts = await tx
+        .select()
+        .from(orderStockImpacts)
+        .where(and(eq(orderStockImpacts.tenantId, tenantId), eq(orderStockImpacts.orderId, id)));
+      const canonicalIngredientRestores = new Map<string, number>();
+      const canonicalPrepRestores = new Map<string, number>();
+      for (const impact of persistedCanonicalImpacts) {
+        if (impact.componentType === "ingredient") {
+          canonicalIngredientRestores.set(impact.componentId, (canonicalIngredientRestores.get(impact.componentId) ?? 0) + Number(impact.quantity));
+        } else if (impact.componentType === "prep") {
+          canonicalPrepRestores.set(impact.componentId, (canonicalPrepRestores.get(impact.componentId) ?? 0) + Number(impact.quantity));
+        }
+      }
+
+      if (canonicalIngredientRestores.size > 0) {
+        const rows = await tx.select().from(inventory)
+          .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, [...canonicalIngredientRestores.keys()])))
+          .for("update");
+        const rowsById = new Map(rows.map((row) => [row.id, row]));
+        for (const [ingredientId, delta] of canonicalIngredientRestores) {
+          const row = rowsById.get(ingredientId);
+          if (!row) continue;
+          const previousQty = Number(row.quantity);
+          const restoredQty = previousQty + delta;
+          await tx.update(inventory)
+            .set({ quantity: String(restoredQty) })
+            .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, ingredientId)));
+          await tx.insert(stockMovements).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            ingredientId,
+            prepItemId: null,
+            orderId: id,
+            movementType: "order_reversal",
+            quantity: String(delta),
+            previousQuantity: String(previousQty),
+            newQuantity: String(restoredQty),
+            notes: `Order cancelled: ${parsed.reason}`,
+            staffId: actorStaffId,
+          });
+        }
+      }
+
+      if (canonicalPrepRestores.size > 0) {
+        const rows = await tx.select().from(prepItems)
+          .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, [...canonicalPrepRestores.keys()])))
+          .for("update");
+        const rowsById = new Map(rows.map((row) => [row.id, row]));
+        for (const [prepId, delta] of canonicalPrepRestores) {
+          const row = rowsById.get(prepId);
+          if (!row) continue;
+          const previousQty = Number(row.stockQuantity);
+          const restoredQty = previousQty + delta;
+          await tx.update(prepItems)
+            .set({ stockQuantity: String(restoredQty) })
+            .where(and(eq(prepItems.tenantId, tenantId), eq(prepItems.id, prepId)));
           await tx.insert(stockMovements).values({
             id: crypto.randomUUID(),
             tenantId,

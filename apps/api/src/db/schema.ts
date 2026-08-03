@@ -1018,6 +1018,62 @@ export const menuItemPrepRequirements = pgTable("menu_item_prep_requirements", {
   index("menu_item_prep_requirements_tenant_idx").on(t.tenantId),
 ]);
 
+/**
+ * Canonical menu-first recipe edges. These replace the three parallel menu
+ * recipe tables once the hard-cut migration is complete. Quantities are
+ * always expressed in the referenced component's canonical unit.
+ */
+export const menuItemComponents = pgTable("menu_item_components", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  menuItemId: text("menu_item_id")
+    .notNull()
+    .references(() => menuItems.id, { onDelete: "cascade" }),
+  componentType: text("component_type").notNull(),
+  componentId: text("component_id").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 6 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("menu_item_components_unique_idx").on(t.tenantId, t.menuItemId, t.componentType, t.componentId),
+  index("menu_item_components_menu_idx").on(t.tenantId, t.menuItemId),
+]);
+
+/** Ingredient-only recipe edges used to produce reusable prep stock. */
+export const prepItemComponents = pgTable("prep_item_components", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  prepItemId: text("prep_item_id")
+    .notNull()
+    .references(() => prepItems.id, { onDelete: "cascade" }),
+  ingredientId: text("ingredient_id")
+    .notNull()
+    .references(() => inventory.id, { onDelete: "restrict" }),
+  quantity: numeric("quantity", { precision: 12, scale: 6 }).notNull(),
+}, (t) => [
+  uniqueIndex("prep_item_components_unique_idx").on(t.tenantId, t.prepItemId, t.ingredientId),
+  index("prep_item_components_prep_idx").on(t.tenantId, t.prepItemId),
+]);
+
+/** Immutable stock effect captured when an order is created. */
+export const orderStockImpacts = pgTable("order_stock_impacts", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  orderId: text("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  orderItemId: integer("order_item_id")
+    .notNull()
+    .references(() => orderItems.id, { onDelete: "cascade" }),
+  componentType: text("component_type").notNull(),
+  componentId: text("component_id").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 6 }).notNull(),
+  unit: text("unit").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("order_stock_impacts_order_idx").on(t.tenantId, t.orderId),
+  index("order_stock_impacts_item_idx").on(t.tenantId, t.orderItemId),
+]);
+
 export const inventoryUnitConversions = pgTable("inventory_unit_conversions", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),

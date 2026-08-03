@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, MenuItemModifier, ModifierGroup, UnitConversion } from '@gustopos/shared';
+import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, MenuItemCreateRequest, CreateMenuProductRequest, MenuItemUpdateRequest, MenuItemReplaceRecipeRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, MenuItemModifier, ModifierGroup, UnitConversion } from '@gustopos/shared';
 import FormField from '../../../shared/ui/molecules/FormField';
 import { Plus, AlertTriangle, RefreshCw, Layers } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
@@ -29,6 +29,8 @@ interface FoodProductModalProps {
   prepItems: PrepItem[];
   categoryModifierPools?: CategoryModifierPool[];
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
+  /** Canonical menu-first creation for a base food recipe. */
+  onCreateMenuProduct?: (payload: CreateMenuProductRequest) => Promise<void>;
   onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   onReplaceRecipe?: (id: string, payload: MenuItemReplaceRecipeRequest) => Promise<void>;
@@ -47,7 +49,7 @@ interface FoodProductModalProps {
 
 export default function FoodProductModal({
   open, onClose, onSuccess, categories, inventory, bomItems, prepItems, categoryModifierPools = [],
-  onCreateCategory, onCreateMenuItem, onUpdateMenuItem, onReplaceRecipe, onCreateIngredient, onCreatePrepItem,
+  onCreateCategory, onCreateMenuProduct, onCreateMenuItem, onUpdateMenuItem, onReplaceRecipe, onCreateIngredient, onCreatePrepItem,
   conversionsMap = {},
   onReplaceBomComponents, onCreateBomItem, onOpenBomTab, editItem,
 }: FoodProductModalProps) {
@@ -162,18 +164,28 @@ export default function FoodProductModal({
     errs.price = positiveNumber(price, 'Prezzo');
     setErrors(errs);
     if (Object.values(errs).some(Boolean)) return;
-    if (!isBase && recipe.length === 0) { setError('Aggiungi almeno un componente.'); return; }
+    // No-stock menu items are valid. The canonical endpoint stores an empty
+    // component list; stock deduction simply has nothing to consume.
     setSaving(true);
     setError('');
     try {
       const catName = categoryId ? (menuCategories.find((c) => c.id === categoryId)?.name ?? categoryName.trim()) : categoryName.trim();
 
-      // If editing a product that originally had a BoM, update it.
-      // Otherwise, auto-create a shadow BoM from flat components.
+      // Canonical creation owns the flat ingredient/prep list directly. Do not
+      // create a BoM before this branch: the new model deliberately has no
+      // shadow BoM intermediary.
       let finalRecipe = recipe;
+      const canUseCanonicalCreate = Boolean(
+        !isEdit
+        && onCreateMenuProduct
+        && !defaultContainerId
+        && modifiers.length === 0
+        && modifierGroups.length === 0
+        && recipe.every((component) => component.componentType === 'ingredient' || component.componentType === 'prep'),
+      );
       const hasFlatComponents = recipe.some((c) => c.componentType !== 'bom');
 
-      if (hasFlatComponents && (onCreateBomItem || onReplaceBomComponents)) {
+      if (!canUseCanonicalCreate && hasFlatComponents && (onCreateBomItem || onReplaceBomComponents)) {
         const bomName = name.trim() || 'Prodotto';
         const unit = recipe[0]?.unit || 'kg';
 
@@ -228,7 +240,25 @@ export default function FoodProductModal({
         }
       }
 
-      if (isEdit && onUpdateMenuItem && editItem) {
+      if (canUseCanonicalCreate && onCreateMenuProduct) {
+        if (!catName || catName.trim().length < 2) {
+          throw new Error('Seleziona o crea una categoria per il prodotto.');
+        }
+        await onCreateMenuProduct({
+          name: name.trim(),
+          price: Number(price),
+          category: catName.trim(),
+          categoryId: categoryId || undefined,
+          printAreas,
+          components: finalRecipe.map((component) => ({
+            componentType: component.componentType as 'ingredient' | 'prep',
+            componentId: component.componentId,
+            quantity: component.quantity,
+          })),
+          inlineIngredients: [],
+          inlinePreps: [],
+        });
+      } else if (isEdit && onUpdateMenuItem && editItem) {
         await onUpdateMenuItem(editItem.id, {
           name: name.trim(),
           category: catName,

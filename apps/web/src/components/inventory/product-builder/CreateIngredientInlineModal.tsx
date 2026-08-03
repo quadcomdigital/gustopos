@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import type { Category, Ingredient, IngredientCreateRequest } from '@gustopos/shared';
+import type { Category, Ingredient, IngredientCreateRequest, CanonicalUnit } from '@gustopos/shared';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
@@ -24,7 +24,7 @@ export default function CreateIngredientInlineModal({
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [qty, setQty] = useState('');
-  const [unit, setUnit] = useState('kg');
+  const [unit, setUnit] = useState<CanonicalUnit>('kg');
   const [threshold, setThreshold] = useState('');
   const [unitCost, setUnitCost] = useState('');
   const [salePrice, setSalePrice] = useState('');
@@ -132,7 +132,7 @@ export default function CreateIngredientInlineModal({
               id={props.id}
               ariaLabel="Unità"
               value={unit}
-              onChange={setUnit}
+              onChange={(value) => setUnit(value as CanonicalUnit)}
               placeholder="Seleziona unità..."
             />
           )}

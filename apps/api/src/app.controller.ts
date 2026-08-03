@@ -109,6 +109,7 @@ import {
   updatePrintingSettingsRequestSchema,
   printLogoUploadResponseSchema,
   menuItemCreateRequestSchema,
+  createMenuProductRequestSchema,
   menuItemReplaceRecipeRequestSchema,
   menuItemUpdateRequestSchema,
   socketEvents,
@@ -220,6 +221,7 @@ import {
   type UpdateUiSettingsRequest,
   type UpdatePrintingSettingsRequest,
   type MenuItemCreateRequest,
+  type CreateMenuProductRequest,
   type MenuItemReplaceRecipeRequest,
   type MenuItemUpdateRequest,
   type Order,
@@ -1920,6 +1922,19 @@ export class AppController {
     return this.inventoryRepo.createMenuItem(parsed).catch((error) => {
       throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu payload");
     });
+  }
+
+  @Post("menu-products")
+  @RequiresPermissions("inventory:manage")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async createMenuProduct(@Body() payload: CreateMenuProductRequest) {
+    const parsed = createMenuProductRequestSchema.parse(payload);
+    try {
+      return await this.inventoryRepo.createMenuProduct(parsed);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid menu product payload");
+    }
   }
 
   @Patch("menu/:id")
