@@ -12,7 +12,6 @@ import type {
   CategoryUpdateRequest,
   MenuItemCreateRequest,
   CanonicalCreateMenuProductRequest,
-  MenuItemReplaceRecipeRequest,
   MenuItemUpdateRequest,
   CategoryModifierPool,
   CategoryModifierPoolCreateRequest,

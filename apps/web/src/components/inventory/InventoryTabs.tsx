@@ -14,7 +14,6 @@ import type {
   CategoryUpdateRequest,
   MenuItemCreateRequest,
   CanonicalCreateMenuProductRequest,
-  MenuItemReplaceRecipeRequest,
   MenuItemUpdateRequest,
   PrepItem,
 } from '@gustopos/shared';

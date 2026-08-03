@@ -5,7 +5,6 @@ import {
   staff,
   tables,
   categories,
-  inventory,
   tenantAuditLogs,
 } from "../db/schema";
 import { hashPin } from "../auth/pin-hash";
@@ -17,7 +16,6 @@ import { hashPin } from "../auth/pin-hash";
  * - Admin staff member with a random PIN
  * - 12 default tables
  * - Default categories (menu + inventory scopes)
- * - 4 default container inventory items (Bun, Panino, Piadina, Piatto)
  *
  * Called automatically after tenant creation via superadmin.
  */
@@ -69,16 +67,7 @@ export class BootstrapTenantService {
       ];
       await tx.insert(categories).values(categoryInserts);
 
-      // 4. Create default container inventory items
-      const containerItems = [
-        { id: `inv_${crypto.randomUUID()}`, tenantId, name: "Bun", quantity: "0", unit: "pz", minThreshold: "10", unitCost: "0.91", isContainer: 1, isActive: 1, categoryId: null, salePrice: null },
-        { id: `inv_${crypto.randomUUID()}`, tenantId, name: "Panino", quantity: "0", unit: "pz", minThreshold: "10", unitCost: "0.25", isContainer: 1, isActive: 1, categoryId: null, salePrice: null },
-        { id: `inv_${crypto.randomUUID()}`, tenantId, name: "Piadina", quantity: "0", unit: "pz", minThreshold: "10", unitCost: "0.25", isContainer: 1, isActive: 1, categoryId: null, salePrice: null },
-        { id: `inv_${crypto.randomUUID()}`, tenantId, name: "Piatto", quantity: "0", unit: "pz", minThreshold: "10", unitCost: "0", isContainer: 1, isActive: 1, categoryId: null, salePrice: null },
-      ];
-      await tx.insert(inventory).values(containerItems);
-
-      // 5. Log the bootstrap event
+      // 4. Log the bootstrap event
       await tx.insert(tenantAuditLogs).values({
         id: `tal_${crypto.randomUUID()}`,
         tenantId,
@@ -88,7 +77,6 @@ export class BootstrapTenantService {
           adminId,
           tablesCreated: 12,
           categoriesCreated: categoryInserts.length,
-          containerItemsCreated: containerItems.length,
           adminPinLength: adminPin.length,
         }),
         createdAt: now,

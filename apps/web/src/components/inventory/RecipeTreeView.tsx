@@ -1,35 +1,11 @@
 import { useState } from 'react';
 import { ChevronRight, ChevronDown, Layers, Leaf } from 'lucide-react';
+import type { BomItem, Ingredient, PrepItem } from '@gustopos/shared';
 
 interface RecipeComponent {
   componentType: 'ingredient' | 'bom' | 'prep';
   componentId: string;
   quantity: number;
-  unit: string;
-}
-
-interface BomItem {
-  id: string;
-  name: string;
-  unit: string;
-  yieldQuantity: number;
-  components: Array<{
-    componentType: 'ingredient' | 'bom' | 'prep';
-    componentId: string;
-    quantity: number;
-    unit: string;
-  }>;
-}
-
-interface Ingredient {
-  id: string;
-  name: string;
-  unit: string;
-}
-
-interface PrepItem {
-  id: string;
-  name: string;
   unit: string;
 }
 
@@ -114,7 +90,7 @@ function TreeNode({ component, bomItems, prepItems, inventory, ingredientNameByI
         </span>
         {isBoM && bom && (
           <span className="text-[10px] text-text-muted">
-            (resa: {bom.yieldQuantity} {bom.unit})
+            (resa: {bom.yieldQuantity} {bom.outputUnit})
           </span>
         )}
       </div>

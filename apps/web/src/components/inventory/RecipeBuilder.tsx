@@ -670,9 +670,9 @@ export default function RecipeBuilder({
 
       <RecipeTreeView
         recipe={components}
-        bomItems={bomItems.map((b) => ({ id: b.id, name: b.name, unit: b.outputUnit, yieldQuantity: b.yieldQuantity, components: b.components }))}
-        inventory={inventory.map((i) => ({ id: i.id, name: i.name, unit: i.unit }))}
-        prepItems={prepItems.map((p) => ({ id: p.id, name: p.name, unit: p.outputUnit }))}
+        bomItems={bomItems}
+        inventory={inventory}
+        prepItems={prepItems}
       />
     </div>
   );

@@ -17,7 +17,6 @@ interface FoodCostMatrixRow {
   marginPercent: number;
   recommendedPrice: number;
   status: 'ok' | 'needs_change';
-  isContainer?: boolean;
 }
 
 interface FoodCostMatrixSummary {
@@ -31,7 +30,6 @@ interface FoodCostMatrixSummary {
   marginPercent: number;
   status: 'ok' | 'needs_change';
   ingredientCount: number;
-  defaultContainerId?: string | null;
 }
 
 interface FoodCostMatrixTabProps {
@@ -56,8 +54,6 @@ interface FoodCostMatrixTabProps {
   }>;
   onExport?: () => Promise<void>;
   isLoading?: boolean;
-  containers?: Array<{ id: string; name: string; unitCost: number }>;
-  onUpdateContainer?: (menuItemId: string, containerId: string | null) => Promise<void>;
 }
 
 export default function FoodCostMatrixTab({
@@ -68,8 +64,6 @@ export default function FoodCostMatrixTab({
   onImportXlsx,
   onExport,
   isLoading = false,
-  containers = [],
-  onUpdateContainer,
 }: FoodCostMatrixTabProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -352,23 +346,6 @@ export default function FoodCostMatrixTab({
                     <tr key={`${item.menuItemId}-detail`}>
                       <td colSpan={9} className="p-0">
                         <div className="bg-bg/50 p-3">
-                          {containers.length > 0 && (
-                            <div className="flex items-center gap-2 mb-3">
-                              <span className="text-sm font-medium">Container:</span>
-                              <select
-                                value={item.defaultContainerId || ''}
-                                onChange={(e) => onUpdateContainer?.(item.menuItemId, e.target.value || null)}
-                                className="px-2 py-1 rounded border border-border text-sm"
-                              >
-                                <option value="">Nessuno</option>
-                                {containers.map((c) => (
-                                  <option key={c.id} value={c.id}>
-                                    {c.name} (€{c.unitCost.toFixed(2)})
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          )}
                           <table className="w-full text-[11px]">
                             <thead>
                               <tr className="border-b border-border/30">

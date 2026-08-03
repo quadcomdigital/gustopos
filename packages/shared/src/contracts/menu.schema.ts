@@ -188,10 +188,6 @@ export const menuItemUpdateRequestSchema = z.object({
   modifierGroups: z.array(modifierGroupInputSchema).optional(),
 });
 
-export const menuItemReplaceRecipeRequestSchema = z.object({
-  recipe: z.array(menuRecipeComponentSchema).default([]),
-});
-
 // ─── Menu Item Recipe Components (add/remove) ───────────────────────────────
 
 export const menuItemAddRecipeComponentRequestSchema = z.object({
@@ -231,6 +227,5 @@ export type MenuItemAdmin = z.infer<typeof menuItemAdminSchema>;
 export type MenuItemAdminListResponse = z.infer<typeof menuItemAdminListResponseSchema>;
 export type MenuItemCreateRequest = z.infer<typeof menuItemCreateRequestSchema>;
 export type MenuItemUpdateRequest = z.infer<typeof menuItemUpdateRequestSchema>;
-export type MenuItemReplaceRecipeRequest = z.infer<typeof menuItemReplaceRecipeRequestSchema>;
 export type MenuItemAddRecipeComponentRequest = z.infer<typeof menuItemAddRecipeComponentRequestSchema>;
 export type MenuItemRemoveRecipeComponentRequest = z.infer<typeof menuItemRemoveRecipeComponentRequestSchema>;

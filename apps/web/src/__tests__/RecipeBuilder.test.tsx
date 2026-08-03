@@ -82,12 +82,6 @@ describe('RecipeBuilder', () => {
     }
   });
 
-  it('container ingredient is filtered from candidates', () => {
-    render(<RecipeBuilder components={baseComponents} {...baseProps} />);
-    // "Scatola Pizza" (isContainer=1) should NOT appear in the candidate list
-    expect(screen.queryByText('Scatola Pizza')).not.toBeInTheDocument();
-  });
-
   it('renders the recipe title', () => {
     render(<RecipeBuilder components={baseComponents} {...baseProps} />);
     expect(screen.getByText('Ricetta')).toBeInTheDocument();

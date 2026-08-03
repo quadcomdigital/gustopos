@@ -155,42 +155,6 @@ test("takeaway with phone shows phone line", () => {
   assert.equal(line, "Telefono: 02 1234567");
 });
 
-// Container counting tests
-
-test("container items are counted in kitchen summary", () => {
-  const containerItems = [
-    { name: "Bun", isContainer: 1 },
-    { name: "Prosciutto", isContainer: 0 },
-    { name: "Panino", isContainer: 1 },
-  ];
-
-  const counts: Record<string, number> = {};
-  for (const item of containerItems) {
-    if (item.isContainer) {
-      counts[item.name] = (counts[item.name] ?? 0) + 1;
-    }
-  }
-
-  assert.deepEqual(counts, { Bun: 1, Panino: 1 });
-  assert.ok(!("Prosciutto" in counts), "Non-container items should not be counted");
-});
-
-test("non-container items are excluded from kitchen summary", () => {
-  const containerItems = [
-    { name: "Mozzarella", isContainer: 0 },
-    { name: "Pomodoro", isContainer: 0 },
-  ];
-
-  const counts: Record<string, number> = {};
-  for (const item of containerItems) {
-    if (item.isContainer) {
-      counts[item.name] = (counts[item.name] ?? 0) + 1;
-    }
-  }
-
-  assert.deepEqual(counts, {});
-});
-
 test("kitchen receipt header is REF", () => {
   const header = "*** REF ***";
   assert.ok(header.includes("REF"));

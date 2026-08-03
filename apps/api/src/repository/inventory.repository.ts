@@ -21,11 +21,7 @@ import {
   menuProductResponseSchema,
   canonicalUnitSchema,
   type MenuProductResponse,
-  menuItemCreateRequestSchema,
   menuItemUpdateRequestSchema,
-  menuItemReplaceRecipeRequestSchema,
-  menuItemAddRecipeComponentRequestSchema,
-  menuItemRemoveRecipeComponentRequestSchema,
   printAreaSchema,
   type Ingredient,
   type IngredientCreateRequest,
@@ -46,9 +42,7 @@ import {
   type CategoryModifierPoolCreateRequest,
   type CategoryModifierPoolUpdateRequest,
   type MenuItemAdmin,
-  type MenuItemCreateRequest,
   type MenuItemUpdateRequest,
-  type MenuItemReplaceRecipeRequest,
   type PrintArea,
   type PrepItemCreateRequest,
   prepItemCreateRequestSchema,
@@ -1512,7 +1506,7 @@ const result = await db
 return (result.rowCount ?? 0) > 0;
   }
 
-  async listMenuItemsAdmin(): Promise<{ id: string; name: string; price: number; category: string; printAreas: ("kitchen" | "bar" | "cashier")[]; isActive: boolean; recipe: { componentType: "ingredient" | "bom" | "prep"; componentId: string; quantity: number; unit: string; componentName?: string | undefined; }[]; modifiers: { id: string; inventoryItemId: string; priceDelta: number; name?: string | undefined; effectivePrice?: number | undefined; }[]; modifierGroups: { id: string; name: string; options: { id: string; name: string; isActive: boolean; priceDelta: number; sortOrder: number; isDefault: boolean; ingredientOverrides: { ingredientId: string; action: "add" | "remove" | "replace"; }[]; inventoryItemId?: string | undefined; bomId?: string | undefined; }[]; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; }[]; categoryId?: string | undefined; defaultContainerId?: string | null | undefined; }[]> {
+  async listMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
 return this.mapMenuItemsAdmin();
   }
 

@@ -1955,19 +1955,6 @@ export async function createMenuProduct(payload: CanonicalCreateMenuProductReque
   return readJson(response, menuProductResponseSchema);
 }
 
-export async function createMenuItem(payload: MenuItemCreateRequest): Promise<MenuItemAdmin> {
-  const request = menuItemCreateRequestSchema.parse(payload);
-  const response = await authorizedFetch(`${API_URL}/api/menu`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(request),
-  });
-
-  return readJson(response, menuItemAdminSchema);
-}
-
 export async function createSimpleCatalogItem(payload: Omit<MenuItemCreateRequest, 'recipe'> & { recipe?: unknown }): Promise<MenuItemAdmin> {
   const request = menuItemCreateRequestSchema
     .omit({ recipe: true })
