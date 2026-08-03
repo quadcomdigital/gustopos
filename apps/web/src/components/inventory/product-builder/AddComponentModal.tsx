@@ -194,7 +194,7 @@ export default function AddComponentModal({
               <Package size={12} className={selectedItem.type === 'prep' ? 'text-blue-600' : selectedItem.type === 'bom' ? 'text-purple-600' : 'text-green-600'} />
               {selectedItem.name}
             </p>
-            <div className="flex items-end gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-2">
               <div className="flex-1">
                 <label className="text-[9px] font-bold uppercase tracking-wider text-text-muted block mb-0.5">Quantità</label>
                 <input
@@ -215,7 +215,7 @@ export default function AddComponentModal({
                   placeholder="Unità"
                 />
               </div>
-              <Button variant="primary" size="sm" onClick={handleConfirmAdd}>
+              <Button variant="primary" size="sm" onClick={handleConfirmAdd} className="w-full sm:w-auto">
                 <Plus size={14} />
                 Aggiungi
               </Button>
@@ -230,12 +230,12 @@ export default function AddComponentModal({
 
         <div className="border-t border-border pt-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-2">Oppure crea nuovo</p>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => { onCreateIngredient(); handleClose(); }}>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button variant="secondary" className="w-full sm:w-auto" onClick={() => { onCreateIngredient(); handleClose(); }}>
               <Package size={14} />
               Crea ingrediente
             </Button>
-            <Button variant="secondary" onClick={() => { onCreatePrep(); handleClose(); }}>
+            <Button variant="secondary" className="w-full sm:w-auto" onClick={() => { onCreatePrep(); handleClose(); }}>
               <ChefHat size={14} />
               Crea prep
             </Button>

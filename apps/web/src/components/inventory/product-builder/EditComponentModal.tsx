@@ -94,7 +94,7 @@ export default function EditComponentModal({
       title={`Modifica: ${componentName}`}
       size="md"
       footer={
-        <div className="flex items-center gap-2 w-full">
+        <div className="flex flex-wrap items-center gap-2 w-full">
           <Button variant="danger" onClick={() => { onRemove(); onClose(); }}>Rimuovi</Button>
           <div className="flex-1" />
           <Button variant="secondary" onClick={onClose}>Annulla</Button>
@@ -115,7 +115,7 @@ export default function EditComponentModal({
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Quantità</label>
               <input

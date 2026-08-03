@@ -477,7 +477,7 @@ export default function FoodProductModal({
           </div>
 
           <div className="border-t border-border pt-3">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <div className="flex items-center gap-2">
                 <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Componenti</label>
                 <span className="text-[10px] font-bold text-text-muted px-1.5 py-0.5 rounded bg-bg">{recipe.length}</span>
@@ -525,7 +525,7 @@ export default function FoodProductModal({
                   <Layers size={12} />
                   Crea nuovo elemento composto
                 </p>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <div>
                     <label className="text-[9px] font-bold uppercase tracking-wider text-text-muted block mb-0.5">Nome BoM</label>
                     <input
@@ -554,7 +554,7 @@ export default function FoodProductModal({
                     />
                   </div>
                 </div>
-                <div className="flex items-center gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-2 pt-1">
                   <Button
                     variant="primary"
                     size="sm"
@@ -577,24 +577,6 @@ export default function FoodProductModal({
                 </div>
               </div>
             )}
-          </div>
-
-          {/* BASE product toggle */}
-          <div className="flex items-center gap-3 px-3 py-2 rounded-lg border border-border bg-bg/50">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={isBase}
-                onChange={(e) => setIsBase(e.target.checked)}
-                className="w-4 h-4 rounded accent-accent"
-              />
-              <div>
-                <span className="text-sm font-medium text-primary">Prodotto BASE</span>
-                <p className="text-[10px] text-text-muted">
-                  Prezzo fisso senza componenti obbligatori. Aggiungi ingredienti solo se necessario.
-                </p>
-              </div>
-            </label>
           </div>
 
           <div className="border-t border-border pt-3">

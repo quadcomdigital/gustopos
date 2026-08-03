@@ -163,12 +163,12 @@ export default function CreatePrepInlineModal({
               </div>
 
               {variants.map((v) => (
-                <div key={v.id} className="flex items-center gap-2 p-2 rounded border border-border bg-white">
+                <div key={v.id} className="flex flex-col sm:flex-row sm:items-center gap-2 p-2 rounded border border-border bg-white">
                   <input
                     value={v.name}
                     onChange={(e) => updateVariant(v.id, 'name', e.target.value)}
                     placeholder="Nome variante"
-                    className="flex-1 px-2 py-1.5 rounded border border-border text-sm"
+                    className="w-full sm:flex-1 px-2 py-1.5 rounded border border-border text-sm"
                   />
                   <input
                     type="number"
@@ -179,10 +179,10 @@ export default function CreatePrepInlineModal({
                     min="0.001"
                     step="0.001"
                   />
-                  <div className="w-24">
+                  <div className="w-full sm:w-24">
                     <UnitSelect value={v.unit} onChange={(u) => updateVariant(v.id, 'unit', u)} placeholder="Unità" />
                   </div>
-                  <button type="button" onClick={() => removeVariant(v.id)} className="p-1 text-text-muted hover:text-danger">
+                  <button type="button" onClick={() => removeVariant(v.id)} className="p-2 text-text-muted hover:text-danger shrink-0" aria-label="Rimuovi variante">
                     <Trash2 size={14} />
                   </button>
                 </div>

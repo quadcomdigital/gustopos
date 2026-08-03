@@ -193,14 +193,16 @@ export default function VariableProductModal({
           </div>
 
           {variants.map((v) => (
-            <div key={v.id} className="grid grid-cols-4 gap-2 items-center p-2 rounded border border-border bg-white mb-1.5">
-              <input value={v.name} onChange={(e) => updateVariant(v.id, 'name', e.target.value)} placeholder="Es. 33cl" className="px-2 py-1.5 rounded border border-border text-sm" />
-              <input value={v.price} onChange={(e) => updateVariant(v.id, 'price', e.target.value.replace(/[^0-9.-]/g, ''))} placeholder="Prezzo €" inputMode="decimal" className="px-2 py-1.5 rounded border border-border text-sm text-right" />
-              <SearchableSelect items={rawIngredients} getLabel={(i) => i.name} getValue={(i) => i.id} selectedValue={v.ingredientId} onSelect={(id) => { updateVariant(v.id, 'ingredientId', id); const ing = rawIngredients.find((i) => i.id === id); if (ing) updateVariant(v.id, 'unit', ing.unit); }} placeholder="Ingrediente" />
-              <div className="flex items-center gap-1">
-                <input type="number" value={v.quantity} onChange={(e) => updateVariant(v.id, 'quantity', e.target.value)} placeholder="Qtà" className="w-16 px-2 py-1.5 rounded border border-border text-sm text-right" min="0.001" />
-                <span className="text-[10px] text-text-muted">{v.unit}</span>
-                <button type="button" onClick={() => removeVariant(v.id)} className="p-1 text-text-muted hover:text-danger ml-auto"><Trash2 size={13} /></button>
+            <div key={v.id} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-stretch sm:items-center p-2 rounded border border-border bg-white mb-1.5">
+              <input value={v.name} onChange={(e) => updateVariant(v.id, 'name', e.target.value)} placeholder="Es. 33cl" className="w-full min-w-0 px-2 py-1.5 rounded border border-border text-sm" />
+              <input value={v.price} onChange={(e) => updateVariant(v.id, 'price', e.target.value.replace(/[^0-9.-]/g, ''))} placeholder="Prezzo €" inputMode="decimal" className="w-full min-w-0 px-2 py-1.5 rounded border border-border text-sm text-right" />
+              <div className="min-w-0 w-full">
+                <SearchableSelect items={rawIngredients} getLabel={(i) => i.name} getValue={(i) => i.id} selectedValue={v.ingredientId} onSelect={(id) => { updateVariant(v.id, 'ingredientId', id); const ing = rawIngredients.find((i) => i.id === id); if (ing) updateVariant(v.id, 'unit', ing.unit); }} placeholder="Ingrediente" />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input type="number" value={v.quantity} onChange={(e) => updateVariant(v.id, 'quantity', e.target.value)} placeholder="Qtà" className="w-full min-w-0 flex-1 sm:flex-none sm:w-16 px-2 py-1.5 rounded border border-border text-sm text-right" min="0.001" />
+                <span className="text-[10px] text-text-muted shrink-0">{v.unit}</span>
+                <button type="button" onClick={() => removeVariant(v.id)} className="p-2 text-text-muted hover:text-danger shrink-0" aria-label="Rimuovi variante"><Trash2 size={14} /></button>
               </div>
             </div>
           ))}

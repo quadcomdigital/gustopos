@@ -74,7 +74,7 @@ function SubComponentRow({
     <div className="flex items-center gap-1.5 px-2 py-1.5 rounded bg-white border border-border/70 hover:border-border transition-colors group">
       <span className="shrink-0">{subIcon}</span>
       <span className="text-xs text-secondary truncate flex-1 min-w-0">{subName}</span>
-      <span className="text-[8px] font-bold uppercase tracking-wider text-text-muted px-1 py-0.5 rounded bg-bg/50 shrink-0">{subLabel}</span>
+      <span className="hidden sm:inline-flex text-[8px] font-bold uppercase tracking-wider text-text-muted px-1 py-0.5 rounded bg-bg/50 shrink-0">{subLabel}</span>
       <input
         type="number"
         value={localQty}
@@ -106,7 +106,7 @@ function SubComponentRow({
             });
           }
         }}
-        className="p-1 text-text-muted hover:text-danger hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-all"
+        className="p-2 text-text-muted hover:text-danger hover:bg-red-50 rounded sm:opacity-0 sm:group-hover:opacity-100 transition-all"
         aria-label="Rimuovi componente"
       >
         <Trash2 size={10} />
@@ -177,7 +177,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
 
         <span className="text-sm font-medium text-primary truncate flex-1 min-w-0">{componentName}</span>
 
-        <span className="text-[9px] font-bold uppercase tracking-wider text-text-muted shrink-0 px-1.5 py-0.5 rounded bg-bg">{typeLabel}</span>
+        <span className="hidden sm:inline-flex text-[9px] font-bold uppercase tracking-wider text-text-muted shrink-0 px-1.5 py-0.5 rounded bg-bg">{typeLabel}</span>
 
         <input
           type="number"
