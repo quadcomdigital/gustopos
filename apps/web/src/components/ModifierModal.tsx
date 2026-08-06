@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import type { MenuItem, BomItem, Ingredient, MenuItemModifier, CategoryModifierPool, ModifierGroup, ModifierOption } from '@gustopos/shared';
+import type { MenuItem, BomItem, Ingredient, PrepItem, MenuItemModifier, CategoryModifierPool, ModifierOption } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -15,30 +15,44 @@ interface ModifierModalProps {
   }) => void;
   inventory: Ingredient[];
   bomItems: BomItem[];
+  prepItems: PrepItem[];
   existingOverrides?: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
   existingSelectedModifiers?: Array<{ groupId: string; optionId: string }>;
+  existingModifierPriceDelta?: number;
   categoryModifierPools?: CategoryModifierPool[];
 }
+
+type LeafComponent = {
+  componentType: 'ingredient' | 'prep';
+  componentId: string;
+  quantity: number;
+  unit: string;
+};
 
 function collectLeafIngredientIds(
   recipe: Array<{ componentType: string; componentId: string; quantity: number; unit: string }>,
   bomItems: BomItem[],
   visited: Set<string> = new Set(),
-): string[] {
-  const ids: string[] = [];
+): LeafComponent[] {
+  const components: LeafComponent[] = [];
   for (const comp of recipe) {
-    if (comp.componentType === 'ingredient') {
-      ids.push(comp.componentId);
+    if (comp.componentType === 'ingredient' || comp.componentType === 'prep') {
+      components.push({
+        componentType: comp.componentType,
+        componentId: comp.componentId,
+        quantity: comp.quantity,
+        unit: comp.unit,
+      });
     } else if (comp.componentType === 'bom') {
       if (visited.has(comp.componentId)) continue;
       visited.add(comp.componentId);
       const bom = bomItems.find((b) => b.id === comp.componentId);
       if (bom) {
-        ids.push(...collectLeafIngredientIds(bom.components as any, bomItems, visited));
+        components.push(...collectLeafIngredientIds(bom.components as any, bomItems, visited));
       }
     }
   }
-  return ids;
+  return components;
 }
 
 function CheckboxRow({
@@ -103,25 +117,21 @@ export default function ModifierModal({
   onConfirm,
   inventory,
   bomItems,
+  prepItems,
   existingOverrides = [],
   existingSelectedModifiers = [],
+  existingModifierPriceDelta = 0,
   categoryModifierPools,
 }: ModifierModalProps) {
   const [activeTab, setActiveTab] = useState<'togli' | 'aggiungi'>('togli');
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [addedIds, setAddedIds] = useState<string[]>([]);
   const [groupSelections, setGroupSelections] = useState<Record<string, string[]>>({});
-
   const existingOverridesRef = React.useRef(existingOverrides);
-  const existingSelectedModifiersRef = React.useRef(existingSelectedModifiers);
 
   React.useEffect(() => {
     existingOverridesRef.current = existingOverrides;
   }, [existingOverrides]);
-
-  React.useEffect(() => {
-    existingSelectedModifiersRef.current = existingSelectedModifiers;
-  }, [existingSelectedModifiers]);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -136,32 +146,25 @@ export default function ModifierModal({
           .filter((o) => o.action === 'add')
           .map((o) => o.ingredientId),
       );
-
-      // Initialize modifier group selections from existing cart data or defaults
       const initialSelections: Record<string, string[]> = {};
-      const existingMap = new Map(
-        existingSelectedModifiersRef.current.map((sm) => [sm.groupId, sm.optionId]),
-      );
-      const modifierGroups = (item.modifierGroups ?? []) as ModifierGroup[];
-      for (const group of modifierGroups) {
-        const existingOptionId = existingMap.get(group.id);
+      const selectedMap = new Map(existingSelectedModifiers.map((selected) => [selected.groupId, selected.optionId]));
+      for (const group of (item.modifierGroups ?? [])) {
+        if (group.name.trim().toLowerCase() === 'base') continue;
+        const existingOptionId = selectedMap.get(group.id);
         if (existingOptionId) {
           initialSelections[group.id] = [existingOptionId];
         } else {
-          const defaults = group.options
-            .filter((o: ModifierOption) => o.isDefault && o.isActive)
-            .map((o: ModifierOption) => o.id);
-          if (defaults.length > 0) {
-            initialSelections[group.id] = defaults;
-          } else if (group.maxSelections === 1 && group.options.length > 0) {
-            const firstActive = group.options.find((o: ModifierOption) => o.isActive);
-            if (firstActive) initialSelections[group.id] = [firstActive.id];
+          const defaults = group.options.filter((option) => option.isDefault && option.isActive).map((option) => option.id);
+          if (defaults.length > 0) initialSelections[group.id] = defaults;
+          else if (group.maxSelections === 1 && group.options.length > 0) {
+            const first = group.options.find((option) => option.isActive);
+            if (first) initialSelections[group.id] = [first.id];
           }
         }
       }
       setGroupSelections(initialSelections);
     }
-  }, [isOpen, item]);
+  }, [existingSelectedModifiers, isOpen, item]);
 
   const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
 
@@ -176,18 +179,28 @@ export default function ModifierModal({
   }, [isOpen, onClose]);
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
+  const prepById = useMemo(() => new Map(prepItems.map((prep) => [prep.id, prep])), [prepItems]);
+  const modifierGroups = useMemo(
+    () => ((item.modifierGroups ?? []) as Array<{ id: string; name: string; required: boolean; minSelections: number; maxSelections: number; options: ModifierOption[] }>)
+      .filter((group) => group.name.trim().toLowerCase() !== 'base' && group.options.some((option) => option.isActive)),
+    [item.modifierGroups],
+  );
 
-  const leafIngredientIds = useMemo(() => {
-    const ids = collectLeafIngredientIds(item.recipe ?? [], bomItems);
-    return [...new Set(ids)];
+  const leafComponents = useMemo(() => {
+    const components = collectLeafIngredientIds(item.recipe ?? [], bomItems);
+    const byId = new Map<string, LeafComponent>();
+    for (const component of components) {
+      const existing = byId.get(component.componentId);
+      if (existing && existing.unit === component.unit && existing.componentType === component.componentType) {
+        existing.quantity += component.quantity;
+      } else if (!existing) {
+        byId.set(component.componentId, { ...component });
+      }
+    }
+    return [...byId.values()];
   }, [item.recipe, bomItems]);
 
   const modifiers: MenuItemModifier[] = useMemo(() => (item as any).modifiers ?? [], [item]);
-
-  const modifierGroups: ModifierGroup[] = useMemo(
-    () => ((item.modifierGroups ?? []) as ModifierGroup[]).filter((g) => g.options.some((o: ModifierOption) => o.isActive)),
-    [item.modifierGroups],
-  );
 
   const poolOptions = useMemo(() => {
     if (!categoryModifierPools) return [];
@@ -234,37 +247,6 @@ export default function ModifierModal({
     return items;
   }, [modifiers, poolOptions, inventoryById]);
 
-  // Compute modifier group overrides and price delta
-  const { groupIngredientOverrides, groupPriceDelta } = useMemo(() => {
-    const overrides: Array<{ ingredientId: string; action: 'add' | 'remove' }> = [];
-    let price = 0;
-    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
-      const group = modifierGroups.find((g) => g.id === groupId);
-      if (!group || optionIds.length === 0) continue;
-      if (group.maxSelections > 1) {
-        const maxDelta = Math.max(...group.options.filter((o: ModifierOption) => optionIds.includes(o.id) && !o.isDefault).map((o: ModifierOption) => o.priceDelta));
-        price += maxDelta;
-      } else {
-        for (const optionId of optionIds) {
-          const option = group.options.find((o: ModifierOption) => o.id === optionId);
-          if (!option) continue;
-          // Don't apply price delta for default options — they're included in the base price
-          if (!option.isDefault) {
-            price += option.priceDelta;
-          }
-        }
-      }
-      for (const optionId of optionIds) {
-        const option = group.options.find((o: ModifierOption) => o.id === optionId);
-        if (!option) continue;
-        for (const override of option.ingredientOverrides ?? []) {
-          overrides.push({ ingredientId: override.ingredientId, action: override.action as 'add' | 'remove' });
-        }
-      }
-    }
-    return { groupIngredientOverrides: overrides, groupPriceDelta: price };
-  }, [groupSelections, modifierGroups]);
-
   const toggleRemove = (ingredientId: string) => {
     setRemovedIds((prev) =>
       prev.includes(ingredientId)
@@ -279,30 +261,39 @@ export default function ModifierModal({
     );
   };
 
-  const toggleGroupOption = (groupId: string, optionId: string) => {
-    setGroupSelections((prev) => {
-      const group = modifierGroups.find((g) => g.id === groupId);
-      if (!group) return prev;
-      const current = prev[groupId] ?? [];
+  const groupPriceDelta = useMemo(() => {
+    let total = 0;
+    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
+      const group = modifierGroups.find((candidate) => candidate.id === groupId);
+      if (!group || optionIds.length === 0) continue;
+      const deltas = optionIds.map((optionId) => group.options.find((option) => option.id === optionId)).filter(Boolean).filter((option) => !option!.isDefault).map((option) => option!.priceDelta);
+      total += group.maxSelections > 1 ? (deltas.length > 0 ? Math.max(...deltas) : 0) : deltas.reduce((sum, delta) => sum + delta, 0);
+    }
+    return total;
+  }, [groupSelections, modifierGroups]);
 
-      if (group.maxSelections === 1) {
-        return { ...prev, [groupId]: [optionId] };
-      }
+  const existingGroupPriceDelta = useMemo(() => {
+    let total = 0;
+    for (const selected of existingSelectedModifiers) {
+      const group = modifierGroups.find((candidate) => candidate.id === selected.groupId);
+      const option = group?.options.find((candidate) => candidate.id === selected.optionId);
+      if (option && !option.isDefault) total += option.priceDelta;
+    }
+    return total;
+  }, [existingSelectedModifiers, modifierGroups]);
 
-      if (current.includes(optionId)) {
-        const next = current.filter((id) => id !== optionId);
-        if (next.length >= (group.minSelections ?? 0)) {
-          return { ...prev, [groupId]: next };
-        }
-        return prev;
-      }
+  const existingAddedPriceDelta = useMemo(() => {
+    const ids = new Set(existingOverrides.filter((override) => override.action === 'add').map((override) => override.ingredientId));
+    return allAddableItems.filter((option) => ids.has(option.id)).reduce((sum, option) => sum + option.priceDelta, 0);
+  }, [allAddableItems, existingOverrides]);
 
-      if (current.length < group.maxSelections) {
-        return { ...prev, [groupId]: [...current, optionId] };
-      }
-      return prev;
-    });
-  };
+  const selectedModifiers = useMemo(() => {
+    const baseSelections = existingSelectedModifiers.filter((selected) => !modifierGroups.some((group) => group.id === selected.groupId));
+    return [
+      ...baseSelections,
+      ...Object.entries(groupSelections).flatMap(([groupId, optionIds]) => optionIds.map((optionId) => ({ groupId, optionId }))),
+    ];
+  }, [existingSelectedModifiers, groupSelections, modifierGroups]);
 
   const addedPriceDelta = useMemo(() => {
     let total = 0;
@@ -315,50 +306,36 @@ export default function ModifierModal({
 
   const removedCount = removedIds.length;
   const addedCount = addedIds.length;
-  const groupSelectionCount = Object.values(groupSelections).reduce((sum, opts) => sum + opts.length, 0);
-  const totalModCount = removedCount + addedCount + groupSelectionCount;
-
-  // Check if all required groups have selections
-  const requiredGroupsSatisfied = useMemo(() => {
-    return modifierGroups.every((group) => {
-      if (!group.required) return true;
-      const selected = groupSelections[group.id] ?? [];
-      return selected.length >= (group.minSelections ?? (group.required ? 1 : 0));
-    });
-  }, [modifierGroups, groupSelections]);
-
-  const hasChanges = (removedCount > 0 || addedCount > 0 || groupSelectionCount > 0) && requiredGroupsSatisfied;
+  const totalModCount = removedCount + addedCount + selectedModifiers.length;
+  const requiredGroupsSatisfied = modifierGroups.every((group) => !group.required || (groupSelections[group.id] ?? []).length >= (group.minSelections ?? 1));
+  const hasChanges = (removedCount > 0 || addedCount > 0 || selectedModifiers.length > 0) && requiredGroupsSatisfied;
 
   const handleConfirm = () => {
-    const ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }> = [];
-
-    // Add modifier group overrides first
-    ingredientOverrides.push(...groupIngredientOverrides);
-
-    // Add manual remove overrides
+    const overridesByKey = new Map<string, { ingredientId: string; action: 'add' | 'remove' }>();
     for (const id of removedIds) {
-      ingredientOverrides.push({ ingredientId: id, action: 'remove' });
+      overridesByKey.set(`${id}:remove`, { ingredientId: id, action: 'remove' });
     }
-
-    // Add manual add overrides
-    const idSet = new Set(addedIds);
-    for (const item of allAddableItems) {
-      if (idSet.has(item.id)) {
-        ingredientOverrides.push({ ingredientId: item.invId, action: 'add' });
+    const addedIdSet = new Set(addedIds);
+    for (const option of allAddableItems) {
+      if (addedIdSet.has(option.id)) {
+        overridesByKey.set(`${option.invId}:add`, { ingredientId: option.invId, action: 'add' });
       }
     }
-
-    const selectedModifiers: Array<{ groupId: string; optionId: string }> = [];
-    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
-      for (const optionId of optionIds) {
-        selectedModifiers.push({ groupId, optionId });
+    for (const selected of selectedModifiers) {
+      const group = modifierGroups.find((candidate) => candidate.id === selected.groupId);
+      const option = group?.options.find((candidate) => candidate.id === selected.optionId);
+      for (const override of option?.ingredientOverrides ?? []) {
+        overridesByKey.set(`${override.ingredientId}:${override.action}`, {
+          ingredientId: override.ingredientId,
+          action: override.action as 'add' | 'remove',
+        });
       }
     }
 
     onConfirm({
-      ingredientOverrides,
+      ingredientOverrides: [...overridesByKey.values()],
       selectedModifiers,
-      modifierPriceDelta: addedPriceDelta + groupPriceDelta,
+      modifierPriceDelta: existingModifierPriceDelta - existingGroupPriceDelta - existingAddedPriceDelta + groupPriceDelta + addedPriceDelta,
     });
   };
 
@@ -384,81 +361,6 @@ export default function ModifierModal({
               <button onClick={onClose} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-2 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0"><X size={18} /></button>
             </div>
 
-            {/* Modifier Groups Section */}
-            {modifierGroups.length > 0 && (
-              <div className="border-b border-border shrink-0 max-h-[35vh] overflow-y-auto">
-                {modifierGroups.map((group) => {
-                  const selected = groupSelections[group.id] ?? [];
-                  const _isSingleSelect = group.maxSelections === 1;
-                  return (
-                    <div key={group.id} className="px-4 py-3 border-b border-border/50 last:border-b-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">
-                          {group.name}
-                        </h3>
-                        {group.required && (
-                          <span className="text-[9px] font-bold text-danger bg-rose-50 px-1.5 py-0.5 rounded">
-                            OBBLIGATORIO
-                          </span>
-                        )}
-                        {selected.length > 0 && (
-                          <span className="text-[9px] font-bold text-accent bg-accent/10 px-1.5 py-0.5 rounded ml-auto">
-                            {selected.length}
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-1">
-                        {group.options
-                          .filter((o: ModifierOption) => o.isActive)
-                          .map((option: ModifierOption) => {
-                            const isSelected = selected.includes(option.id);
-                            const badge = option.priceDelta > 0
-                              ? `+€${option.priceDelta.toFixed(2)}`
-                              : option.priceDelta < 0
-                                ? `-€${Math.abs(option.priceDelta).toFixed(2)}`
-                                : undefined;
-                            return (
-                              <button
-                                key={option.id}
-                                type="button"
-                                onClick={() => toggleGroupOption(group.id, option.id)}
-                                className={cn(
-                                  'w-full flex items-center gap-3 px-3 py-2 rounded-lg border transition-all active:scale-[0.98] text-left',
-                                  isSelected
-                                    ? 'border-accent bg-accent/5'
-                                    : 'border-border bg-white hover:border-gray-300',
-                                )}
-                              >
-                                <div
-                                  className={cn(
-                                    'w-5 h-5 rounded-full flex items-center justify-center shrink-0 border-2 transition-all',
-                                    isSelected
-                                      ? 'border-accent bg-accent'
-                                      : 'border-gray-300 bg-white',
-                                  )}
-                                >
-                                  {isSelected && <Check size={12} className="text-white" strokeWidth={3} />}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className={cn('text-sm font-medium truncate', isSelected ? 'text-primary' : 'text-secondary')}>
-                                    {option.name}
-                                  </p>
-                                </div>
-                                {badge && (
-                                  <span className={cn('text-[11px] font-bold shrink-0', isSelected ? 'text-accent' : 'text-text-muted')}>
-                                    {badge}
-                                  </span>
-                                )}
-                              </button>
-                            );
-                          })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
             <div className="flex border-b border-border shrink-0">
               <button
                 onClick={() => setActiveTab('togli')}
@@ -483,17 +385,21 @@ export default function ModifierModal({
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
               {activeTab === 'togli' && (
                 <div className="space-y-1">
-                  {leafIngredientIds.length === 0 ? (
+                  {leafComponents.length === 0 ? (
                     <p className="text-xs text-text-muted text-center py-8">Nessun ingrediente da rimuovere</p>
                   ) : (
-                    leafIngredientIds.map((ingId) => {
-                      const ing = inventoryById.get(ingId);
+                    leafComponents.map((component) => {
+                      const ing = inventoryById.get(component.componentId);
+                      const prep = prepById.get(component.componentId);
+                      const label = ing?.name ?? prep?.name ?? component.componentId;
+                      const subtitle = `${component.quantity} ${component.unit}`;
                       return (
                         <CheckboxRow
-                          key={ingId}
-                          label={ing?.name ?? ingId}
-                          checked={removedIds.includes(ingId)}
-                          onChange={() => toggleRemove(ingId)}
+                          key={`${component.componentType}:${component.componentId}`}
+                          label={label}
+                          subtitle={subtitle}
+                          checked={removedIds.includes(component.componentId)}
+                          onChange={() => toggleRemove(component.componentId)}
                           variant="danger"
                         />
                       );

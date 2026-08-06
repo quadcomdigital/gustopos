@@ -152,8 +152,12 @@ export default function POSProductModal({
   }, [modifierGroups.length, hasCategoryPools, hasLegacyModifiers, noIngredientOverrides]);
 
   const inlineModifierGroups = useMemo(
-    () => modifierGroups.filter((group) => isSimpleModifier || group.name.trim().toLowerCase() === 'base'),
-    [isSimpleModifier, modifierGroups],
+    // I group del prodotto (Grandezza, Tipo, Formato, Gusto, Base...) vanno SEMPRE inline,
+    // anche quando il prodotto ha pool di categoria (es. Granella su Dolci). Il filtro
+    // storico `isSimpleModifier || name==='base'` nascondeva i group non-Base quando
+    // hasCategoryPools → i group obbligatori sparivano dal modale principale.
+    () => modifierGroups,
+    [modifierGroups],
   );
 
   const modifierGroupIds = useMemo(() => inlineModifierGroups.map((g) => g.id).join(','), [inlineModifierGroups]);
