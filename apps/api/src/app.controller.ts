@@ -1327,6 +1327,25 @@ export class AppController {
     return { success: true };
   }
 
+  @Delete("boms/:id")
+  @RequiresPermissions("inventory:manage")
+  @Roles("admin", "chef")
+  @RequiresModule("inventory")
+  async deleteBom(@Param("id") id: string) {
+    try {
+      const removed = await this.inventoryRepo.deleteBomItem(id);
+      if (!removed) {
+        throw new NotFoundException("BoM item not found");
+      }
+      return { success: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Cannot delete BoM item");
+    }
+  }
+
   @Get("categories")
   @Roles("admin", "chef")
   @RequiresModule("inventory")

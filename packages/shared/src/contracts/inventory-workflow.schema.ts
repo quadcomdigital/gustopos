@@ -38,6 +38,43 @@ export const canonicalMenuComponentSchema = menuComponentSchema.extend({
 });
 export type CanonicalMenuComponent = z.infer<typeof canonicalMenuComponentSchema>;
 
+// ─── Modifier group input (canonical) ───────────────────────────────────────
+// Living here (not in menu.schema.ts) because menu.schema.ts already imports
+// from this module; placing them here avoids a circular dependency.
+
+export const modifierOptionOverrideInputSchema = z.object({
+  ingredientId: z.string().min(1),
+  action: z.enum(["add", "remove", "replace"]),
+});
+export type ModifierOptionOverrideInput = z.infer<typeof modifierOptionOverrideInputSchema>;
+
+export const modifierOptionInputSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  inventoryItemId: z.string().optional(),
+  componentType: z.enum(["ingredient", "prep", "bom"]).default("ingredient"),
+  componentId: z.string().optional(),
+  quantity: z.number().positive().default(1),
+  unit: canonicalUnitSchema.default("pz"),
+  priceDelta: z.number().default(0),
+  isDefault: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+  sortOrder: z.number().int().default(0),
+  ingredientOverrides: z.array(modifierOptionOverrideInputSchema).default([]),
+});
+export type ModifierOptionInput = z.infer<typeof modifierOptionInputSchema>;
+
+export const modifierGroupInputSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  required: z.boolean().default(false),
+  minSelections: z.number().int().min(0).default(0),
+  maxSelections: z.number().int().min(1).default(1),
+  sortOrder: z.number().int().default(0),
+  options: z.array(modifierOptionInputSchema).default([]),
+});
+export type ModifierGroupInput = z.infer<typeof modifierGroupInputSchema>;
+
 export const inlineIngredientSchema = z.object({
   clientKey: z.string().min(1),
   name: z.string().min(2),
@@ -96,6 +133,7 @@ export const canonicalCreateMenuProductRequestSchema = z.object({
   components: z.array(canonicalMenuComponentSchema).default([]),
   inlineIngredients: z.array(inlineIngredientSchema).default([]),
   inlinePreps: z.array(canonicalInlinePrepSchema).default([]),
+  modifierGroups: z.array(modifierGroupInputSchema).default([]),
 });
 export type CanonicalCreateMenuProductRequest = z.infer<typeof canonicalCreateMenuProductRequestSchema>;
 

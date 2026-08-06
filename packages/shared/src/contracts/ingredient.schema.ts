@@ -14,6 +14,7 @@ export const ingredientSchema = z.object({
   unitCost: z.number().nonnegative().default(0),
   salePrice: z.number().nonnegative().nullable().default(null),
   isActive: z.boolean().default(true),
+  isStockTracked: z.boolean().default(true),
   supplierName: z.string().nullable().optional(),
   brandName: z.string().nullable().optional(),
   createdAt: z.string().optional(),
@@ -29,6 +30,7 @@ export const ingredientCreateRequestSchema = z.object({
   categoryId: z.string().optional(),
   unitCost: z.number().nonnegative().default(0),
   salePrice: z.number().nonnegative().nullable().optional(),
+  isStockTracked: z.boolean().default(true),
 });
 
 export const ingredientUpdateRequestSchema = z.object({
@@ -41,6 +43,7 @@ export const ingredientUpdateRequestSchema = z.object({
   unitCost: z.number().nonnegative().optional(),
   salePrice: z.number().nonnegative().nullable().optional(),
   isActive: z.boolean().optional(),
+  isStockTracked: z.boolean().optional(),
 });
 
 export const ingredientAdjustRequestSchema = z.object({
