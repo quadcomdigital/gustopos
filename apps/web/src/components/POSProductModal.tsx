@@ -31,6 +31,7 @@ interface POSProductModalProps {
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>,
     selectedModifiers: Array<{ groupId: string; optionId: string }>,
     modifierPriceDelta: number,
+    customPrice?: number,
   ) => void;
   inventory: Ingredient[];
   orderMode: 'dine_in' | 'takeaway' | 'delivery';
@@ -69,8 +70,10 @@ export default function POSProductModal({
   const [modifierPriceDelta, setModifierPriceDelta] = useState(existingCartItem?.modifierPriceDelta ?? 0);
   const [groupSelections, setGroupSelections] = useState<Record<string, string[]>>({});
   const [selectedToppingIds, setSelectedToppingIds] = useState<string[]>([]);
+  const [customPrice, setCustomPrice] = useState<number>(existingCartItem?.basePrice ?? 0);
 
   const resolvedItem = menuItems.find((m) => m.id === item?.id) ?? item;
+  const isJolly = Boolean((resolvedItem as any)?.isJolly);
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
 
@@ -101,7 +104,8 @@ export default function POSProductModal({
       setQuantity(existingCartItem?.quantity ?? 1); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize POS product modal from existing cart item
       setIngredientOverrides(existingCartItem?.ingredientOverrides ?? []);  
       setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);  
-      setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);  
+      setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);
+      setCustomPrice(existingCartItem?.basePrice ?? ((item as any)?.isJolly ? Number((item as any)?.price ?? 0) : 0));  
 
       const rawNotes = existingCartItem?.notes ?? '';
       if (toppingPoolOptions.length > 0) {
@@ -300,7 +304,8 @@ export default function POSProductModal({
   if (!resolvedItem) return null;
 
   const isEditing = Boolean(existingCartItem);
-  const finalPrice = (resolvedItem.price + inlineModifierPriceDelta) * quantity;
+  const baseUnitPrice = isJolly ? customPrice : resolvedItem.price;
+  const finalPrice = (baseUnitPrice + inlineModifierPriceDelta) * quantity;
   const totalMods = cartIngredientOverrides.length + inlineSelectedModifiers.length;
 
   const toggleGroupOption = (groupId: string, optionId: string) => {
@@ -343,7 +348,7 @@ export default function POSProductModal({
             <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
               <div className="flex-1 min-w-0 pr-3">
                 <h2 className="text-base sm:text-lg font-bold text-primary leading-tight truncate">{resolvedItem.name}</h2>
-                <p className="text-sm sm:text-base font-extrabold text-accent">€{resolvedItem.price.toFixed(2)}</p>
+                <p className="text-sm sm:text-base font-extrabold text-accent">{isJolly ? `€${(customPrice || 0).toFixed(2)}` : `€${resolvedItem.price.toFixed(2)}`}</p>
               </div>
               <button onClick={onClose} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-2 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0"><X size={18} /></button>
             </div>
@@ -356,6 +361,21 @@ export default function POSProductModal({
               </div>
 
               <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (es: senza glutine, ben cotta...)" className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:border-accent focus:outline-none" />
+
+              {isJolly && (
+                <div className="space-y-1.5">
+                  <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">Prezzo ad-hoc</h3>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={customPrice || ''}
+                    onChange={(e) => setCustomPrice(Math.max(0, parseFloat(e.target.value) || 0))}
+                    placeholder="0.00"
+                    className="w-full px-3 py-2.5 rounded-xl border border-accent text-lg font-bold text-primary focus:outline-none"
+                  />
+                </div>
+              )}
 
               {visiblePools.length > 0 && (
                 <div className="space-y-2">
@@ -492,7 +512,7 @@ export default function POSProductModal({
             <div className="px-4 py-3 sm:px-5 sm:py-4 border-t border-border shrink-0">
               <button
                 ref={confirmButtonRef}
-                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta)}
+                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta, isJolly ? (customPrice || 0) : undefined)}
                 disabled={!requiredInlineGroupsSatisfied}
                 className="w-full flex items-center justify-center gap-2 py-4 bg-accent text-white rounded-xl active:bg-blue-800 active:scale-[0.98] transition-all text-sm font-bold uppercase tracking-widest shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
               >

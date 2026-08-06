@@ -43,6 +43,7 @@ import {
   type CategoryModifierPoolUpdateRequest,
   type MenuItemAdmin,
   type MenuItemUpdateRequest,
+  type ModifierGroupInput,
   type PrintArea,
   type PrepItemCreateRequest,
   prepItemCreateRequestSchema,
@@ -101,9 +102,28 @@ function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
   } catch { return ["kitchen"]; }
 }
 
+type InventoryConversionRow = {
+  inventoryId: string;
+  fromUnit: string;
+  toUnit: string;
+};
+
+function unitsMatchIngredient(
+  componentUnit: string,
+  ingredientUnit: string,
+  ingredientId: string,
+  conversions: InventoryConversionRow[],
+): boolean {
+  return componentUnit === ingredientUnit || conversions.some((conversion) =>
+    conversion.inventoryId === ingredientId
+      && ((conversion.fromUnit === componentUnit && conversion.toUnit === ingredientUnit)
+        || (conversion.fromUnit === ingredientUnit && conversion.toUnit === componentUnit)),
+  );
+}
+
 @Injectable()
 export class InventoryRepository {
-  private mapInventoryRows(rows: { id: string; name: string; quantity: unknown; unit: string; minThreshold: unknown; categoryId: string | null; unitCost: unknown; salePrice: string | null; isActive: number; supplierName?: string | null; brandName?: string | null; sku?: string | null }[]): Ingredient[] {
+  private mapInventoryRows(rows: { id: string; name: string; quantity: unknown; unit: string; minThreshold: unknown; categoryId: string | null; unitCost: unknown; salePrice: string | null; isActive: number; isStockTracked?: number; supplierName?: string | null; brandName?: string | null; sku?: string | null }[]): Ingredient[] {
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -115,6 +135,7 @@ export class InventoryRepository {
       unitCost: Number(row.unitCost ?? 0),
       salePrice: row.salePrice != null ? Number(row.salePrice) : null,
       isActive: row.isActive === 1,
+      isStockTracked: row.isStockTracked == null || row.isStockTracked === 1,
       supplierName: row.supplierName ?? null,
       brandName: row.brandName ?? null,
     }));
@@ -203,11 +224,14 @@ export class InventoryRepository {
     components: Array<{ componentType: string; componentId: string; quantity: number; unit: string }>,
     extra?: { bomEdges?: BomGraphEdge[]; prepSources?: PrepSourceEdge[] },
   ): Promise<void> {
-    const [bomRows, componentRows, prepRows, inventoryRows] = await Promise.all([
+    const [bomRows, componentRows, prepRows, inventoryRows, conversionRows] = await Promise.all([
       executor.select().from(bomItems).where(eq(bomItems.tenantId, tenantId)),
       executor.select().from(bomComponents).where(eq(bomComponents.tenantId, tenantId)),
       executor.select().from(prepItems).where(eq(prepItems.tenantId, tenantId)),
       executor.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
+      executor.select({ inventoryId: inventoryUnitConversions.inventoryId, fromUnit: inventoryUnitConversions.fromUnit, toUnit: inventoryUnitConversions.toUnit })
+        .from(inventoryUnitConversions)
+        .where(eq(inventoryUnitConversions.tenantId, tenantId)),
     ]);
     const bomById = new Map(bomRows.map((row) => [row.id, row]));
     const prepById = new Map(prepRows.map((row) => [row.id, row]));
@@ -228,7 +252,9 @@ export class InventoryRepository {
       } else {
         if (!targetIng) throw new Error(`Ingredient component ${component.componentId} not found`);
         if (targetIng.isActive !== 1) throw new Error(`Ingredient "${targetIng.name}" is not active`);
-        if (!areUnitsCompatible(component.unit, targetIng.unit)) throw new Error(`Unit ${component.unit} incompatible with ingredient unit ${targetIng.unit}`);
+        if (!unitsMatchIngredient(component.unit, targetIng.unit, targetIng.id, conversionRows)) {
+          throw new Error(`Unit ${component.unit} incompatible with ingredient unit ${targetIng.unit}`);
+        }
       }
     }
 
@@ -283,7 +309,7 @@ export class InventoryRepository {
           ? prepNameById.get(component.componentId) ?? component.componentId
           : bomNameById.get(component.componentId) ?? component.componentId;
       const unit = component.componentType === "ingredient"
-        ? ingredientUnitById.get(component.componentId) ?? ""
+        ? component.unit || ingredientUnitById.get(component.componentId) || ""
         : component.componentType === "prep"
           ? prepUnitById.get(component.componentId) ?? ""
           : bomUnitById.get(component.componentId) ?? "";
@@ -305,7 +331,7 @@ export class InventoryRepository {
     const optionsByGroupId = new Map<string, any[]>();
     for (const opt of modifierOptionRows) {
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
-      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
+      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
       optionsByGroupId.set(opt.groupId, existing);
     }
     const modifierGroupsByMenuId = new Map<string, any[]>();
@@ -316,7 +342,7 @@ export class InventoryRepository {
     }
     return menuItemAdminListResponseSchema.parse(menuRows.map((row) => menuItemAdminSchema.parse({
       id: row.id, name: row.name, price: Number(row.price), category: row.category, categoryId: row.categoryId ?? undefined,
-      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1,
+      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1, isJolly: row.isJolly === 1,
       recipe: recipeByMenuId.get(row.id) ?? [], modifiers: [], modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
     })));
   }
@@ -371,6 +397,7 @@ const inserted = await db
     unitCost: String(parsed.unitCost ?? 0),
     salePrice: parsed.salePrice != null ? String(parsed.salePrice) : null,
     isActive: 1,
+    isStockTracked: parsed.isStockTracked ? 1 : 0,
   })
   .returning();
 
@@ -386,6 +413,7 @@ return {
   unitCost: Number(created.unitCost ?? 0),
   salePrice: created.salePrice != null ? Number(created.salePrice) : null,
   isActive: created.isActive === 1,
+  isStockTracked: created.isStockTracked == null || created.isStockTracked === 1,
 };
   }
 
@@ -413,6 +441,7 @@ const updated = await db
     ...(parsed.unitCost !== undefined ? { unitCost: String(parsed.unitCost) } : {}),
     ...(parsed.salePrice !== undefined ? { salePrice: parsed.salePrice != null ? String(parsed.salePrice) : null } : {}),
     ...(parsed.isActive !== undefined ? { isActive: parsed.isActive ? 1 : 0 } : {}),
+    ...(parsed.isStockTracked !== undefined ? { isStockTracked: parsed.isStockTracked ? 1 : 0 } : {}),
   })
   .where(and(eq(inventory.tenantId, tenantId), eq(inventory.id, id)))
   .returning();
@@ -462,6 +491,7 @@ return {
   unitCost: Number(row.unitCost ?? 0),
   salePrice: row.salePrice != null ? Number(row.salePrice) : null,
   isActive: row.isActive === 1,
+  isStockTracked: row.isStockTracked == null || row.isStockTracked === 1,
 };
   }
 
@@ -568,6 +598,7 @@ return withTenantTx(async (tx) => {
     unitCost: Number(r.unitCost ?? 0),
     salePrice: r.salePrice != null ? Number(r.salePrice) : null,
     isActive: r.isActive === 1,
+    isStockTracked: r.isStockTracked == null || r.isStockTracked === 1,
   };
 });
   }
@@ -927,7 +958,7 @@ return withTenantTx(async (tx) => {
   }
 
   const id = `prep_${Date.now().toString(36)}`;
-  await tx.insert(prepItems).values({
+  const inserted = await tx.insert(prepItems).values({
     id,
     tenantId,
     sourceType: parsed.source.sourceType,
@@ -935,12 +966,28 @@ return withTenantTx(async (tx) => {
     name: parsed.name,
     inputQuantity: String(parsed.source.inputQuantity),
     inputUnit: parsed.source.inputUnit,
-    outputQuantity: String(parsed.source.outputQuantity),
-    outputUnit: parsed.source.outputUnit,
+    outputQuantity: "1",
+    outputUnit: "pz",
     stockQuantity: "0",
     isActive: 1,
-  });
-  return (await this.listPrepItems()).find((p) => p.id === id)!;
+  }).returning();
+  const created = inserted[0];
+  if (!created) throw new Error("Failed to create prep item");
+  return {
+    id: created.id,
+    tenantId: created.tenantId,
+    sourceType: created.sourceType as "ingredient" | "bom",
+    sourceId: created.sourceId,
+    name: created.name,
+    inputQuantity: Number(created.inputQuantity),
+    inputUnit: created.inputUnit as PrepItem["inputUnit"],
+    outputQuantity: Number(created.outputQuantity),
+    outputUnit: created.outputUnit as PrepItem["outputUnit"],
+    stockQuantity: Number(created.stockQuantity),
+    isActive: created.isActive === 1,
+    createdAt: created.createdAt.toISOString(),
+    updatedAt: created.updatedAt.toISOString(),
+  };
 });
   }
 
@@ -1260,9 +1307,9 @@ return categoriesListResponseSchema.parse(rows.map((row) => this.mapCategoryRow(
   }
 
   async createCategory(payload: CategoryCreateRequest): Promise<{ id: string; name: string; scope: "ingredient" | "bom" | "menu"; isActive: boolean; printAreas: ("kitchen" | "bar" | "cashier")[]; createdAt: string; updatedAt: string; }> {
-const parsed = categoryCreateRequestSchema.parse(payload);
+ const parsed = categoryCreateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
-const id = `cat_${Date.now().toString(36)}`;
+const id = parsed.id?.trim() || `cat_${Date.now().toString(36)}`;
 const inserted = await db
   .insert(categories)
   .values({
@@ -1345,7 +1392,7 @@ await db
 return true;
   }
 
-  async listCategoryModifierPools(categoryId?: string): Promise<{ id: string; options: { id: string; sortOrder: number; priceDelta: number; name?: string | undefined; inventoryItemId?: string | undefined; }[]; categoryIds: string[]; name: string; sortOrder: number; categoryId?: string | undefined; }[]> {
+  async listCategoryModifierPools(categoryId?: string): Promise<CategoryModifierPool[]> {
 const tenantId = getTenantIdOrDefault();
 const conditions: SQL[] = [eq(categoryModifierPools.tenantId, tenantId)];
 
@@ -1369,6 +1416,8 @@ for (const opt of optionRows) {
     id: opt.id,
     name: opt.name ?? undefined,
     inventoryItemId: opt.inventoryItemId ?? undefined,
+    componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
+    componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
     priceDelta: Number(opt.priceDelta),
     sortOrder: opt.sortOrder ?? 0,
   });
@@ -1401,7 +1450,7 @@ if (categoryId) {
 return pools;
   }
 
-  async createCategoryModifierPool(payload: CategoryModifierPoolCreateRequest): Promise<{ id: string; options: { id: string; sortOrder: number; priceDelta: number; name?: string | undefined; inventoryItemId?: string | undefined; }[]; categoryIds: string[]; name: string; sortOrder: number; categoryId?: string | undefined; }> {
+  async createCategoryModifierPool(payload: CategoryModifierPoolCreateRequest): Promise<CategoryModifierPool> {
 const tenantId = getTenantIdOrDefault();
 const poolId = `cmp_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
@@ -1431,6 +1480,8 @@ if (payload.options.length > 0) {
       poolId,
       name: opt.name ?? null,
       inventoryItemId: opt.inventoryItemId ?? null,
+      componentType: opt.componentType ?? "ingredient",
+      componentId: opt.componentId ?? opt.inventoryItemId ?? null,
       priceDelta: String(opt.priceDelta),
       sortOrder: idx,
     })),
@@ -1441,7 +1492,7 @@ const pools = await this.listCategoryModifierPools();
 return pools.find((p) => p.id === poolId)!;
   }
 
-  async updateCategoryModifierPool(id: string, payload: CategoryModifierPoolUpdateRequest): Promise<{ id: string; options: { id: string; sortOrder: number; priceDelta: number; name?: string | undefined; inventoryItemId?: string | undefined; }[]; categoryIds: string[]; name: string; sortOrder: number; categoryId?: string | undefined; } | null> {
+  async updateCategoryModifierPool(id: string, payload: CategoryModifierPoolUpdateRequest): Promise<CategoryModifierPool | null> {
 const tenantId = getTenantIdOrDefault();
 
 if (payload.name !== undefined) {
@@ -1598,6 +1649,11 @@ return this.mapMenuItemsAdmin();
 
       const resolveIngredientId = (id: string): string => ingredientIdByKey.get(id) ?? id;
       const resolvePrepId = (id: string): string => prepIdByKey.get(id) ?? id;
+      const conversionRows = await tx
+        .select({ inventoryId: inventoryUnitConversions.inventoryId, fromUnit: inventoryUnitConversions.fromUnit, toUnit: inventoryUnitConversions.toUnit })
+        .from(inventoryUnitConversions)
+        .where(eq(inventoryUnitConversions.tenantId, tenantId));
+
       const resolvedPrepSourceByKey = new Map<string, { sourceType: "ingredient" | "bom"; sourceId: string }>();
       for (const prep of parsed.inlinePreps) {
         const sourceId = prep.source.sourceType === "ingredient" ? resolveIngredientId(prep.source.sourceId) : prep.source.sourceId;
@@ -1639,7 +1695,9 @@ return this.mapMenuItemsAdmin();
           const record = ingredientById.get(resolvedId);
           if (!record) throw new Error(`Ingredient ${component.componentId} not found`);
           if (record.isActive !== 1) throw new Error(`Ingredient ${record.name} is not active`);
-          if (component.unit !== record.unit) throw new Error(`Component unit ${component.unit} does not match ${record.name} unit ${record.unit}`);
+          if (!unitsMatchIngredient(component.unit, record.unit, record.id, conversionRows)) {
+            throw new Error(`Component unit ${component.unit} does not match ${record.name} unit ${record.unit}`);
+          }
         } else if (component.componentType === "bom") {
           const record = bomById.get(resolvedId);
           if (!record) throw new Error(`BoM ${component.componentId} not found`);
@@ -1678,6 +1736,10 @@ return this.mapMenuItemsAdmin();
           quantity: String(component.quantity),
           unit: component.unit,
         })));
+      }
+
+      if (parsed.modifierGroups.length > 0) {
+        await this.upsertModifierGroups(tx, tenantId, menuId, parsed.modifierGroups);
       }
 
       return menuProductResponseSchema.parse({
@@ -1747,15 +1809,22 @@ return this.mapMenuItemsAdmin();
                 .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, prepIds)))
               : [],
           ]);
-          const targetById = new Map<string, { name: string; unit: string; isActive: number }>();
-          for (const row of ingRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive });
-          for (const row of bomRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive });
-          for (const row of prepRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive });
+          const conversionRows = await tx
+            .select({ inventoryId: inventoryUnitConversions.inventoryId, fromUnit: inventoryUnitConversions.fromUnit, toUnit: inventoryUnitConversions.toUnit })
+            .from(inventoryUnitConversions)
+            .where(eq(inventoryUnitConversions.tenantId, tenantId));
+          const targetById = new Map<string, { name: string; unit: string; isActive: number; componentType: "ingredient" | "bom" | "prep" }>();
+          for (const row of ingRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive, componentType: "ingredient" });
+          for (const row of bomRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive, componentType: "bom" });
+          for (const row of prepRows) targetById.set(row.id, { name: row.name, unit: row.unit, isActive: row.isActive, componentType: "prep" });
           for (const component of parsed.components) {
             const target = targetById.get(component.componentId);
             if (!target) throw new Error(`${component.componentType} ${component.componentId} not found`);
             if (target.isActive !== 1) throw new Error(`${component.componentType} ${target.name} is not active`);
-            if (component.unit !== target.unit) throw new Error(`Component unit ${component.unit} does not match ${target.name} unit ${target.unit}`);
+            const unitsMatch = target.componentType === "ingredient"
+              ? unitsMatchIngredient(component.unit, target.unit, component.componentId, conversionRows)
+              : component.unit === target.unit;
+            if (!unitsMatch) throw new Error(`Component unit ${component.unit} does not match ${target.name} unit ${target.unit}`);
           }
           await tx.insert(menuItemComponents).values(parsed.components.map((component) => ({
             id: `mic_${crypto.randomUUID()}`,
@@ -1770,72 +1839,86 @@ return this.mapMenuItemsAdmin();
       }
 
       if (parsed.modifierGroups !== undefined) {
-        const existingGroups = await tx
-          .select({ id: menuModifierGroups.id })
-          .from(menuModifierGroups)
-          .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, id)));
-        for (const group of existingGroups) {
-          const options = await tx
-            .select({ id: menuModifierOptions.id })
-            .from(menuModifierOptions)
-            .where(eq(menuModifierOptions.groupId, group.id));
-          for (const opt of options) {
-            await tx
-              .delete(menuModifierOptionOverrides)
-              .where(eq(menuModifierOptionOverrides.optionId, opt.id));
-          }
-          await tx.delete(menuModifierOptions).where(eq(menuModifierOptions.groupId, group.id));
-        }
-        await tx
-          .delete(menuModifierGroups)
-          .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, id)));
-
-        for (let groupIdx = 0; groupIdx < parsed.modifierGroups.length; groupIdx++) {
-          const group = parsed.modifierGroups[groupIdx];
-          const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-          await tx.insert(menuModifierGroups).values({
-            id: groupId,
-            tenantId,
-            menuItemId: id,
-            name: group.name,
-            required: group.required ? 1 : 0,
-            minSelections: group.minSelections,
-            maxSelections: group.maxSelections,
-            sortOrder: groupIdx,
-          });
-
-          for (let optIdx = 0; optIdx < group.options.length; optIdx++) {
-            const opt = group.options[optIdx];
-            const optId = opt.id || `mo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-            await tx.insert(menuModifierOptions).values({
-              id: optId,
-              tenantId,
-              groupId,
-              name: opt.name,
-              inventoryItemId: opt.inventoryItemId || null,
-              priceDelta: String(opt.priceDelta),
-              isDefault: opt.isDefault ? 1 : 0,
-              isActive: opt.isActive ? 1 : 0,
-              sortOrder: optIdx,
-            });
-
-            for (const override of opt.ingredientOverrides) {
-              await tx.insert(menuModifierOptionOverrides).values({
-                id: `moo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                tenantId,
-                optionId: optId,
-                ingredientId: override.ingredientId,
-                action: override.action,
-              });
-            }
-          }
-        }
+        await this.upsertModifierGroups(tx, tenantId, id, parsed.modifierGroups);
       }
 
       return (await this.mapMenuItemsAdmin()).find((item) => item.id === id) ?? null;
     });
+  }
+
+  /** Replace a menu item's modifier groups (delete + reinsert) in one transaction. */
+  private async upsertModifierGroups(
+    tx: typeof db,
+    tenantId: string,
+    menuItemId: string,
+    groups: ModifierGroupInput[],
+  ): Promise<void> {
+    const existingGroups = await tx
+      .select({ id: menuModifierGroups.id })
+      .from(menuModifierGroups)
+      .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, menuItemId)));
+    for (const group of existingGroups) {
+      const options = await tx
+        .select({ id: menuModifierOptions.id })
+        .from(menuModifierOptions)
+        .where(eq(menuModifierOptions.groupId, group.id));
+      for (const opt of options) {
+        await tx
+          .delete(menuModifierOptionOverrides)
+          .where(eq(menuModifierOptionOverrides.optionId, opt.id));
+      }
+      await tx.delete(menuModifierOptions).where(eq(menuModifierOptions.groupId, group.id));
+    }
+    await tx
+      .delete(menuModifierGroups)
+      .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, menuItemId)));
+
+    for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
+      const group = groups[groupIdx];
+      const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+      await tx.insert(menuModifierGroups).values({
+        id: groupId,
+        tenantId,
+        menuItemId,
+        name: group.name,
+        required: group.required ? 1 : 0,
+        minSelections: group.minSelections,
+        maxSelections: group.maxSelections,
+        sortOrder: groupIdx,
+      });
+
+      for (let optIdx = 0; optIdx < group.options.length; optIdx++) {
+        const opt = group.options[optIdx];
+        const optId = opt.id || `mo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+        await tx.insert(menuModifierOptions).values({
+          id: optId,
+          tenantId,
+          groupId,
+          name: opt.name,
+          inventoryItemId: opt.inventoryItemId || null,
+          componentType: opt.componentType ?? "ingredient",
+          componentId: opt.componentId ?? opt.inventoryItemId ?? null,
+          priceDelta: String(opt.priceDelta),
+          isDefault: opt.isDefault ? 1 : 0,
+          isActive: opt.isActive ? 1 : 0,
+          sortOrder: optIdx,
+          quantity: String(opt.quantity ?? 1),
+          unit: opt.unit ?? "pz",
+        });
+
+        for (const override of opt.ingredientOverrides) {
+          await tx.insert(menuModifierOptionOverrides).values({
+            id: `moo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            tenantId,
+            optionId: optId,
+            ingredientId: override.ingredientId,
+            action: override.action,
+          });
+        }
+      }
+    }
   }
 
   async deleteMenuItem(id: string): Promise<boolean> {

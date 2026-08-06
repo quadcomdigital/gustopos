@@ -227,6 +227,7 @@ export default function POSView({
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>,
     selectedModifiers: Array<{ groupId: string; optionId: string }>,
     modifierPriceDelta: number = 0,
+    customPrice?: number,
   ) => {
     if (modalItem?.editCartItem) {
       updatePosCartItem(modalItem.editCartItem.cartItemId, {
@@ -235,12 +236,13 @@ export default function POSView({
         ingredientOverrides,
         selectedModifiers,
         modifierPriceDelta,
+        ...(customPrice !== undefined ? { basePrice: customPrice } : {}),
       });
     } else {
       addToPosCart({
         menuItemId: item.id,
         name: item.name,
-        basePrice: item.price,
+        basePrice: customPrice !== undefined ? customPrice : item.price,
         quantity,
         notes,
         ingredientOverrides,

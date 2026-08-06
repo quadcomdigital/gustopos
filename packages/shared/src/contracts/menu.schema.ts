@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { printAreaSchema, bomComponentTypeSchema } from "../contracts/shared.schema";
-import { canonicalMenuComponentSchema } from "../contracts/inventory-workflow.schema";
+import {
+  canonicalMenuComponentSchema,
+  canonicalUnitSchema,
+  modifierGroupInputSchema,
+  modifierOptionInputSchema,
+  modifierOptionOverrideInputSchema,
+} from "../contracts/inventory-workflow.schema";
 
 // ─── Category ───────────────────────────────────────────────────────────────
 
@@ -19,6 +25,7 @@ export const categorySchema = z.object({
 export const categoriesListResponseSchema = z.array(categorySchema);
 
 export const categoryCreateRequestSchema = z.object({
+  id: z.string().min(1).optional(),
   name: z.string().min(2),
   scope: categoryScopeSchema,
   printAreas: z.array(printAreaSchema).default(["kitchen"]),
@@ -36,6 +43,8 @@ export const categoryModifierPoolOptionSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
   inventoryItemId: z.string().optional(),
+  componentType: z.enum(["ingredient", "prep", "bom"]).default("ingredient"),
+  componentId: z.string().optional(),
   priceDelta: z.number().default(0),
   sortOrder: z.number().int().default(0),
 });
@@ -72,27 +81,15 @@ export const modifierOptionSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   inventoryItemId: z.string().optional(),
+  componentType: z.enum(["ingredient", "prep", "bom"]).default("ingredient"),
+  componentId: z.string().optional(),
+  quantity: z.number().default(1),
+  unit: canonicalUnitSchema.default("pz"),
   priceDelta: z.number().default(0),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
   ingredientOverrides: z.array(modifierOptionOverrideSchema).default([]),
-});
-
-export const modifierOptionOverrideInputSchema = z.object({
-  ingredientId: z.string().min(1),
-  action: z.enum(["add", "remove", "replace"]),
-});
-
-export const modifierOptionInputSchema = z.object({
-  id: z.string().optional(),
-  name: z.string().min(1),
-  inventoryItemId: z.string().optional(),
-  priceDelta: z.number().default(0),
-  isDefault: z.boolean().default(false),
-  isActive: z.boolean().default(true),
-  sortOrder: z.number().int().default(0),
-  ingredientOverrides: z.array(modifierOptionOverrideInputSchema).default([]),
 });
 
 // ─── Modifier Groups ────────────────────────────────────────────────────────
@@ -105,16 +102,6 @@ export const modifierGroupSchema = z.object({
   maxSelections: z.number().int().min(1).default(1),
   sortOrder: z.number().int().default(0),
   options: z.array(modifierOptionSchema).default([]),
-});
-
-export const modifierGroupInputSchema = z.object({
-  id: z.string().optional(),
-  name: z.string().min(1),
-  required: z.boolean().default(false),
-  minSelections: z.number().int().min(0).default(0),
-  maxSelections: z.number().int().min(1).default(1),
-  sortOrder: z.number().int().default(0),
-  options: z.array(modifierOptionInputSchema).default([]),
 });
 
 // ─── Menu Recipe Component ──────────────────────────────────────────────────
@@ -146,6 +133,7 @@ export const menuItemSchema = z.object({
   category: z.string(),
   categoryId: z.string().optional(),
   printAreas: z.array(printAreaSchema),
+  isJolly: z.boolean().optional().default(false),
   ingredients: z.array(z.string()),
   recipe: z.array(menuRecipeComponentSchema).default([]),
   modifiers: z.array(menuItemModifierSchema).default([]),
@@ -160,6 +148,7 @@ export const menuItemAdminSchema = z.object({
   categoryId: z.string().optional(),
   printAreas: z.array(printAreaSchema),
   isActive: z.boolean(),
+  isJolly: z.boolean().optional().default(false),
   recipe: z.array(menuRecipeComponentSchema),
   modifiers: z.array(menuItemModifierSchema).default([]),
   modifierGroups: z.array(modifierGroupSchema).default([]),
@@ -216,9 +205,7 @@ export type CategoryModifierPoolUpdateRequest = z.infer<typeof categoryModifierP
 
 export type ModifierOptionOverride = z.infer<typeof modifierOptionOverrideSchema>;
 export type ModifierOption = z.infer<typeof modifierOptionSchema>;
-export type ModifierOptionInput = z.infer<typeof modifierOptionInputSchema>;
 export type ModifierGroup = z.infer<typeof modifierGroupSchema>;
-export type ModifierGroupInput = z.infer<typeof modifierGroupInputSchema>;
 
 export type MenuRecipeComponent = z.infer<typeof menuRecipeComponentSchema>;
 export type MenuItemModifier = z.infer<typeof menuItemModifierSchema>;
