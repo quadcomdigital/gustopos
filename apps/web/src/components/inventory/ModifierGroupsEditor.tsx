@@ -1,12 +1,16 @@
-import type { ModifierGroup, Ingredient, CategoryModifierPool } from '@gustopos/shared';
+import type { ModifierGroup, Ingredient, CategoryModifierPool, ModifierOption, BomItem, PrepItem } from '@gustopos/shared';
 import { Plus, Trash2, Lock } from 'lucide-react';
 import { generateId } from '../../lib/id';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
+
+const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
 
 interface ModifierGroupsEditorProps {
   value: ModifierGroup[];
   onChange: (next: ModifierGroup[]) => void;
   inventory: Ingredient[];
+  prepItems?: PrepItem[];
+  bomItems?: BomItem[];
   categoryPools?: CategoryModifierPool[];
 }
 
@@ -22,11 +26,15 @@ function createGroup(): ModifierGroup {
   };
 }
 
-function createOption() {
+function createOption(): ModifierOption {
   return {
     id: generateId(),
     name: 'Nuova opzione',
     inventoryItemId: undefined,
+    componentType: 'ingredient',
+    componentId: undefined,
+    quantity: 1,
+    unit: 'pz',
     priceDelta: 0,
     isDefault: false,
     sortOrder: 0,
@@ -35,8 +43,10 @@ function createOption() {
   };
 }
 
-export default function ModifierGroupsEditor({ value, onChange, inventory, categoryPools = [] }: ModifierGroupsEditorProps) {
+export default function ModifierGroupsEditor({ value, onChange, inventory, prepItems = [], bomItems = [], categoryPools = [] }: ModifierGroupsEditorProps) {
   const inventoryById = new Map(inventory.map((i) => [i.id, i]));
+  const prepById = new Map(prepItems.map((p) => [p.id, p]));
+  const bomById = new Map(bomItems.map((b) => [b.id, b]));
 
   const updateOption = (groupId: string, optionId: string, patch: Record<string, unknown>) =>
     onChange(
@@ -169,7 +179,9 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, categ
           </div>
           <div className="space-y-2">
             {group.options.map((option) => {
-              const isIngredientMode = !!option.inventoryItemId;
+              const componentType = option.componentType ?? 'ingredient';
+              const isIngredientMode = componentType === 'ingredient';
+              const componentId = option.componentId ?? option.inventoryItemId;
               return (
                 <div key={option.id} className="rounded border border-border bg-bg/30 p-2 space-y-2">
                   <div className="flex items-center gap-1">
@@ -177,38 +189,57 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, categ
                       type="button"
                       onClick={() => {
                         if (isIngredientMode) {
-                          updateOption(group.id, option.id, { inventoryItemId: undefined });
+                          updateOption(group.id, option.id, { inventoryItemId: undefined, componentType: 'ingredient', componentId: undefined });
                         } else {
                           const first = inventory[0];
-                          updateOption(group.id, option.id, { inventoryItemId: first?.id, name: first?.name ?? option.name });
+                          updateOption(group.id, option.id, { inventoryItemId: first?.id, componentType: 'ingredient', componentId: first?.id, name: first?.name ?? option.name });
                         }
                       }}
                       className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
                     >
-                      {isIngredientMode ? 'Ingrediente' : 'Testo libero'}
+                      {componentType === 'prep' ? 'Prep' : componentType === 'bom' ? 'BoM' : 'Ingrediente'}
                     </button>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                  <div className="grid grid-cols-1 md:grid-cols-7 gap-2">
+                    <select
+                      value={componentType}
+                      onChange={(e) => {
+                        const nextType = e.target.value as 'ingredient' | 'prep' | 'bom';
+                        updateOption(group.id, option.id, { componentType: nextType, componentId: undefined, inventoryItemId: undefined });
+                      }}
+                      className="px-3 py-2 rounded border border-border text-sm"
+                    >
+                      <option value="ingredient">Ingrediente</option>
+                      <option value="prep">Prep</option>
+                      <option value="bom">BoM</option>
+                    </select>
                     {isIngredientMode ? (
-                      <SearchableSelect
-                        items={inventory}
-                        getLabel={(inv) => `${inv.name} (${inv.unit})`}
-                        getValue={(inv) => inv.id}
-                        selectedValue={option.inventoryItemId}
-                        onSelect={(invId) => {
-                          const invItem = inventory.find((i) => i.id === invId);
-                          updateOption(group.id, option.id, { inventoryItemId: invId, name: invItem?.name ?? option.name });
-                        }}
-                        placeholder="Seleziona ingrediente..."
-                      />
+                      <SearchableSelect items={inventory} getLabel={(inv) => `${inv.name} (${inv.unit})`} getValue={(inv) => inv.id} selectedValue={componentId} fallbackLabel={componentId ? undefined : option.name} onSelect={(id) => { const item = inventory.find((i) => i.id === id); updateOption(group.id, option.id, { inventoryItemId: id, componentId: id, name: item?.name ?? option.name }); }} placeholder="Seleziona ingrediente..." />
+                    ) : componentType === 'prep' ? (
+                      <SearchableSelect items={prepItems} getLabel={(prep) => `${prep.name} (${prep.outputUnit})`} getValue={(prep) => prep.id} selectedValue={componentId} fallbackLabel={componentId ? undefined : option.name} onSelect={(id) => { const item = prepById.get(id); updateOption(group.id, option.id, { componentId: id, inventoryItemId: undefined, name: item?.name ?? option.name }); }} placeholder="Seleziona prep..." />
                     ) : (
-                      <input
-                        value={option.name}
-                        onChange={(e) => updateOption(group.id, option.id, { name: e.target.value })}
-                        className="px-3 py-2 rounded border border-border text-sm"
-                        placeholder="Nome opzione (es: Formato grande)"
-                      />
+                      <SearchableSelect items={bomItems} getLabel={(bom) => `${bom.name} (${bom.outputUnit})`} getValue={(bom) => bom.id} selectedValue={componentId} fallbackLabel={componentId ? undefined : option.name} onSelect={(id) => { const item = bomById.get(id); updateOption(group.id, option.id, { componentId: id, inventoryItemId: undefined, name: item?.name ?? option.name }); }} placeholder="Seleziona BoM..." />
                     )}
+                    <input
+                      type="number"
+                      value={option.quantity}
+                      onChange={(e) =>
+                        updateOption(group.id, option.id, { quantity: Number(e.target.value) || 1 })
+                      }
+                      min="0.01"
+                      step="0.01"
+                      className="px-3 py-2 rounded border border-border text-sm"
+                      placeholder="Qtà"
+                    />
+                    <select
+                      value={option.unit}
+                      onChange={(e) => updateOption(group.id, option.id, { unit: e.target.value })}
+                      className="px-3 py-2 rounded border border-border text-sm"
+                    >
+                      {UNIT_OPTIONS.map((u) => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                    </select>
                     <input
                       type="number"
                       value={option.priceDelta}

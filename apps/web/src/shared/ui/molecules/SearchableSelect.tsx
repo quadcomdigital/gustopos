@@ -15,6 +15,9 @@ interface SearchableSelectProps<T> {
   id?: string;
   /** Forwarded to the main trigger button for screen-reader announcement. */
   ariaLabel?: string;
+  /** Shown on the trigger when no item matches selectedValue but a label exists
+   *  (e.g. modifier options with no inventory/component id: gusti gelato, gin a scelta). */
+  fallbackLabel?: string;
 }
 
 export default function SearchableSelect<T>({
@@ -28,6 +31,7 @@ export default function SearchableSelect<T>({
   className,
   id,
   ariaLabel,
+  fallbackLabel,
 }: SearchableSelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -75,8 +79,8 @@ export default function SearchableSelect<T>({
         }}
         className="w-full min-h-11 px-3 py-2 rounded border border-border bg-white text-left text-sm flex items-center justify-between"
       >
-        <span className={selectedLabel ? 'text-secondary' : 'text-text-muted'}>
-          {selectedLabel ?? placeholder}
+        <span className={selectedLabel || fallbackLabel ? 'text-secondary' : 'text-text-muted'}>
+          {selectedLabel ?? fallbackLabel ?? placeholder}
         </span>
         <ChevronDown size={16} className="text-text-muted shrink-0" />
       </button>
