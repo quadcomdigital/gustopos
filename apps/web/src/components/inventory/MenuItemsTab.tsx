@@ -173,7 +173,7 @@ export default function MenuItemsTab({
     return () => { cancelled = true; };
   }, [inventory, fetchUnitConversionsStore]);
 
-  /** Resolve recipe components: explode BoM references, filter out containers */
+  /** Resolve recipe components: explode BoM references into their sub-components */
   const resolvedRecipes = useMemo(() => {
     const map: Record<string, Array<{ componentType: string; name: string; quantity: number; unit: string; unitCost?: number }>> = {};
     for (const item of menuItems) {
@@ -374,10 +374,15 @@ export default function MenuItemsTab({
             if (!item) return;
             const hasRecipe = item.recipe && item.recipe.length > 0;
             const hasModifierGroups = item.modifierGroups && item.modifierGroups.length > 0;
+            // Products with only modifier groups (no recipe, no 'Formato' variants)
+            // are plain items with choice groups (e.g. VASCHETTA 'A scelta'): the
+            // FoodProductModal handles and persists them. VariableProductModal is
+            // reserved for true variant products (group named 'Formato').
+            const isVariantProduct = hasModifierGroups && item.modifierGroups.some((g) => g.name === 'Formato');
             setEditBuilderItem(item);
-            if (hasRecipe) {
+            if (hasRecipe || (hasModifierGroups && !isVariantProduct)) {
               setShowFoodModal(true);
-            } else if (hasModifierGroups) {
+            } else if (isVariantProduct) {
               setShowVariableModal(true);
             } else {
               setShowSimpleModal(true);
@@ -458,10 +463,15 @@ export default function MenuItemsTab({
                     <Button variant="secondary" onClick={() => {
                       const hasRecipe = item.recipe && item.recipe.length > 0;
                       const hasModifierGroups = item.modifierGroups && item.modifierGroups.length > 0;
+                      // Products with only modifier groups (no recipe, no 'Formato' variants)
+                      // are plain items with choice groups (e.g. VASCHETTA 'A scelta'): the
+                      // FoodProductModal handles and persists them. VariableProductModal is
+                      // reserved for true variant products (group named 'Formato').
+                      const isVariantProduct = hasModifierGroups && item.modifierGroups.some((g) => g.name === 'Formato');
                       setEditBuilderItem(item);
-                      if (hasRecipe) {
+                      if (hasRecipe || (hasModifierGroups && !isVariantProduct)) {
                         setShowFoodModal(true);
-                      } else if (hasModifierGroups) {
+                      } else if (isVariantProduct) {
                         setShowVariableModal(true);
                       } else {
                         setShowSimpleModal(true);
@@ -624,6 +634,8 @@ export default function MenuItemsTab({
                    <ModifierGroupsEditor
                     value={editModifierGroups}
                     inventory={inventory}
+                    prepItems={prepItems}
+                    bomItems={bomItems}
                     onChange={setEditModifierGroups}
                     categoryPools={selectedMenu?.categoryId ? categoryModifierPools.filter((p) => p.categoryIds?.includes(selectedMenu.categoryId!) || p.categoryId === selectedMenu.categoryId) : []}
                   />
@@ -671,8 +683,10 @@ export default function MenuItemsTab({
         categories={categories}
         inventory={inventory}
         categoryModifierPools={categoryModifierPools}
+        prepItems={prepItems}
         onCreateCategory={onCreateCategory}
-        onCreate={onCreate!}
+        onCreate={onCreate}
+        onCreateMenuProduct={onCreateMenuProduct}
         onUpdate={onUpdate}
         editItem={editBuilderItem}
       />
@@ -686,7 +700,8 @@ export default function MenuItemsTab({
         bomItems={bomItems}
         categoryModifierPools={categoryModifierPools}
         onCreateCategory={onCreateCategory}
-        onCreateMenuItem={onCreate!}
+        onCreateMenuItem={onCreate}
+        onCreateMenuProduct={onCreateMenuProduct}
         onUpdateMenuItem={onUpdate}
         editItem={editBuilderItem}
       />
@@ -702,7 +717,6 @@ export default function MenuItemsTab({
         categoryModifierPools={categoryModifierPools}
         onCreateCategory={onCreateCategory}
         onCreateMenuProduct={onCreateMenuProduct}
-        onCreateMenuItem={onCreate!}
         onUpdateMenuItem={onUpdate}
         onCreateIngredient={onCreateIngredient ?? createIngredient}
         onCreatePrepItem={onCreatePrepItem ?? createPrepItem}
