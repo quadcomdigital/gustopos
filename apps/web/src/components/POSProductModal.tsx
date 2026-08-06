@@ -36,7 +36,13 @@ interface POSProductModalProps {
   orderMode: 'dine_in' | 'takeaway' | 'delivery';
   existingCartItem?: CartItem;
   menuItems: MenuItem[];
-  onOpenModifierModal?: () => void;
+  onOpenModifierModal?: (draft?: {
+    quantity: number;
+    notes: string;
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
+    selectedModifiers: Array<{ groupId: string; optionId: string }>;
+    modifierPriceDelta: number;
+  }) => void;
   categoryModifierPools?: CategoryModifierPool[];
 }
 
@@ -68,22 +74,27 @@ export default function POSProductModal({
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
 
-  const toppingPoolOptions = useMemo(() => {
+  const visiblePools = useMemo(() => {
     if (!resolvedItem?.categoryId) return [];
-    return categoryModifierPools
-      .filter((p) => {
-        const belongsToCategory = p.categoryIds?.includes(resolvedItem.categoryId!) || p.categoryId === resolvedItem.categoryId;
-        if (!belongsToCategory) return false;
-        const name = p.name.toLowerCase();
-        return name.includes('salsa') || name.includes('salse') || name.includes('topping');
-      })
-      .flatMap((pool) =>
-        pool.options.map((opt) => ({
-          id: opt.id,
-          name: opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? '',
-        })),
-      );
-  }, [categoryModifierPools, resolvedItem?.categoryId, inventoryById]);
+    return categoryModifierPools.filter((p) => {
+      const belongsToCategory = p.categoryIds?.includes(resolvedItem.categoryId!) || p.categoryId === resolvedItem.categoryId;
+      if (!belongsToCategory) return false;
+      const name = p.name.toLowerCase();
+      const isLegacyInline = name.includes('salsa') || name.includes('salse') || name.includes('topping');
+      // Inline: pool salsa/topping (legacy) + pool piccoli (≤8 opzioni, es. Granella).
+      // I pool grossi (es. AGGIUNTA 35 opzioni) restano solo nel modale Personalizza.
+      return isLegacyInline || (p.options?.length ?? 0) <= 8;
+    });
+  }, [categoryModifierPools, resolvedItem?.categoryId]);
+
+  const toppingPoolOptions = useMemo(() => {
+    return visiblePools.flatMap((pool) =>
+      pool.options.map((opt) => ({
+        id: opt.id,
+        name: opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? '',
+      })),
+    );
+  }, [visiblePools, inventoryById]);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -140,14 +151,19 @@ export default function POSProductModal({
     );
   }, [modifierGroups.length, hasCategoryPools, hasLegacyModifiers, noIngredientOverrides]);
 
-  const modifierGroupIds = useMemo(() => modifierGroups.map((g) => g.id).join(','), [modifierGroups]);
+  const inlineModifierGroups = useMemo(
+    () => modifierGroups.filter((group) => isSimpleModifier || group.name.trim().toLowerCase() === 'base'),
+    [isSimpleModifier, modifierGroups],
+  );
+
+  const modifierGroupIds = useMemo(() => inlineModifierGroups.map((g) => g.id).join(','), [inlineModifierGroups]);
 
   React.useEffect(() => {
-    if (isOpen && isSimpleModifier && modifierGroupIds) {
+    if (isOpen && modifierGroupIds) {
       const initialSelections: Record<string, string[]> = {};
       const existingMap = new Map(selectedModifiers.map((sm) => [sm.groupId, sm.optionId]));
       
-      for (const group of modifierGroups) {
+      for (const group of inlineModifierGroups) {
         const existingOptionId = existingMap.get(group.id);
         if (existingOptionId) {
           initialSelections[group.id] = [existingOptionId];
@@ -165,7 +181,7 @@ export default function POSProductModal({
         return initialSelections;
       });
     }
-  }, [isOpen, isSimpleModifier, modifierGroupIds, modifierGroups, selectedModifiers]);
+  }, [isOpen, modifierGroupIds, inlineModifierGroups, selectedModifiers]);
 
   const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
 
@@ -179,37 +195,88 @@ export default function POSProductModal({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isOpen, onClose]);
 
-  const inlineModifierPriceDelta = useMemo(() => {
-    if (!isSimpleModifier) return modifierPriceDelta;
-    let price = 0;
-    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
-      const group = modifierGroups.find((g) => g.id === groupId);
-      if (!group || optionIds.length === 0) continue;
-      if (group.maxSelections > 1) {
-        const maxDelta = Math.max(...group.options.filter((o: ModifierOption) => optionIds.includes(o.id) && !o.isDefault).map((o: ModifierOption) => o.priceDelta));
-        price += maxDelta;
-      } else {
-        for (const optionId of optionIds) {
-          const option = group.options.find((o: ModifierOption) => o.id === optionId);
-          if (option && !option.isDefault) {
-            price += option.priceDelta;
+  const groupPriceDelta = useMemo(() => {
+    const priceForSelections = (selections: Record<string, string[]>) => {
+      let price = 0;
+      for (const [groupId, optionIds] of Object.entries(selections)) {
+        const group = inlineModifierGroups.find((g) => g.id === groupId);
+        if (!group || optionIds.length === 0) continue;
+        if (group.maxSelections > 1) {
+          const deltas = group.options
+            .filter((o: ModifierOption) => optionIds.includes(o.id) && !o.isDefault)
+            .map((o: ModifierOption) => o.priceDelta);
+          price += deltas.length > 0 ? Math.max(...deltas) : 0;
+        } else {
+          for (const optionId of optionIds) {
+            const option = group.options.find((o: ModifierOption) => o.id === optionId);
+            if (option && !option.isDefault) price += option.priceDelta;
           }
         }
       }
-    }
-    return price;
-  }, [isSimpleModifier, groupSelections, modifierGroups, modifierPriceDelta]);
+      return price;
+    };
+    return priceForSelections(groupSelections);
+  }, [groupSelections, inlineModifierGroups]);
 
-  const inlineSelectedModifiers = useMemo(() => {
-    if (!isSimpleModifier) return selectedModifiers;
-    const mods: Array<{ groupId: string; optionId: string }> = [];
-    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
-      for (const optionId of optionIds) {
-        mods.push({ groupId, optionId });
+  const inlineModifierPriceDelta = useMemo(() => {
+    const existingSelections: Record<string, string[]> = {};
+    for (const selected of selectedModifiers) {
+      const group = inlineModifierGroups.find((candidate) => candidate.id === selected.groupId);
+      if (group) existingSelections[selected.groupId] = [...(existingSelections[selected.groupId] ?? []), selected.optionId];
+    }
+    let existingGroupPrice = 0;
+    for (const [groupId, optionIds] of Object.entries(existingSelections)) {
+      const group = inlineModifierGroups.find((candidate) => candidate.id === groupId);
+      if (!group || optionIds.length === 0) continue;
+      if (group.maxSelections > 1) {
+        const deltas = group.options
+          .filter((o: ModifierOption) => optionIds.includes(o.id) && !o.isDefault)
+          .map((o: ModifierOption) => o.priceDelta);
+        existingGroupPrice += deltas.length > 0 ? Math.max(...deltas) : 0;
+      } else {
+        for (const optionId of optionIds) {
+          const option = group.options.find((o: ModifierOption) => o.id === optionId);
+          if (option && !option.isDefault) existingGroupPrice += option.priceDelta;
+        }
       }
     }
+    return modifierPriceDelta - existingGroupPrice + groupPriceDelta;
+  }, [groupPriceDelta, inlineModifierGroups, modifierPriceDelta, selectedModifiers]);
+
+  const inlineSelectedModifiers = useMemo(() => {
+    const directGroupIds = new Set(inlineModifierGroups.map((group) => group.id));
+    const mods = selectedModifiers.filter((selected) => !directGroupIds.has(selected.groupId));
+    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
+      for (const optionId of optionIds) mods.push({ groupId, optionId });
+    }
     return mods;
-  }, [isSimpleModifier, groupSelections, selectedModifiers]);
+  }, [groupSelections, inlineModifierGroups, selectedModifiers]);
+
+  const cartIngredientOverrides = useMemo(() => {
+    const groupOverrideKeys = new Set<string>();
+    for (const selected of inlineSelectedModifiers) {
+      const group = modifierGroups.find((candidate) => candidate.id === selected.groupId);
+      const option = group?.options.find((candidate: ModifierOption) => candidate.id === selected.optionId);
+      for (const override of option?.ingredientOverrides ?? []) {
+        groupOverrideKeys.add(`${override.ingredientId}:${override.action}`);
+      }
+    }
+    const manualOverrides = ingredientOverrides.filter((override) => !groupOverrideKeys.has(`${override.ingredientId}:${override.action}`));
+    const selectedGroupOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }> = [];
+    for (const selected of inlineSelectedModifiers) {
+      const group = modifierGroups.find((candidate) => candidate.id === selected.groupId);
+      const option = group?.options.find((candidate: ModifierOption) => candidate.id === selected.optionId);
+      for (const override of option?.ingredientOverrides ?? []) {
+        selectedGroupOverrides.push({ ingredientId: override.ingredientId, action: override.action as 'add' | 'remove' });
+      }
+    }
+    return [...manualOverrides, ...selectedGroupOverrides];
+  }, [ingredientOverrides, inlineSelectedModifiers, modifierGroups]);
+
+  const requiredInlineGroupsSatisfied = useMemo(() => inlineModifierGroups.every((group) => {
+    if (!group.required) return true;
+    return (groupSelections[group.id] ?? []).length >= (group.minSelections ?? 1);
+  }), [groupSelections, inlineModifierGroups]);
 
   const toppingNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -230,11 +297,11 @@ export default function POSProductModal({
 
   const isEditing = Boolean(existingCartItem);
   const finalPrice = (resolvedItem.price + inlineModifierPriceDelta) * quantity;
-  const totalMods = ingredientOverrides.length + inlineSelectedModifiers.length;
+  const totalMods = cartIngredientOverrides.length + inlineSelectedModifiers.length;
 
   const toggleGroupOption = (groupId: string, optionId: string) => {
     setGroupSelections((prev) => {
-      const group = modifierGroups.find((g) => g.id === groupId);
+      const group = inlineModifierGroups.find((g) => g.id === groupId);
       if (!group) return prev;
       const current = prev[groupId] ?? [];
 
@@ -286,40 +353,45 @@ export default function POSProductModal({
 
               <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (es: senza glutine, ben cotta...)" className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:border-accent focus:outline-none" />
 
-              {toppingPoolOptions.length > 0 && (
-                <div className="space-y-1.5">
-                  <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">Toppings</h3>
-                  <div className="flex flex-wrap gap-1.5">
-                    {toppingPoolOptions.map((opt) => {
-                      const isSelected = selectedToppingIds.includes(opt.id);
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          onClick={() =>
-                            setSelectedToppingIds((prev) =>
-                              prev.includes(opt.id) ? prev.filter((id) => id !== opt.id) : [...prev, opt.id],
-                            )
-                          }
-                          className={cn(
-                            'px-3 py-1.5 rounded-full text-xs font-bold border transition-all active:scale-95',
-                            isSelected
-                              ? 'bg-accent text-white border-accent'
-                              : 'bg-white text-secondary border-border hover:border-accent',
-                          )}
-                        >
-                          {opt.name}
-                        </button>
-                      );
-                    })}
-                  </div>
+              {visiblePools.length > 0 && (
+                <div className="space-y-2">
+                  {visiblePools.map((pool) => (
+                    <div key={pool.id} className="space-y-1.5">
+                      <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">{pool.name}</h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        {pool.options.map((opt) => {
+                          const optId = opt.id;
+                          const isSelected = selectedToppingIds.includes(optId);
+                          return (
+                            <button
+                              key={optId}
+                              type="button"
+                              onClick={() =>
+                                setSelectedToppingIds((prev) =>
+                                  prev.includes(optId) ? prev.filter((id) => id !== optId) : [...prev, optId],
+                                )
+                              }
+                              className={cn(
+                                'px-3 py-1.5 rounded-full text-xs font-bold border transition-all active:scale-95',
+                                isSelected
+                                  ? 'bg-accent text-white border-accent'
+                                  : 'bg-white text-secondary border-border hover:border-accent',
+                              )}
+                            >
+                              {opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? ''}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
-              {/* Inline modifier groups for simple products */}
-              {isSimpleModifier && modifierGroups.length > 0 && (
+              {/* Inline modifier groups: the base (and any direct product groups) is selected here. */}
+              {inlineModifierGroups.length > 0 && (
                 <div className="space-y-3">
-                  {modifierGroups.map((group) => {
+                  {inlineModifierGroups.map((group) => {
                     const selected = groupSelections[group.id] ?? [];
                     return (
                       <div key={group.id} className="space-y-1.5">
@@ -370,6 +442,11 @@ export default function POSProductModal({
                                     <p className={cn('text-sm font-medium truncate', isSelected ? 'text-primary' : 'text-secondary')}>
                                       {option.name}
                                     </p>
+                                    {((option as any).quantity ?? 1) !== 1 || (option as any).unit !== 'pz' ? (
+                                      <p className="text-[10px] text-text-muted">
+                                        {(option as any).quantity ?? 1} {(option as any).unit ?? 'pz'}
+                                      </p>
+                                    ) : null}
                                   </div>
                                   {badge && (
                                     <span className={cn('text-[11px] font-bold shrink-0', isSelected ? 'text-accent' : 'text-text-muted')}>
@@ -390,7 +467,13 @@ export default function POSProductModal({
               {!isSimpleModifier && (
                 <button
                   type="button"
-                  onClick={onOpenModifierModal}
+                  onClick={() => onOpenModifierModal?.({
+                  quantity,
+                  notes: combinedNotes,
+                ingredientOverrides: cartIngredientOverrides,
+                selectedModifiers: inlineSelectedModifiers,
+                  modifierPriceDelta: inlineModifierPriceDelta,
+                })}
                   className={cn(
                     'w-full flex items-center justify-center gap-2 py-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all active:scale-[0.98]',
                     totalMods > 0 ? 'border-accent bg-accent/5 text-accent' : 'border-border text-text-muted hover:border-accent hover:text-accent',
@@ -405,8 +488,9 @@ export default function POSProductModal({
             <div className="px-4 py-3 sm:px-5 sm:py-4 border-t border-border shrink-0">
               <button
                 ref={confirmButtonRef}
-                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, ingredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta)}
-                className="w-full flex items-center justify-center gap-2 py-4 bg-accent text-white rounded-xl active:bg-blue-800 active:scale-[0.98] transition-all text-sm font-bold uppercase tracking-widest shadow-md"
+                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta)}
+                disabled={!requiredInlineGroupsSatisfied}
+                className="w-full flex items-center justify-center gap-2 py-4 bg-accent text-white rounded-xl active:bg-blue-800 active:scale-[0.98] transition-all text-sm font-bold uppercase tracking-widest shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ShoppingCart size={18} />
                 {isEditing ? 'Aggiorna' : `Aggiungi · €${finalPrice.toFixed(2)}`}
