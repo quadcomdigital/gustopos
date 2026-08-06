@@ -56,6 +56,7 @@ export default function POSView({
   const removeFromPosCart = useAppStore((s) => s.removeFromPosCart);
   const clearPosCart = useAppStore((s) => s.clearPosCart);
   const setCartContext = useAppStore((s) => s.setCartContext);
+  const prepItems = useAppStore((s) => s.prepItems);
   const [takeawayCustomerName, setTakeawayCustomerName] = useState('');
   const [takeawayCustomerPhone, setTakeawayCustomerPhone] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -79,9 +80,18 @@ export default function POSView({
   // Per-item "Salta stampa cucina" toggles (set of cart item IDs)
   const [skipKitchenById, setSkipKitchenById] = useState<Set<string>>(new Set());
 
-  // Product modal state
+  // Product/modifier modal state. The draft keeps inline Base selections while
+  // the secondary modifier modal is open, including for a not-yet-carted item.
+  type ModifierDraft = {
+    quantity: number;
+    notes: string;
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
+    selectedModifiers: Array<{ groupId: string; optionId: string }>;
+    modifierPriceDelta: number;
+  };
   const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
+  const [modifierDraft, setModifierDraft] = useState<ModifierDraft | null>(null);
 
   // Sync table from external navigation (e.g. tables view → POS)
   React.useEffect(() => {
@@ -248,8 +258,10 @@ export default function POSView({
   }) => {
     if (!modifierModalItem) return;
     const existingCartItem = posCart.find((ci) => ci.menuItemId === modifierModalItem.id);
+    const draft = modifierDraft;
     if (existingCartItem) {
       updatePosCartItem(existingCartItem.cartItemId, {
+        ...(draft ? { quantity: draft.quantity, notes: draft.notes } : {}),
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
         modifierPriceDelta: payload.modifierPriceDelta,
@@ -259,13 +271,14 @@ export default function POSView({
         menuItemId: modifierModalItem.id,
         name: modifierModalItem.name,
         basePrice: modifierModalItem.price,
-        quantity: 1,
-        notes: '',
+        quantity: draft?.quantity ?? 1,
+        notes: draft?.notes ?? '',
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
         modifierPriceDelta: payload.modifierPriceDelta,
       });
     }
+    setModifierDraft(null);
     setModifierModalItem(null);
   };
 
@@ -827,6 +840,7 @@ export default function POSView({
                           if (!menuItem) return;
                           const hasComplexMods = item.ingredientOverrides.length > 0 || item.selectedModifiers.length > 0;
                           if (hasComplexMods) {
+                            setModifierDraft(null);
                             setModifierModalItem(menuItem);
                           } else {
                             openProductModal(menuItem, item);
@@ -1052,9 +1066,10 @@ export default function POSView({
         existingCartItem={modalItem?.editCartItem}
         menuItems={data.menu}
         categoryModifierPools={categoryModifierPools}
-        onOpenModifierModal={() => {
+        onOpenModifierModal={(draft) => {
           if (modalItem?.item) {
             const itemToEdit = modalItem.item;
+            setModifierDraft(draft ?? null);
             setModalItem(null);
             setModifierModalItem(itemToEdit);
           }
@@ -1066,12 +1081,14 @@ export default function POSView({
         <ModifierModal
           item={modifierModalItem}
           isOpen={Boolean(modifierModalItem)}
-          onClose={() => setModifierModalItem(null)}
+          onClose={() => { setModifierDraft(null); setModifierModalItem(null); }}
           onConfirm={handleModifierConfirm}
           inventory={data.inventory}
           bomItems={data.bomItems}
-          existingOverrides={posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.ingredientOverrides}
-          existingSelectedModifiers={posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.selectedModifiers}
+          prepItems={prepItems}
+          existingOverrides={modifierDraft?.ingredientOverrides ?? posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.ingredientOverrides}
+          existingSelectedModifiers={modifierDraft?.selectedModifiers ?? posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.selectedModifiers}
+          existingModifierPriceDelta={modifierDraft?.modifierPriceDelta ?? posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.modifierPriceDelta}
           categoryModifierPools={categoryModifierPools}
         />
       )}

@@ -62,6 +62,7 @@ export default function CreateIngredientInlineModal({
         minThreshold: threshold ? Number(threshold) : 0,
         unitCost: unitCost ? Number(unitCost) : 0,
         salePrice: salePrice ? Number(salePrice) : undefined,
+        isStockTracked: true,
       });
       setSaving(false);
       onSuccess(result);

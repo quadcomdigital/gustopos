@@ -259,7 +259,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
             inputQuantity: finalQty,
             inputUnit: finalUnit as PrepItem['inputUnit'],
             outputQuantity: 1,
-            outputUnit: ing.unit as PrepItem['outputUnit'],
+            outputUnit: 'pz',
           },
         });
         resetCreateModal();
@@ -287,7 +287,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
           inputQuantity: 1,
           inputUnit: createUnit as PrepItem['inputUnit'],
           outputQuantity: 1,
-          outputUnit: createUnit as PrepItem['outputUnit'],
+          outputUnit: 'pz',
         },
       });
       resetCreateModal();

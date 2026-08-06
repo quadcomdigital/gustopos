@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import type { Category, Ingredient, BomItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
+import type { Category, Ingredient, BomItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
 import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
@@ -30,7 +30,8 @@ interface VariableProductModalProps {
   bomItems: BomItem[];
   categoryModifierPools?: CategoryModifierPool[];
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
-  onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuItem?: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   editItem?: MenuItemAdmin | null;
 }
@@ -38,7 +39,7 @@ interface VariableProductModalProps {
 let variantSeq = 0;
 
 export default function VariableProductModal({
-  open, onClose, onSuccess, categories, inventory, bomItems: _bomItems, categoryModifierPools = [], onCreateCategory, onCreateMenuItem, onUpdateMenuItem, editItem,
+  open, onClose, onSuccess, categories, inventory, bomItems: _bomItems, categoryModifierPools = [], onCreateCategory, onCreateMenuItem, onCreateMenuProduct, onUpdateMenuItem, editItem,
 }: VariableProductModalProps) {
   const isEdit = !!editItem;
   const [name, setName] = useState('');
@@ -106,6 +107,10 @@ export default function VariableProductModal({
         sortOrder: 0,
         options: variants.map((v, idx) => ({
           name: v.name.trim(),
+          componentType: 'ingredient' as const,
+          componentId: v.ingredientId,
+          quantity: 1,
+          unit: 'pz' as const,
           priceDelta: Number(v.price),
           isDefault: idx === 0,
           isActive: true,
@@ -124,7 +129,22 @@ export default function VariableProductModal({
           printAreas,
           modifierGroups: allModifierGroups,
         });
-      } else {
+      } else if (onCreateMenuProduct) {
+        if (!catName || catName.trim().length < 2) {
+          throw new Error('Seleziona o crea una categoria per il prodotto.');
+        }
+        await onCreateMenuProduct({
+          name: name.trim(),
+          price: 0,
+          category: catName.trim(),
+          categoryId: categoryId || undefined,
+          printAreas,
+          components: [],
+          inlineIngredients: [],
+          inlinePreps: [],
+          modifierGroups: allModifierGroups,
+        });
+      } else if (onCreateMenuItem) {
         await onCreateMenuItem({
           name: name.trim(),
           category: catName,
@@ -135,6 +155,8 @@ export default function VariableProductModal({
           modifiers: [],
           modifierGroups: allModifierGroups,
         });
+      } else {
+        throw new Error('Nessun canale di creazione disponibile.');
       }
       setSaving(false);
       onSuccess();
@@ -214,6 +236,7 @@ export default function VariableProductModal({
           <ModifierGroupsEditor
             value={additionalModifierGroups}
             inventory={inventory}
+            bomItems={_bomItems}
             onChange={setAdditionalModifierGroups}
             categoryPools={categoryId ? categoryModifierPools.filter((p) => p.categoryIds?.includes(categoryId) || p.categoryId === categoryId) : []}
           />

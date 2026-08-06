@@ -113,7 +113,7 @@ export default function CreatePrepInlineModal({
             inputQuantity: finalQty,
             inputUnit: finalUnit as PrepItem['inputUnit'],
             outputQuantity: 1,
-            outputUnit: finalUnit as PrepItem['outputUnit'],
+            outputUnit: 'pz',
           },
         });
         results.push(item);

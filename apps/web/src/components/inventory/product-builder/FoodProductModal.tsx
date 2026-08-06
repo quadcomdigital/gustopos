@@ -1,12 +1,11 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, MenuItemCreateRequest, CanonicalCreateMenuProductRequest, PrepItemCreateRequest, CanonicalUnit, MenuItemUpdateRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, MenuItemModifier, ModifierGroup, UnitConversion } from '@gustopos/shared';
+import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, CanonicalCreateMenuProductRequest, PrepItemCreateRequest, CanonicalUnit, MenuItemUpdateRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, ModifierGroup, UnitConversion } from '@gustopos/shared';
 import FormField from '../../../shared/ui/molecules/FormField';
 import { Plus, AlertTriangle, RefreshCw, Layers } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import Button from '../../../shared/ui/atoms/Button';
 import InlineCategoryPicker from '../InlineCategoryPicker';
-import ModifierEditor from '../ModifierEditor';
 import ModifierGroupsEditor from '../ModifierGroupsEditor';
 import ComponentTree from './ComponentTree';
 import AddComponentModal from './AddComponentModal';
@@ -30,7 +29,6 @@ interface FoodProductModalProps {
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
   /** Canonical menu-first creation for a base food recipe. */
   onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
-  onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   onCreateIngredient?: (payload: IngredientCreateRequest) => Promise<Ingredient>;
   onCreatePrepItem?: (payload: PrepItemCreateRequest) => Promise<PrepItem>;
@@ -47,7 +45,7 @@ interface FoodProductModalProps {
 
 export default function FoodProductModal({
   open, onClose, onSuccess, categories, inventory, bomItems, prepItems, categoryModifierPools = [],
-  onCreateCategory, onCreateMenuProduct, onCreateMenuItem, onUpdateMenuItem, onCreateIngredient, onCreatePrepItem,
+  onCreateCategory, onCreateMenuProduct, onUpdateMenuItem, onCreateIngredient, onCreatePrepItem,
   conversionsMap = {},
   onReplaceBomComponents, onCreateBomItem, onOpenBomTab, editItem,
 }: FoodProductModalProps) {
@@ -67,12 +65,9 @@ export default function FoodProductModal({
   const [editComponent, setEditComponent] = useState<MenuRecipeComponent | null>(null);
   const [showCreateIngredient, setShowCreateIngredient] = useState(false);
   const [showCreatePrep, setShowCreatePrep] = useState(false);
-  const [modifiers, setModifiers] = useState<MenuItemModifier[]>([]);
   const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
 
-  // Keep track of original BoM ID when editing, so we can update it on save
-  const [originalBomId, setOriginalBomId] = useState<string | null>(null);
-  // Snapshot of the flattened recipe at edit-open time, for accurate dirty detection
+  // Snapshot of the recipe at edit-open time, for accurate dirty detection
   const [originalResolved, setOriginalResolved] = useState<MenuRecipeComponent[]>([]);
 
   // Save-as-BoM state
@@ -102,39 +97,17 @@ export default function FoodProductModal({
       setCategoryName(editItem.category);
       setPrice(String(editItem.price));
       setPrintAreas(editItem.printAreas?.length ? editItem.printAreas : ['kitchen']);
-      setModifiers(editItem.modifiers ?? []);
       setModifierGroups(editItem.modifierGroups ?? []);
 
-      // Flatten any BoM references into their sub-components for inline editing.
-      // The resolved array is what the user sees and edits — the BoM is an
-      // implementation detail that gets updated on save.
-      const bomComp = (editItem.recipe ?? []).find((c) => c.componentType === 'bom');
-      setOriginalBomId(bomComp?.componentId ?? null);
-
-      const resolved = (editItem.recipe ?? []).flatMap((comp) => {
-        if (comp.componentType === 'bom') {
-          const bom = bomItems.find((b) => b.id === comp.componentId);
-          if (bom && bom.components.length > 0) {
-            const scale = comp.quantity / Number(bom.yieldQuantity || 1);
-            return bom.components
-              .map((sub) => ({
-                componentType: sub.componentType as 'ingredient' | 'bom' | 'prep',
-                componentId: sub.componentId,
-                quantity: Number(sub.quantity) * scale,
-                unit: sub.unit,
-              }));
-          }
-        }
-        return [comp];
-      });
-
-      setRecipe(resolved);
-      setOriginalResolved(JSON.parse(JSON.stringify(resolved)));
-      // Infer BASE mode: if price > 0 and no recipe, it's a BASE product
-      setIsBase(editItem.price > 0 && resolved.length === 0);
+      // Keep canonical components as-is (ingredient | bom | prep). BoM
+      // references stay atomic and are NOT flattened into their sub-components:
+      // saving must preserve the reference, never detach it.
+      const recipe = editItem.recipe ?? [];
+      setRecipe(recipe);
+      setOriginalResolved(JSON.parse(JSON.stringify(recipe)));
+      setIsBase(editItem.price > 0 && recipe.length === 0);
     } else if (!open) {
-      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setPrintAreas(['kitchen']); setRecipe([]); setIsBase(false); setModifiers([]); setModifierGroups([]); setErrors({}); setError('');
-      setOriginalBomId(null);
+      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setPrintAreas(['kitchen']); setRecipe([]); setIsBase(false); setModifierGroups([]); setErrors({}); setError('');
       setOriginalResolved([]);
     }
   }, [editItem, open]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -162,87 +135,22 @@ export default function FoodProductModal({
     setError('');
     try {
       const catName = categoryId ? (menuCategories.find((c) => c.id === categoryId)?.name ?? categoryName.trim()) : categoryName.trim();
+      if (!catName || catName.trim().length < 2) {
+        throw new Error('Seleziona o crea una categoria per il prodotto.');
+      }
 
-      // Canonical creation owns the flat ingredient/prep list directly. Do not
-      // create a BoM before this branch: the new model deliberately has no
-      // shadow BoM intermediary.
-      let finalRecipe = recipe;
-      const finalRecipeWithUnits = finalRecipe.map((component) => ({
+      // Canonical components are persisted verbatim (ingredient | bom | prep).
+      // The new model deliberately has no shadow BoM intermediary: BoMs are
+      // referenced as atomic components, never created implicitly here.
+      const finalRecipeWithUnits = recipe.map((component) => ({
         componentType: component.componentType as 'ingredient' | 'bom' | 'prep',
         componentId: component.componentId,
         quantity: component.quantity,
-        unit: resolveComponentUnit(component),
+        // Preserve the unit selected in the editor; only resolve legacy entries with no unit.
+        unit: (component.unit || resolveComponentUnit(component)) as CanonicalUnit,
       }));
-      const canUseCanonicalCreate = Boolean(
-        !isEdit
-        && onCreateMenuProduct
-        && modifiers.length === 0
-        && modifierGroups.length === 0
-        && recipe.every((component) => component.componentType === 'ingredient' || component.componentType === 'prep'),
-      );
-      const hasFlatComponents = recipe.some((c) => c.componentType !== 'bom');
 
-      if (!canUseCanonicalCreate && hasFlatComponents && (onCreateBomItem || onReplaceBomComponents)) {
-        const bomName = name.trim() || 'Prodotto';
-        const unit = recipe[0]?.unit || 'kg';
-
-        const apiComponents = recipe
-          .map((c) => ({
-            componentType: c.componentType as 'ingredient' | 'bom' | 'prep',
-            componentId: c.componentId,
-            quantity: c.quantity,
-            unit: c.unit,
-          }));
-
-        if (apiComponents.length === 0) {
-          throw new Error('Nessun componente valido nella ricetta.');
-        }
-
-        let bomId: string | null = null;
-
-        if (isEdit && originalBomId && onReplaceBomComponents) {
-          // Update existing BoM with current flat components
-          bomId = originalBomId;
-          await onReplaceBomComponents(bomId, { components: apiComponents });
-        } else if (onCreateBomItem) {
-          // Create a new BoM from scratch
-          bomId = await onCreateBomItem({
-            name: bomName,
-            outputUnit: unit,
-            yieldQuantity: 1,
-            components: apiComponents,
-          });
-
-          if (!bomId) {
-            throw new Error('Errore creazione BoM automatico — riprova');
-          }
-        }
-
-        if (bomId) {
-          finalRecipe = [{
-            componentType: 'bom',
-            componentId: bomId,
-            quantity: 1,
-            unit,
-          }];
-        }
-      }
-
-      if (canUseCanonicalCreate && onCreateMenuProduct) {
-        if (!catName || catName.trim().length < 2) {
-          throw new Error('Seleziona o crea una categoria per il prodotto.');
-        }
-        await onCreateMenuProduct({
-          name: name.trim(),
-          price: Number(price),
-          category: catName.trim(),
-          categoryId: categoryId || undefined,
-          printAreas,
-          components: finalRecipeWithUnits,
-          inlineIngredients: [],
-          inlinePreps: [],
-        });
-      } else if (isEdit && onUpdateMenuItem && editItem) {
+      if (isEdit && onUpdateMenuItem && editItem) {
         await onUpdateMenuItem(editItem.id, {
           name: name.trim(),
           category: catName,
@@ -252,17 +160,20 @@ export default function FoodProductModal({
           modifierGroups,
           components: finalRecipeWithUnits,
         });
-      } else {
-        await onCreateMenuItem({
+      } else if (onCreateMenuProduct) {
+        await onCreateMenuProduct({
           name: name.trim(),
-          category: catName,
+          price: Number(price),
+          category: catName.trim(),
           categoryId: categoryId || undefined,
           printAreas,
-          price: Number(price),
-          recipe: finalRecipe,
-          modifiers,
+          components: finalRecipeWithUnits,
+          inlineIngredients: [],
+          inlinePreps: [],
           modifierGroups,
         });
+      } else {
+        throw new Error('Nessun canale di creazione disponibile.');
       }
       setSaving(false);
       onSuccess();
@@ -388,7 +299,7 @@ export default function FoodProductModal({
 
   const dirty = useMemo(() => {
     if (!isEdit || !editItem) return name !== '' || price !== '' || recipe.length > 0;
-    // In edit mode, compare against the flattened snapshot (originalResolved)
+    // In edit mode, compare against the recipe snapshot taken at open time
     const originalRecipe = originalResolved.length > 0 ? originalResolved : editItem.recipe;
     return (
       name !== editItem.name
@@ -396,10 +307,9 @@ export default function FoodProductModal({
       || price !== String(editItem.price)
       || JSON.stringify(printAreas) !== JSON.stringify(editItem.printAreas)
       || JSON.stringify(recipe) !== JSON.stringify(originalRecipe)
-      || JSON.stringify(modifiers) !== JSON.stringify(editItem.modifiers)
       || JSON.stringify(modifierGroups) !== JSON.stringify(editItem.modifierGroups)
     );
-  }, [isEdit, editItem, name, categoryId, price, printAreas, recipe, originalResolved, modifiers, modifierGroups]);
+  }, [isEdit, editItem, name, categoryId, price, printAreas, recipe, originalResolved, modifierGroups]);
 
   return (
     <>
@@ -489,8 +399,8 @@ export default function FoodProductModal({
               conversionsMap={conversionsMap}
             />
 
-            {/* Save as BoM — show only when no original BoM exists (create mode) */}
-            {canSaveAsBom && onCreateBomItem && !showBomSave && !(isEdit && originalBomId) && (
+            {/* Save as BoM */}
+            {canSaveAsBom && onCreateBomItem && !showBomSave && (
               <div className="border-t border-dashed border-border pt-2 mt-2">
                 <Button
                   variant="secondary"
@@ -570,15 +480,11 @@ export default function FoodProductModal({
 
           <div className="border-t border-border pt-3">
             <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-2">Modificatori</label>
-            <ModifierEditor
-              modifiers={modifiers}
-              inventory={inventory}
-              onChange={setModifiers}
-            />
             <ModifierGroupsEditor
-              value={modifierGroups}
-              inventory={inventory}
-              onChange={setModifierGroups}
+              value={modifierGroups}                    inventory={inventory}
+                    prepItems={prepItems}
+                    bomItems={bomItems}
+                    onChange={setModifierGroups}
               categoryPools={categoryId ? categoryModifierPools.filter((p) => p.categoryIds?.includes(categoryId) || p.categoryId === categoryId) : []}
             />
           </div>

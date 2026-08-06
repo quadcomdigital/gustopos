@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import type { Category, Ingredient, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
+import type { Category, Ingredient, PrepItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import InlineCategoryPicker from '../InlineCategoryPicker';
@@ -15,15 +15,18 @@ interface SimpleProductModalProps {
   onSuccess: () => void;
   categories: Category[];
   inventory: Ingredient[];
+  prepItems?: PrepItem[];
+  bomItems?: import('@gustopos/shared').BomItem[];
   categoryModifierPools?: CategoryModifierPool[];
   onCreateCategory?: (name: string, scope: Category['scope']) => Promise<void>;
-  onCreate: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreate?: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdate?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   editItem?: MenuItemAdmin | null;
 }
 
 export default function SimpleProductModal({
-  open, onClose, onSuccess, categories, inventory, categoryModifierPools = [], onCreateCategory, onCreate, onUpdate, editItem,
+  open, onClose, onSuccess, categories, inventory, prepItems = [], bomItems = [], categoryModifierPools = [], onCreateCategory, onCreate, onCreateMenuProduct, onUpdate, editItem,
 }: SimpleProductModalProps) {
   const isEdit = !!editItem;
   const [name, setName] = useState('');
@@ -90,7 +93,22 @@ export default function SimpleProductModal({
           printAreas,
           modifierGroups,
         });
-      } else {
+      } else if (onCreateMenuProduct) {
+        if (!catName || catName.trim().length < 2) {
+          throw new Error('Seleziona o crea una categoria per il prodotto.');
+        }
+        await onCreateMenuProduct({
+          name: name.trim(),
+          price: priceNum,
+          category: catName.trim(),
+          categoryId: categoryId || undefined,
+          printAreas,
+          components: [],
+          inlineIngredients: [],
+          inlinePreps: [],
+          modifierGroups,
+        });
+      } else if (onCreate) {
         await onCreate({
           name: name.trim(),
           category: catName,
@@ -101,6 +119,8 @@ export default function SimpleProductModal({
           modifiers: [],
           modifierGroups,
         });
+      } else {
+        throw new Error('Nessun canale di creazione disponibile.');
       }
       setSaving(false);
       onSuccess();
@@ -164,6 +184,8 @@ export default function SimpleProductModal({
           <ModifierGroupsEditor
             value={modifierGroups}
             inventory={inventory}
+            prepItems={prepItems}
+            bomItems={bomItems}
             onChange={setModifierGroups}
             categoryPools={categoryId ? categoryModifierPools.filter((p) => p.categoryIds?.includes(categoryId) || p.categoryId === categoryId) : []}
           />

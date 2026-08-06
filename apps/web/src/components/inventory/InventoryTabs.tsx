@@ -196,7 +196,7 @@ export default function InventoryTabs({
     handleTabSwitch('prep');
   };
 
-  const lowStockCount = simpleCatalogMode ? 0 : inventory.filter((i) => i.quantity <= i.minThreshold && i.isActive).length;
+  const lowStockCount = simpleCatalogMode ? 0 : inventory.filter((i) => i.quantity <= i.minThreshold && i.isActive && i.isStockTracked).length;
 
   return (
     <div className="h-full flex flex-col">
@@ -267,7 +267,7 @@ export default function InventoryTabs({
         {!simpleCatalogMode && (
           <LowStockAlert
             suggestions={inventory
-              .filter((i) => i.quantity <= i.minThreshold && i.isActive)
+              .filter((i) => i.quantity <= i.minThreshold && i.isActive && i.isStockTracked)
               .map((i) => ({
                 ingredientId: i.id,
                 name: i.name,
@@ -412,6 +412,8 @@ export default function InventoryTabs({
             pools={categoryModifierPools}
             menuCategories={categories.filter((c) => c.scope === 'menu' && c.isActive)}
             inventory={inventory}
+            prepItems={prepItems}
+            bomItems={bomItems}
             onCreatePool={async (payload) => {
               if (onCreateCategoryModifierPool) await onCreateCategoryModifierPool(payload);
               onRefreshCategoryModifierPools?.();

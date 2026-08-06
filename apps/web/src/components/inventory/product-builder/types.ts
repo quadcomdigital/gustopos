@@ -1,4 +1,4 @@
-import type { Ingredient, BomItem, PrepItem, MenuItemAdmin, Category, MenuItemCreateRequest, MenuItemUpdateRequest, PrepItemCreateRequest, CategoryModifierPool } from '@gustopos/shared';
+import type { Ingredient, BomItem, PrepItem, MenuItemAdmin, Category, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, PrepItemCreateRequest, CategoryModifierPool } from '@gustopos/shared';
 
 export type ProductType = 'simple' | 'variable' | 'food';
 
@@ -15,19 +15,21 @@ export interface ProductBuilderBaseProps {
 }
 
 export interface SimpleProductModalProps extends ProductBuilderBaseProps {
-  onCreate: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreate?: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdate?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   editItem?: MenuItemAdmin | null;
 }
 
 export interface VariableProductModalProps extends ProductBuilderBaseProps {
-  onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuItem?: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   editItem?: MenuItemAdmin | null;
 }
 
 export interface FoodProductModalProps extends ProductBuilderBaseProps {
-  onCreateMenuItem: (payload: MenuItemCreateRequest) => Promise<void>;
+  onCreateMenuProduct?: (payload: CanonicalCreateMenuProductRequest) => Promise<void>;
   onUpdateMenuItem?: (id: string, payload: MenuItemUpdateRequest) => Promise<void>;
   onCreateIngredient?: (payload: any) => Promise<Ingredient>;
   onCreatePrepItem?: (payload: PrepItemCreateRequest) => Promise<PrepItem>;

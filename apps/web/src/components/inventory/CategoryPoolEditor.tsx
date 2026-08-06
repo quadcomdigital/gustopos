@@ -1,14 +1,18 @@
-import type { Category, Ingredient, CategoryModifierPool } from '@gustopos/shared';
+import type { Category, Ingredient, CategoryModifierPool, BomItem, PrepItem } from '@gustopos/shared';
 import { Trash2, Save, X } from 'lucide-react';
 import { useState } from 'react';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
+
+const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
 
 interface CategoryPoolEditorProps {
   pools: CategoryModifierPool[];
   menuCategories: Category[];
   inventory: Ingredient[];
-  onCreatePool: (payload: { categoryIds: string[]; name: string; options: Array<{ inventoryItemId?: string; name?: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
-  onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: Array<{ inventoryItemId?: string; name?: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
+  prepItems?: PrepItem[];
+  bomItems?: BomItem[];
+  onCreatePool: (payload: { categoryIds: string[]; name: string; options: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
+  onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
   onDeletePool: (id: string) => Promise<void>;
 }
 
@@ -16,6 +20,8 @@ export default function CategoryPoolEditor({
   pools,
   menuCategories,
   inventory,
+  prepItems = [],
+  bomItems = [],
   onCreatePool,
   onUpdatePool,
   onDeletePool,
@@ -23,13 +29,13 @@ export default function CategoryPoolEditor({
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [newPoolName, setNewPoolName] = useState('');
-  const [newPoolOptions, setNewPoolOptions] = useState<Array<{ inventoryItemId?: string; name?: string; priceDelta: number; sortOrder: number }>>([]);
+  const [newPoolOptions, setNewPoolOptions] = useState<Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }>>([]);
   const [saving, setSaving] = useState(false);
 
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editCategoryIds, setEditCategoryIds] = useState<string[]>([]);
-  const [editOptions, setEditOptions] = useState<Array<{ inventoryItemId?: string; name?: string; priceDelta: number; sortOrder: number }>>([]);
+  const [editOptions, setEditOptions] = useState<Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }>>([]);
   const [editSaving, setEditSaving] = useState(false);
 
   const filteredPools = filterCategoryId
@@ -60,10 +66,10 @@ export default function CategoryPoolEditor({
   };
 
   const addOptionToNewPool = () => {
-    setNewPoolOptions([...newPoolOptions, { inventoryItemId: undefined, name: '', priceDelta: 0, sortOrder: newPoolOptions.length }]);
+    setNewPoolOptions([...newPoolOptions, { inventoryItemId: undefined, componentType: 'ingredient', componentId: undefined, name: '', quantity: 1, unit: 'pz', priceDelta: 0, sortOrder: newPoolOptions.length }]);
   };
 
-  const updateNewPoolOption = (idx: number, field: 'inventoryItemId' | 'priceDelta' | 'name', value: string | number | undefined) => {
+  const updateNewPoolOption = (idx: number, field: 'inventoryItemId' | 'componentType' | 'componentId' | 'priceDelta' | 'name' | 'quantity' | 'unit', value: string | number | undefined) => {
     setNewPoolOptions((prev) => prev.map((opt, i) => (i === idx ? { ...opt, [field]: value } : opt)));
   };
 
@@ -82,7 +88,7 @@ export default function CategoryPoolEditor({
     setEditingPoolId(pool.id);
     setEditName(pool.name);
     setEditCategoryIds(pool.categoryIds?.length ? pool.categoryIds : (pool.categoryId ? [pool.categoryId] : []));
-    setEditOptions(pool.options.map((o) => ({ inventoryItemId: o.inventoryItemId, name: o.name, priceDelta: o.priceDelta, sortOrder: o.sortOrder })));
+    setEditOptions(pool.options.map((o) => ({ inventoryItemId: o.inventoryItemId, componentType: o.componentType ?? 'ingredient', componentId: o.componentId ?? o.inventoryItemId, name: o.name, quantity: 1, unit: 'pz', priceDelta: o.priceDelta, sortOrder: o.sortOrder })));
   };
 
   const cancelEditing = () => {
@@ -114,10 +120,10 @@ export default function CategoryPoolEditor({
   };
 
   const addOptionToEditPool = () => {
-    setEditOptions([...editOptions, { inventoryItemId: undefined, name: '', priceDelta: 0, sortOrder: editOptions.length }]);
+    setEditOptions([...editOptions, { inventoryItemId: undefined, componentType: 'ingredient', componentId: undefined, name: '', quantity: 1, unit: 'pz', priceDelta: 0, sortOrder: editOptions.length }]);
   };
 
-  const updateEditPoolOption = (idx: number, field: 'inventoryItemId' | 'priceDelta' | 'name', value: string | number | undefined) => {
+  const updateEditPoolOption = (idx: number, field: 'inventoryItemId' | 'componentType' | 'componentId' | 'priceDelta' | 'name' | 'quantity' | 'unit', value: string | number | undefined) => {
     setEditOptions((prev) => prev.map((opt, i) => (i === idx ? { ...opt, [field]: value } : opt)));
   };
 
@@ -179,52 +185,57 @@ export default function CategoryPoolEditor({
 
         <div className="space-y-1">
           {newPoolOptions.map((opt, idx) => {
-            const isIngredientMode = !!opt.inventoryItemId;
+            const componentType = opt.componentType ?? 'ingredient';
+            const isIngredientMode = componentType === 'ingredient';
+            const componentId = opt.componentId ?? opt.inventoryItemId;
             return (
               <div key={idx} className="rounded border border-border bg-bg/30 p-2 space-y-1">
                 <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (isIngredientMode) {
-                        updateNewPoolOption(idx, 'inventoryItemId', undefined);
-                      } else {
-                        const first = inventory[0];
-                        updateNewPoolOption(idx, 'inventoryItemId', first?.id);
-                        if (first) updateNewPoolOption(idx, 'name', first.name);
-                      }
+                  <label className="text-[9px] font-bold uppercase tracking-wider text-text-muted">Tipo</label>
+                  <select
+                    value={componentType}
+                    onChange={(e) => {
+                      const nextType = e.target.value as 'ingredient' | 'prep' | 'bom';
+                      updateNewPoolOption(idx, 'componentType', nextType);
+                      updateNewPoolOption(idx, 'componentId', undefined);
+                      updateNewPoolOption(idx, 'inventoryItemId', undefined);
                     }}
-                    className={`px-3 py-1.5 min-h-[40px] rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                    className="px-2 py-1.5 min-h-[40px] rounded border border-border text-xs"
                   >
-                    {isIngredientMode ? 'Ingrediente' : 'Testo libero'}
-                  </button>
+                    <option value="ingredient">Ingrediente</option>
+                    <option value="prep">Prep</option>
+                    <option value="bom">BoM</option>
+                  </select>
                 </div>
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                   <div className="flex-1 min-w-0">
                     {isIngredientMode ? (
-                      <SearchableSelect
-                        items={inventory}
-                        getLabel={(inv) => `${inv.name} (${inv.unit})`}
-                        getValue={(inv) => inv.id}
-                        selectedValue={opt.inventoryItemId}
-                        onSelect={(invId) => {
-                          const invItem = inventory.find((i) => i.id === invId);
-                          updateNewPoolOption(idx, 'inventoryItemId', invId);
-                          if (invItem) updateNewPoolOption(idx, 'name', invItem.name);
-                        }}
-                        placeholder="Seleziona ingrediente..."
-                        className="w-full"
-                      />
+                      <SearchableSelect items={inventory} getLabel={(inv) => `${inv.name} (${inv.unit})`} getValue={(inv) => inv.id} selectedValue={componentId} onSelect={(id) => { const item = inventory.find((i) => i.id === id); updateNewPoolOption(idx, 'inventoryItemId', id); updateNewPoolOption(idx, 'componentId', id); if (item) updateNewPoolOption(idx, 'name', item.name); }} placeholder="Seleziona ingrediente..." className="w-full" />
+                    ) : componentType === 'prep' ? (
+                      <SearchableSelect items={prepItems} getLabel={(prep) => `${prep.name} (${prep.outputUnit})`} getValue={(prep) => prep.id} selectedValue={componentId} onSelect={(id) => { const item = prepItems.find((p) => p.id === id); updateNewPoolOption(idx, 'componentId', id); if (item) updateNewPoolOption(idx, 'name', item.name); }} placeholder="Seleziona prep..." className="w-full" />
                     ) : (
-                      <input
-                        value={opt.name ?? ''}
-                        onChange={(e) => updateNewPoolOption(idx, 'name', e.target.value)}
-                        className="w-full px-3 py-2 rounded border border-border text-xs"
-                        placeholder="Nome opzione (es: Formato grande)"
-                      />
+                      <SearchableSelect items={bomItems} getLabel={(bom) => `${bom.name} (${bom.outputUnit})`} getValue={(bom) => bom.id} selectedValue={componentId} onSelect={(id) => { const item = bomItems.find((b) => b.id === id); updateNewPoolOption(idx, 'componentId', id); if (item) updateNewPoolOption(idx, 'name', item.name); }} placeholder="Seleziona BoM..." className="w-full" />
                     )}
                   </div>
                   <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={opt.quantity}
+                      onChange={(e) => updateNewPoolOption(idx, 'quantity', Number(e.target.value) || 1)}
+                      min="0.01"
+                      step="0.01"
+                      placeholder="Qtà"
+                      className="flex-1 sm:flex-none px-3 py-2 rounded border border-border text-xs w-16"
+                    />
+                    <select
+                      value={opt.unit}
+                      onChange={(e) => updateNewPoolOption(idx, 'unit', e.target.value)}
+                      className="px-2 py-2 rounded border border-border text-xs"
+                    >
+                      {UNIT_OPTIONS.map((u) => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                    </select>
                     <input
                       type="number"
                       value={opt.priceDelta}
@@ -251,7 +262,7 @@ export default function CategoryPoolEditor({
             onClick={addOptionToNewPool}
             className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded border border-border text-[10px] font-bold uppercase tracking-wider"
           >
-            + Aggiungi ingrediente al pool
+            + Aggiungi opzione al pool
           </button>
         </div>
       </div>
@@ -291,52 +302,57 @@ export default function CategoryPoolEditor({
                     </div>
                     <div className="space-y-1">
                       {editOptions.map((opt, idx) => {
-                        const isIngredientMode = !!opt.inventoryItemId;
+                        const componentType = opt.componentType ?? 'ingredient';
+                        const isIngredientMode = componentType === 'ingredient';
+                        const componentId = opt.componentId ?? opt.inventoryItemId;
                         return (
                           <div key={idx} className="rounded border border-border bg-bg/30 p-2 space-y-1">
                             <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (isIngredientMode) {
-                                    updateEditPoolOption(idx, 'inventoryItemId', undefined);
-                                  } else {
-                                    const first = inventory[0];
-                                    updateEditPoolOption(idx, 'inventoryItemId', first?.id);
-                                    if (first) updateEditPoolOption(idx, 'name', first.name);
-                                  }
+                              <label className="text-[9px] font-bold uppercase tracking-wider text-text-muted">Tipo</label>
+                              <select
+                                value={componentType}
+                                onChange={(e) => {
+                                  const nextType = e.target.value as 'ingredient' | 'prep' | 'bom';
+                                  updateEditPoolOption(idx, 'componentType', nextType);
+                                  updateEditPoolOption(idx, 'componentId', undefined);
+                                  updateEditPoolOption(idx, 'inventoryItemId', undefined);
                                 }}
-                                className={`px-3 py-1.5 min-h-[40px] rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                                className="px-2 py-1.5 min-h-[40px] rounded border border-border text-xs"
                               >
-                                {isIngredientMode ? 'Ingrediente' : 'Testo libero'}
-                              </button>
+                                <option value="ingredient">Ingrediente</option>
+                                <option value="prep">Prep</option>
+                                <option value="bom">BoM</option>
+                              </select>
                             </div>
                             <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                               <div className="flex-1 min-w-0">
                                 {isIngredientMode ? (
-                                  <SearchableSelect
-                                    items={inventory}
-                                    getLabel={(inv) => `${inv.name} (${inv.unit})`}
-                                    getValue={(inv) => inv.id}
-                                    selectedValue={opt.inventoryItemId}
-                                    onSelect={(invId) => {
-                                      const invItem = inventory.find((i) => i.id === invId);
-                                      updateEditPoolOption(idx, 'inventoryItemId', invId);
-                                      if (invItem) updateEditPoolOption(idx, 'name', invItem.name);
-                                    }}
-                                    placeholder="Seleziona ingrediente..."
-                                    className="w-full"
-                                  />
+                                  <SearchableSelect items={inventory} getLabel={(inv) => `${inv.name} (${inv.unit})`} getValue={(inv) => inv.id} selectedValue={componentId} onSelect={(id) => { const item = inventory.find((i) => i.id === id); updateEditPoolOption(idx, 'inventoryItemId', id); updateEditPoolOption(idx, 'componentId', id); if (item) updateEditPoolOption(idx, 'name', item.name); }} placeholder="Seleziona ingrediente..." className="w-full" />
+                                ) : componentType === 'prep' ? (
+                                  <SearchableSelect items={prepItems} getLabel={(prep) => `${prep.name} (${prep.outputUnit})`} getValue={(prep) => prep.id} selectedValue={componentId} onSelect={(id) => { const item = prepItems.find((p) => p.id === id); updateEditPoolOption(idx, 'componentId', id); if (item) updateEditPoolOption(idx, 'name', item.name); }} placeholder="Seleziona prep..." className="w-full" />
                                 ) : (
-                                  <input
-                                    value={opt.name ?? ''}
-                                    onChange={(e) => updateEditPoolOption(idx, 'name', e.target.value)}
-                                    className="w-full px-3 py-2 rounded border border-border text-xs"
-                                    placeholder="Nome opzione (es: Formato grande)"
-                                  />
+                                  <SearchableSelect items={bomItems} getLabel={(bom) => `${bom.name} (${bom.outputUnit})`} getValue={(bom) => bom.id} selectedValue={componentId} onSelect={(id) => { const item = bomItems.find((b) => b.id === id); updateEditPoolOption(idx, 'componentId', id); if (item) updateEditPoolOption(idx, 'name', item.name); }} placeholder="Seleziona BoM..." className="w-full" />
                                 )}
                               </div>
                               <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  value={opt.quantity}
+                                  onChange={(e) => updateEditPoolOption(idx, 'quantity', Number(e.target.value) || 1)}
+                                  min="0.01"
+                                  step="0.01"
+                                  placeholder="Qtà"
+                                  className="flex-1 sm:flex-none px-3 py-2 rounded border border-border text-xs w-16"
+                                />
+                                <select
+                                  value={opt.unit}
+                                  onChange={(e) => updateEditPoolOption(idx, 'unit', e.target.value)}
+                                  className="px-2 py-2 rounded border border-border text-xs"
+                                >
+                                  {UNIT_OPTIONS.map((u) => (
+                                    <option key={u} value={u}>{u}</option>
+                                  ))}
+                                </select>
                                 <input
                                   type="number"
                                   value={opt.priceDelta}

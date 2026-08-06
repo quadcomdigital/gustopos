@@ -58,6 +58,7 @@ export default function IngredientsTab({
   const [ingredientEditThreshold, setIngredientEditThreshold] = useState('0');
   const [ingredientEditUnitCost, setIngredientEditUnitCost] = useState('0');
   const [ingredientEditSalePrice, setIngredientEditSalePrice] = useState('');
+  const [ingredientEditTracked, setIngredientEditTracked] = useState(false);
   const [newIngredientName, setNewIngredientName] = useState('');
   const [newIngredientCategoryId, setNewIngredientCategoryId] = useState('');
   const [newIngredientQty, setNewIngredientQty] = useState('0');
@@ -65,6 +66,7 @@ export default function IngredientsTab({
   const [newIngredientThreshold, setNewIngredientThreshold] = useState('0');
   const [newIngredientUnitCost, setNewIngredientUnitCost] = useState('0');
   const [newIngredientSalePrice, setNewIngredientSalePrice] = useState('');
+  const [newIngredientTracked, setNewIngredientTracked] = useState(false);
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [filterLowStock, setFilterLowStock] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -138,7 +140,7 @@ export default function IngredientsTab({
   const ingredientCategories = useScopedCategories(categories, 'ingredient');
 
   const lowStockCount = useMemo(
-    () => inventory.filter((i) => i.quantity <= i.minThreshold).length,
+    () => inventory.filter((i) => i.quantity <= i.minThreshold && i.isStockTracked).length,
     [inventory],
   );
 
@@ -147,7 +149,7 @@ export default function IngredientsTab({
       ? inventory.filter((i) => i.categoryId === filterCategoryId)
       : inventory;
     if (filterLowStock) {
-      result = result.filter((i) => i.quantity <= i.minThreshold);
+      result = result.filter((i) => i.quantity <= i.minThreshold && i.isStockTracked);
     }
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.trim().toLowerCase();
@@ -193,6 +195,7 @@ export default function IngredientsTab({
       || ingredientEditThreshold !== String(selectedIngredient.minThreshold)
       || ingredientEditUnitCost !== String(selectedIngredient.unitCost ?? 0)
       || ingredientEditSalePrice !== (selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '')
+      || ingredientEditTracked !== !selectedIngredient.isStockTracked
     );
   }, [
     selectedIngredient,
@@ -203,6 +206,7 @@ export default function IngredientsTab({
     ingredientEditThreshold,
     ingredientEditUnitCost,
     ingredientEditSalePrice,
+    ingredientEditTracked,
   ]);
 
   useEffect(() => {
@@ -221,6 +225,7 @@ export default function IngredientsTab({
     setIngredientEditThreshold(String(selectedIngredient.minThreshold));
     setIngredientEditUnitCost(String(selectedIngredient.unitCost ?? 0));
     setIngredientEditSalePrice(selectedIngredient.salePrice != null ? String(selectedIngredient.salePrice) : '');
+    setIngredientEditTracked(!selectedIngredient.isStockTracked);
 
     // Load unit conversions for this ingredient
     void fetchUnitConversions(selectedIngredient.id).then(setConversions);
@@ -288,6 +293,7 @@ export default function IngredientsTab({
         categoryId: newIngredientCategoryId || undefined,
         unitCost,
         salePrice: newIngredientSalePrice ? Number(newIngredientSalePrice) : null,
+        isStockTracked: !newIngredientTracked,
       });
       setNewIngredientName('');
       setNewIngredientQty('0');
@@ -295,6 +301,7 @@ export default function IngredientsTab({
       setNewIngredientUnitCost('0');
       setNewIngredientSalePrice('');
       setNewIngredientCategoryId('');
+      setNewIngredientTracked(false);
       setCreateErrors({});
       return true;
     } catch {
@@ -327,6 +334,7 @@ export default function IngredientsTab({
         categoryId: ingredientEditCategoryId || undefined,
         unitCost,
         salePrice: ingredientEditSalePrice ? Number(ingredientEditSalePrice) : null,
+        isStockTracked: !ingredientEditTracked,
       });
       void onRefresh?.();
     } catch (err) {
@@ -573,6 +581,19 @@ export default function IngredientsTab({
               />
             )}
           </Field>
+
+          <label className="flex items-start gap-2 text-sm text-secondary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={newIngredientTracked}
+              onChange={(e) => setNewIngredientTracked(e.target.checked)}
+              className="mt-0.5 w-4 h-4 rounded border-border text-accent focus:ring-accent"
+            />
+            <span>
+              Stock non monitorato
+              <span className="block text-[10px] text-text-muted">Non scaricato dagli ordini, escluso dai controlli di scorta</span>
+            </span>
+          </label>
         </div>
       </Modal>
 
@@ -1005,6 +1026,20 @@ export default function IngredientsTab({
               }}
               label="Categoria"
             />
+          </div>
+          <div className="md:col-span-2">
+            <label className="flex items-start gap-2 text-sm text-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ingredientEditTracked}
+                onChange={(e) => setIngredientEditTracked(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded border-border text-accent focus:ring-accent"
+              />
+              <span>
+                Stock non monitorato
+                <span className="block text-[10px] text-text-muted">Non scaricato dagli ordini, escluso dai controlli di scorta</span>
+              </span>
+            </label>
           </div>
           <div className="md:col-span-2 flex items-center gap-3 pt-2 border-t border-border">
             <span className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</span>

@@ -8,6 +8,7 @@ interface StockLevelChartProps {
     quantity: number;
     minThreshold: number;
     unit: string;
+    isStockTracked: boolean;
   }>;
 }
 
@@ -27,7 +28,7 @@ export default function StockLevelChart({ inventory }: StockLevelChartProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   const sorted = [...inventory]
-    .filter((i) => i.minThreshold > 0)
+    .filter((i) => i.minThreshold > 0 && i.isStockTracked)
     .sort((a, b) => (a.quantity / a.minThreshold) - (b.quantity / b.minThreshold));
 
   const criticalCount = sorted.filter((i) => (i.quantity / i.minThreshold) < 0.5).length;
