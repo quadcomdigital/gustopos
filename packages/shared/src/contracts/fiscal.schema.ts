@@ -61,7 +61,10 @@ export const fiscalPrinterModelSchema = z.enum(["generic-rt", "epson-tm-s1000", 
 export const fiscalPrinterConfigSchema = z.object({
   enabled: z.boolean().default(false),
   model: fiscalPrinterModelSchema.default("generic-rt"),
-  host: z.string().min(1).max(253).default(""),
+  // host può essere vuoto quando enabled=false (fiscale non configurata): il
+  // default "" è legittimo, quindi niente min(1) qui — altrimenti il parse del
+  // config assente fallisce e ogni heartbeat del print agent va in 500.
+  host: z.string().max(253).default(""),
   port: z.number().int().min(1).max(65535).default(4001),
   // Commands differ per vendor; `generic-rt` uses the common @-command text
   // protocol. Per-model adapters can tune command strings later.
