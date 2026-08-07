@@ -691,12 +691,23 @@ export class AppRepository {
       }
 
       const poolOptionRows = await db
-        .select({ id: categoryModifierPoolOptions.id, priceDelta: categoryModifierPoolOptions.priceDelta, inventoryItemId: categoryModifierPoolOptions.inventoryItemId })
+        .select({ id: categoryModifierPoolOptions.id, name: categoryModifierPoolOptions.name, priceDelta: categoryModifierPoolOptions.priceDelta, inventoryItemId: categoryModifierPoolOptions.inventoryItemId })
         .from(categoryModifierPoolOptions)
         .where(and(eq(categoryModifierPoolOptions.tenantId, tenantId), inArray(categoryModifierPoolOptions.id, [...allOptionIds])));
       for (const row of poolOptionRows) {
         if (!priceDeltaByOptionId.has(row.id)) {
           priceDeltaByOptionId.set(row.id, Number(row.priceDelta));
+        }
+        if (!optionNameByOptionId.has(row.id)) {
+          // Pool options may carry an explicit name, otherwise fall back to
+          // the referenced inventory ingredient (e.g. "Tanqueray" added from
+          // the Gin pool must print its name, not the cmpo_… id).
+          if (row.name) {
+            optionNameByOptionId.set(row.id, row.name);
+          } else if (row.inventoryItemId) {
+            const invName = inventoryNameById.get(row.inventoryItemId);
+            if (invName) optionNameByOptionId.set(row.id, invName);
+          }
         }
         if (row.inventoryItemId) {
           inventoryItemIdByOptionId.set(row.id, row.inventoryItemId);
