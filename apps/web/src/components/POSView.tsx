@@ -840,13 +840,11 @@ export default function POSView({
                         onClick={() => {
                           const menuItem = data.menu.find((m) => m.id === item.menuItemId);
                           if (!menuItem) return;
-                          const hasComplexMods = item.ingredientOverrides.length > 0 || item.selectedModifiers.length > 0;
-                          if (hasComplexMods) {
-                            setModifierDraft(null);
-                            setModifierModalItem(menuItem);
-                          } else {
-                            openProductModal(menuItem, item);
-                          }
+                          // Edit always opens the full product modal (qty,
+                          // inline modifier chips, notes, custom price) seeded
+                          // from the existing cart item; "PERSONALIZZA" inside
+                          // it opens the advanced modifier modal when needed.
+                          openProductModal(menuItem, item);
                         }}
                         className="flex-1 text-left min-w-0 active:opacity-70 transition-opacity"
                       >
