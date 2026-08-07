@@ -18,13 +18,16 @@ export default function CheckoutModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-50 overflow-y-auto bg-black/50 backdrop-blur-sm"
         >
+          <div
+            className="min-h-full flex items-center justify-center p-4"
+          >
           <motion.div
             initial={{ scale: 0.95, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.95, opacity: 0 }}
-            className="bg-bg rounded-2xl shadow-2xl w-full max-w-3xl max-h-[95vh] flex flex-col overflow-hidden"
+            className="bg-bg rounded-2xl shadow-2xl w-full max-w-3xl max-h-[95dvh] flex flex-col overflow-hidden"
           >
             <div className="flex items-center justify-between p-4 border-b border-border bg-bg/50">
               <div className="flex items-center gap-3">
@@ -65,6 +68,7 @@ export default function CheckoutModal() {
               {step === 'close' && <CloseTableView />}
             </div>
           </motion.div>
+          </div>
         </motion.div>
       )}
     </AnimatePresence>
