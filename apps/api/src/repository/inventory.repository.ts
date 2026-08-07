@@ -1418,6 +1418,8 @@ for (const opt of optionRows) {
     inventoryItemId: opt.inventoryItemId ?? undefined,
     componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
     componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
+    quantity: Number(opt.quantity ?? 1),
+    unit: opt.unit ?? "pz",
     priceDelta: Number(opt.priceDelta),
     sortOrder: opt.sortOrder ?? 0,
   });

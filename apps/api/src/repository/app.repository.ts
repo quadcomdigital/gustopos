@@ -1274,7 +1274,7 @@ export class AppRepository {
 
     const inventoryNameById = new Map(inventoryRows.map((row) => [row.id, row.name]));
 
-    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; priceDelta: number; isDefault: boolean; isActive: boolean; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
+    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: string; priceDelta: number; isDefault: boolean; isActive: boolean; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
     for (const opt of catPoolOptionRows) {
       const existing = catPoolOptionsByPoolId.get(opt.poolId) ?? [];
       const optionName = opt.name ?? (opt.inventoryItemId ? inventoryNameById.get(opt.inventoryItemId) : undefined) ?? opt.componentId ?? opt.inventoryItemId ?? '';
@@ -1283,6 +1283,8 @@ export class AppRepository {
         name: optionName,
         componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
         componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
+        quantity: Number(opt.quantity ?? 1),
+        unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
         isDefault: false,
         isActive: true,
@@ -1392,6 +1394,8 @@ export class AppRepository {
         inventoryItemId: opt.inventoryItemId ?? undefined,
         componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
         componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
+        quantity: Number(opt.quantity ?? 1),
+        unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
         sortOrder: opt.sortOrder ?? 0,
       });
@@ -2542,10 +2546,10 @@ export class AppRepository {
       }
 
       // Load category pool options with canonical component reference.
-      let poolOptionsByOptionId = new Map<string, { inventoryItemId: string | null; componentType: "ingredient" | "prep" | "bom"; componentId: string | null }>();
+      let poolOptionsByOptionId = new Map<string, { inventoryItemId: string | null; componentType: "ingredient" | "prep" | "bom"; componentId: string | null; quantity: number; unit: string }>();
       if (modifierOptionIds.size > 0) {
         const poolOptionRows = await tx
-          .select({ id: categoryModifierPoolOptions.id, inventoryItemId: categoryModifierPoolOptions.inventoryItemId, componentType: categoryModifierPoolOptions.componentType, componentId: categoryModifierPoolOptions.componentId })
+          .select({ id: categoryModifierPoolOptions.id, inventoryItemId: categoryModifierPoolOptions.inventoryItemId, componentType: categoryModifierPoolOptions.componentType, componentId: categoryModifierPoolOptions.componentId, quantity: categoryModifierPoolOptions.quantity, unit: categoryModifierPoolOptions.unit })
           .from(categoryModifierPoolOptions)
           .where(
             and(
@@ -2554,7 +2558,7 @@ export class AppRepository {
             ),
           );
         poolOptionsByOptionId = new Map(
-          poolOptionRows.map((row) => [row.id, { inventoryItemId: row.inventoryItemId, componentType: (row.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: row.componentId }]),
+          poolOptionRows.map((row) => [row.id, { inventoryItemId: row.inventoryItemId, componentType: (row.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: row.componentId, quantity: Number(row.quantity ?? 1), unit: row.unit ?? "pz" }]),
         );
       }
 
@@ -2677,10 +2681,25 @@ export class AppRepository {
           .map((entry) => entry.ingredientId);
 
         for (const ingredientId of addedIngredientIds) {
+          // Added pool options can reference a prep (componentId) or an
+          // inventory ingredient. Route prep adds to the prep consumption map
+          // (one unit in the prep's own output unit); ingredient adds resolve
+          // the custom pz→unit conversion so we never scale raw kg per add.
+          if (modifierPrepUnitById.has(ingredientId)) {
+            const current = consumptionByPrep.get(ingredientId) ?? 0;
+            consumptionByPrep.set(ingredientId, current + 1 * item.quantity);
+            continue;
+          }
           if (!inventoryNameById.has(ingredientId)) {
             const menuName = menuNameById.get(item.id) ?? item.name;
             throw new Error(`Ingredient ${ingredientId} not found in inventory (added to "${menuName}")`);
           }
+          const ingredientUnit = inventoryUnitById.get(ingredientId) ?? "kg";
+          const conversions = conversionsByInventoryId.get(ingredientId) ?? [];
+          const conv = conversions.find((c) => c.fromUnit === "pz" && c.toUnit === ingredientUnit);
+          const addQty = conv ? 1 * conv.factor : 1;
+          const current = consumptionByIngredient.get(ingredientId) ?? 0;
+          consumptionByIngredient.set(ingredientId, current + addQty * item.quantity);
         }
 
         for (const { ingredientId, quantity } of baseIngredients) {
@@ -2690,18 +2709,14 @@ export class AppRepository {
           const current = consumptionByIngredient.get(ingredientId) ?? 0;
           consumptionByIngredient.set(ingredientId, current + quantity * item.quantity);
         }
-        for (const ingredientId of addedIngredientIds) {
-          const current = consumptionByIngredient.get(ingredientId) ?? 0;
-          consumptionByIngredient.set(ingredientId, current + 1 * item.quantity);
-        }
 
         for (const mod of item.selectedModifiers ?? []) {
           const modOption = modifierOptionsByOptionId.get(mod.optionId);
           const poolOption = poolOptionsByOptionId.get(mod.optionId);
           const componentType = modOption?.componentType ?? poolOption?.componentType ?? "ingredient";
           const componentId = modOption?.componentId ?? poolOption?.componentId ?? modOption?.inventoryItemId ?? poolOption?.inventoryItemId;
-          const modQuantity = modOption?.quantity ?? 1;
-          const modUnit = modOption?.unit ?? "pz";
+          const modQuantity = modOption?.quantity ?? poolOption?.quantity ?? 1;
+          const modUnit = modOption?.unit ?? poolOption?.unit ?? "pz";
 
           if (componentId && componentType === "ingredient") {
             const ingredientUnit = inventoryUnitById.get(componentId) ?? "kg";

@@ -210,16 +210,21 @@ export default function ModifierModal({
     return pools.flatMap((pool) =>
       pool.options.map((o) => ({
         id: o.id,
+        poolId: pool.id,
         poolName: pool.name,
         inventoryItemId: o.inventoryItemId,
-        name: o.name ?? (o.inventoryItemId ? inventoryById.get(o.inventoryItemId)?.name : undefined) ?? o.inventoryItemId ?? '',
+        componentId: o.componentId,
+        componentType: o.componentType ?? 'ingredient',
+        quantity: o.quantity ?? 1,
+        unit: o.unit ?? 'pz',
+        name: o.name ?? (o.inventoryItemId ? inventoryById.get(o.inventoryItemId)?.name : undefined) ?? o.inventoryItemId ?? o.componentId ?? '',
         priceDelta: o.priceDelta,
       })),
     );
   }, [categoryModifierPools, item.categoryId, inventoryById]);
 
   const allAddableItems = useMemo(() => {
-    const items: Array<{ id: string; name: string; subtitle?: string; priceDelta: number; invId: string }> = [];
+    const items: Array<{ id: string; name: string; subtitle?: string; priceDelta: number; invId: string; componentType?: string; poolId?: string }> = [];
     const seen = new Set<string>();
     for (const mod of modifiers) {
       if (seen.has(mod.inventoryItemId)) continue;
@@ -233,7 +238,7 @@ export default function ModifierModal({
       });
     }
     for (const opt of poolOptions) {
-      const key = opt.inventoryItemId ?? opt.id;
+      const key = opt.inventoryItemId ?? opt.componentId ?? opt.id;
       if (seen.has(key)) continue;
       seen.add(key);
       items.push({
@@ -241,7 +246,12 @@ export default function ModifierModal({
         name: opt.name,
         subtitle: opt.poolName,
         priceDelta: opt.priceDelta,
-        invId: opt.inventoryItemId ?? '',
+        componentType: opt.componentType,
+        poolId: opt.poolId,
+        // Pool options may reference a prep/BoM (componentId) instead of an
+        // inventory ingredient — carry the component reference so the add
+        // override reaches the right stock target.
+        invId: opt.inventoryItemId ?? opt.componentId ?? '',
       });
     }
     return items;
@@ -316,9 +326,17 @@ export default function ModifierModal({
       overridesByKey.set(`${id}:remove`, { ingredientId: id, action: 'remove' });
     }
     const addedIdSet = new Set(addedIds);
+    const poolModifiers: Array<{ groupId: string; optionId: string }> = [];
     for (const option of allAddableItems) {
       if (addedIdSet.has(option.id)) {
-        overridesByKey.set(`${option.invId}:add`, { ingredientId: option.invId, action: 'add' });
+        // Pool options referencing a prep or BoM are tracked as selected
+        // modifiers so the server resolves their quantity/unit (e.g. 150 g of
+        // "Pollo grigliato" per add) instead of scaling a bare ingredient.
+        if (option.componentType === 'prep' || option.componentType === 'bom') {
+          if (option.poolId) poolModifiers.push({ groupId: option.poolId, optionId: option.id });
+        } else if (option.invId) {
+          overridesByKey.set(`${option.invId}:add`, { ingredientId: option.invId, action: 'add' });
+        }
       }
     }
     for (const selected of selectedModifiers) {
@@ -334,7 +352,7 @@ export default function ModifierModal({
 
     onConfirm({
       ingredientOverrides: [...overridesByKey.values()],
-      selectedModifiers,
+      selectedModifiers: [...selectedModifiers, ...poolModifiers],
       modifierPriceDelta: existingModifierPriceDelta - existingGroupPriceDelta - existingAddedPriceDelta + groupPriceDelta + addedPriceDelta,
     });
   };

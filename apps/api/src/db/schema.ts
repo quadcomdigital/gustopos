@@ -152,6 +152,8 @@ export const categoryModifierPoolOptions = pgTable("category_modifier_pool_optio
     .references(() => inventory.id, { onDelete: "set null" }),
   componentType: text("component_type").notNull().default("ingredient"),
   componentId: text("component_id"),
+  quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull().default("1"),
+  unit: text("unit").notNull().default("pz"),
   priceDelta: numeric("price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),

@@ -45,6 +45,8 @@ export const categoryModifierPoolOptionSchema = z.object({
   inventoryItemId: z.string().optional(),
   componentType: z.enum(["ingredient", "prep", "bom"]).default("ingredient"),
   componentId: z.string().optional(),
+  quantity: z.number().default(1),
+  unit: z.string().default("pz"),
   priceDelta: z.number().default(0),
   sortOrder: z.number().int().default(0),
 });
