@@ -402,8 +402,15 @@ export default function POSView({
         }
       }
     }
+    // Category pool options are also selectable as modifiers (e.g. AGGIUNTA,
+    // Granella, Topping) — without these the cart renders cmpo_… ids.
+    for (const pool of categoryModifierPools) {
+      for (const opt of pool.options ?? []) {
+        map.set(opt.id, opt.name ?? opt.inventoryItemId ?? opt.componentId ?? opt.id);
+      }
+    }
     return map;
-  }, [data.menu]);
+  }, [data.menu, categoryModifierPools]);
 
   const selectedTable = data.tables.find((t) => t.number === posTableNumber);
 
