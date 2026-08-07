@@ -318,7 +318,18 @@ export default function ModifierModal({
   const addedCount = addedIds.length;
   const totalModCount = removedCount + addedCount + selectedModifiers.length;
   const requiredGroupsSatisfied = modifierGroups.every((group) => !group.required || (groupSelections[group.id] ?? []).length >= (group.minSelections ?? 1));
-  const hasChanges = (removedCount > 0 || addedCount > 0 || selectedModifiers.length > 0) && requiredGroupsSatisfied;
+  // A change exists if there is any active selection OR the current state
+  // differs from what was persisted on the cart item. Without the comparison
+  // branch, un-toggling a persisted "TOGLI" (or add) would zero out every
+  // counter and disable CONFERMA even though the user must confirm the
+  // removal of that override.
+  const removedChanged = removedCount !== existingOverrides.filter((o) => o.action === 'remove').length
+    || removedIds.some((id) => !existingOverrides.some((o) => o.action === 'remove' && o.ingredientId === id));
+  const addedChanged = addedCount !== existingOverrides.filter((o) => o.action === 'add').length
+    || addedIds.some((id) => !existingOverrides.some((o) => o.action === 'add' && o.ingredientId === id));
+  const modifiersChanged = selectedModifiers.length !== existingSelectedModifiers.length
+    || selectedModifiers.some((sm) => !existingSelectedModifiers.some((e) => e.groupId === sm.groupId && e.optionId === sm.optionId));
+  const hasChanges = (removedCount > 0 || addedCount > 0 || selectedModifiers.length > 0 || removedChanged || addedChanged || modifiersChanged) && requiredGroupsSatisfied;
 
   const handleConfirm = () => {
     const overridesByKey = new Map<string, { ingredientId: string; action: 'add' | 'remove' }>();
