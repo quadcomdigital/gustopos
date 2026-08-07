@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sort"
@@ -74,12 +75,19 @@ func (a *Agent) ensureQZ() error {
 	return nil
 }
 
-// Run blocks forever until the agent stops or the credential is revoked.
+// Run blocks until ctx is cancelled, the agent stops, or the credential is
+// revoked. It closes QZ on every exit so tray-triggered shutdown is clean.
 // Returns errDetachedSentinel when the API rejects us with 401 (the admin
 // detached the bridge in Settings) so the caller can re-trigger pairing.
 var errDetachedSentinel = fmt.Errorf("bridge detached")
 
-func (a *Agent) Run() error {
+func (a *Agent) Run(ctx context.Context) error {
+	defer func() {
+		if a.qz != nil {
+			a.qz.Close()
+			a.qz = nil
+		}
+	}()
 	// QZ discovery is best-effort: the API heartbeat must still run when QZ
 	// Tray is starting or temporarily unavailable.
 	_ = a.ensureQZ()
@@ -104,6 +112,8 @@ func (a *Agent) Run() error {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-hb.C:
 			a.discoverPrinters()
 			if response, err := a.api.Heartbeat(a.cfg, a.discoveredPrinters); err != nil {
