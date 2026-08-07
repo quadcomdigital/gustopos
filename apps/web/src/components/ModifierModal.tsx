@@ -135,7 +135,7 @@ export default function ModifierModal({
 
   React.useEffect(() => {
     if (isOpen) {
-      setActiveTab('togli'); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] reset modifier tab to default when modal opens; literal string, safe
+      setActiveTab((item.recipe?.length ?? 0) > 0 ? 'togli' : 'aggiungi'); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] reset modifier tab to default when modal opens; literal string, safe
       setRemovedIds(
         existingOverridesRef.current
           .filter((o) => o.action === 'remove')
@@ -391,6 +391,7 @@ export default function ModifierModal({
             </div>
 
             <div className="flex border-b border-border shrink-0">
+              {(item.recipe?.length ?? 0) > 0 && (
               <button
                 onClick={() => setActiveTab('togli')}
                 className={cn(
@@ -400,6 +401,7 @@ export default function ModifierModal({
               >
                 Togli {removedCount > 0 && <span className="ml-1 bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded-full text-[10px]">{removedCount}</span>}
               </button>
+              )}
               <button
                 onClick={() => setActiveTab('aggiungi')}
                 className={cn(
