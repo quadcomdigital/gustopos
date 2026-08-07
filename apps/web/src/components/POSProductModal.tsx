@@ -43,6 +43,7 @@ interface POSProductModalProps {
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
     modifierPriceDelta: number;
+    cartItemId?: string;
   }) => void;
   categoryModifierPools?: CategoryModifierPool[];
 }
@@ -497,6 +498,7 @@ export default function POSProductModal({
                 ingredientOverrides: cartIngredientOverrides,
                 selectedModifiers: inlineSelectedModifiers,
                   modifierPriceDelta: inlineModifierPriceDelta,
+                  cartItemId: existingCartItem?.cartItemId,
                 })}
                   className={cn(
                     'w-full flex items-center justify-center gap-2 py-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all active:scale-[0.98]',

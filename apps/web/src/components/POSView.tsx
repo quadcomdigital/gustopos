@@ -88,6 +88,7 @@ export default function POSView({
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
     modifierPriceDelta: number;
+    cartItemId?: string;
   };
   const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
@@ -259,10 +260,9 @@ export default function POSView({
     modifierPriceDelta: number;
   }) => {
     if (!modifierModalItem) return;
-    const existingCartItem = posCart.find((ci) => ci.menuItemId === modifierModalItem.id);
     const draft = modifierDraft;
-    if (existingCartItem) {
-      updatePosCartItem(existingCartItem.cartItemId, {
+    if (draft?.cartItemId) {
+      updatePosCartItem(draft.cartItemId, {
         ...(draft ? { quantity: draft.quantity, notes: draft.notes } : {}),
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
@@ -1088,9 +1088,9 @@ export default function POSView({
           inventory={data.inventory}
           bomItems={data.bomItems}
           prepItems={prepItems}
-          existingOverrides={modifierDraft?.ingredientOverrides ?? posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.ingredientOverrides}
-          existingSelectedModifiers={modifierDraft?.selectedModifiers ?? posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.selectedModifiers}
-          existingModifierPriceDelta={modifierDraft?.modifierPriceDelta ?? posCart.find((ci) => ci.menuItemId === modifierModalItem.id)?.modifierPriceDelta}
+          existingOverrides={modifierDraft?.ingredientOverrides}
+          existingSelectedModifiers={modifierDraft?.selectedModifiers}
+          existingModifierPriceDelta={modifierDraft?.modifierPriceDelta}
           categoryModifierPools={categoryModifierPools}
         />
       )}
