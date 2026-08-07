@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -75,6 +77,35 @@ func main() {
 		log.Println("automatic startup registered for the current Windows user")
 	}
 
+	// The tray is an optional UI layer: it shares the main signal channel so
+	// "Esci" follows the same shutdown path as SIGTERM/SIGINT.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sig)
+	var agentRunning atomic.Bool
+	pairingRequests := make(chan struct{}, 1)
+	trayCleanup, trayUpdateBridge := StartTray(cfg.BridgeID,
+		func() string {
+			if agentRunning.Load() {
+				return "Connesso"
+			}
+			return "Disconnesso"
+		},
+		func() {
+			select {
+			case pairingRequests <- struct{}{}:
+			default:
+			}
+		},
+		func() {
+			select {
+			case sig <- syscall.SIGTERM:
+			default:
+			}
+		},
+	)
+	defer trayCleanup()
+
 	// Re-pair loop: if the admin detaches the bridge in Settings, the API
 	// answers 401, we wipe the credential and show the pairing page again so
 	// the machine can attach to the same or another tenant.
@@ -83,17 +114,37 @@ func main() {
 		if err != nil {
 			fatalExit(fmt.Sprintf("agent init failed: %v", err))
 		}
-
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+		runCtx, cancelAgent := context.WithCancel(context.Background())
 		errCh := make(chan error, 1)
-		go func() { errCh <- agent.Run() }()
+		agentRunning.Store(true)
+
+		go func() {
+			defer agentRunning.Store(false)
+			errCh <- agent.Run(runCtx)
+		}()
 
 		select {
 		case s := <-sig:
 			log.Printf("received %s, shutting down", s)
+			cancelAgent()
+			<-errCh
 			return
+		case <-pairingRequests:
+			log.Println("pairing requested from tray")
+			cancelAgent()
+			<-errCh
+			_ = os.Remove(configPath())
+			cfg = pairOnce(*apiBase, cfg)
+			if cfg == nil {
+				return
+			}
+			trayUpdateBridge(cfg.BridgeID)
+			if err := ensureStartup(); err != nil {
+				log.Printf("could not refresh automatic startup: %v", err)
+			}
+			continue
 		case runErr := <-errCh:
+			cancelAgent()
 			if runErr == errDetachedSentinel {
 				log.Println("bridge detached by tenant settings — showing pairing UI again")
 				_ = os.Remove(configPath())
@@ -106,6 +157,7 @@ func main() {
 				if cfg == nil {
 					os.Exit(1)
 				}
+				trayUpdateBridge(cfg.BridgeID)
 				if err := ensureStartup(); err != nil {
 					log.Printf("could not refresh automatic startup: %v", err)
 				}
