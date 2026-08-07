@@ -56,7 +56,7 @@ export const fiscalExportsQuerySchema = z.object({
 // cashier PC (generic protocollo RT over TCP). Distinct from Path A (internal
 // closure + export) which is pure bookkeeping with no hardware.
 
-export const fiscalPrinterModelSchema = z.enum(["generic-rt", "epson-tm-s1000", "custom-vkp80iii"]);
+export const fiscalPrinterModelSchema = z.enum(["generic-rt", "epson-tm-s1000", "custom-vkp80iii", "rch-custom"]);
 
 export const fiscalPrinterConfigSchema = z.object({
   enabled: z.boolean().default(false),

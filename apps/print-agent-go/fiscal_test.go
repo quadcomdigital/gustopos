@@ -57,7 +57,7 @@ func TestFiscalAddressDefaults(t *testing.T) {
 }
 
 func TestEmitReceiptLineBuilding(t *testing.T) {
-	client := NewFiscalClient(&FiscalPrinter{Host: "127.0.0.1", Model: "generic-rt"})
+	client := newGenericFiscalClient(&FiscalPrinter{Host: "127.0.0.1", Model: "generic-rt"})
 	// Do not open a real socket here; exercise the pure line-building path by
 	// inspecting what the command set produces for a sample item.
 	cmd := client.cmd

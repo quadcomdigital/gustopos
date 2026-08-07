@@ -86,9 +86,25 @@ type FiscalClient struct {
 	mu    chan struct{} // serializes commands on the single device socket
 }
 
+// FiscalPrinterClient is the common surface used by the job processor. The
+// generic RT text protocol and the RCH Custom framed protocol both implement
+// it; NewFiscalClient returns the adapter matching the configured model.
+type FiscalPrinterClient interface {
+	Test() error
+	ChiusuraGiornaliera() error
+	EmitReceipt(items []fiscalItem, total float64, method string) (string, error)
+}
+
 var fiscalProgressiveRe = regexp.MustCompile(`(?i)(?:prog|nr|numero|doc)\D*(\d{1,9})`)
 
-func NewFiscalClient(printer *FiscalPrinter) *FiscalClient {
+func NewFiscalClient(printer *FiscalPrinter) FiscalPrinterClient {
+	if printer != nil && printer.Model == "rch-custom" {
+		return NewRCHCustomClient(printer)
+	}
+	return newGenericFiscalClient(printer)
+}
+
+func newGenericFiscalClient(printer *FiscalPrinter) *FiscalClient {
 	timeout := printer.Timeout
 	if timeout <= 0 {
 		timeout = 15 * time.Second
