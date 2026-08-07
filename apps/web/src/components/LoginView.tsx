@@ -34,7 +34,7 @@ export default function LoginView({ staff, onLogin }: LoginViewProps) {
   const handleClear = () => setPin('');
 
   return (
-    <div className="fixed inset-0 bg-primary flex items-center justify-center p-0 md:p-4 z-[200]">
+    <div className="fixed inset-0 bg-primary flex items-center justify-center p-0 md:p-4 z-[200] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <div className="w-full h-full md:h-auto md:max-w-4xl grid grid-cols-1 md:grid-cols-2 bg-white md:rounded-3xl shadow-2xl overflow-hidden">
         {/* Left Side: User Selection (Hidden on mobile if user selected) */}
         <div className={cn(
@@ -87,15 +87,16 @@ export default function LoginView({ staff, onLogin }: LoginViewProps) {
 
         {/* Right Side: PIN Pad (Full screen on mobile if user selected) */}
         <div className={cn(
-          "p-6 md:p-12 bg-bg/30 flex flex-col items-center justify-center transition-all duration-300",
+          "relative p-6 md:p-12 bg-bg/30 flex flex-col items-center justify-center transition-all duration-300",
           selectedUser ? "flex h-full md:h-auto" : "hidden md:flex"
         )}>
           {selectedUser ? (
               <div className="w-full max-w-[320px] flex flex-col items-center animate-fadeIn">
-                {/* Mobile Back Button */}
+                {/* Mobile Back Button — below the safe-area inset so the
+                    notch/status bar doesn't swallow taps in standalone PWA mode */}
                 <button 
                   onClick={() => setSelectedUser(null)}
-                  className="md:hidden absolute top-6 left-6 flex items-center gap-2 text-accent font-bold text-xs uppercase tracking-widest"
+                  className="md:hidden absolute top-[calc(1.5rem+env(safe-area-inset-top))] left-6 flex items-center gap-2 text-accent font-bold text-xs uppercase tracking-widest z-10 min-w-[44px] min-h-[44px]"
                 >
                   <ChevronRight size={16} className="rotate-180" />
                   Indietro

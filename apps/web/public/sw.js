@@ -1,9 +1,13 @@
-// GustoPOS Service Worker — v1
+// GustoPOS Service Worker — v2
 // Strategy: network-first for navigations (fresh SPA), stale-while-revalidate
 // for hashed assets, and a minimal offline fallback for the app shell.
 // The API is NEVER cached (always network) so stale data is never served.
+//
+// v2: explicit update flow — when a new SW version activates, notify every
+// client with {type:'NEW_VERSION'} so the app can prompt/reload to pick up
+// the latest build (PWA "deploy aggiornato"). Old caches are purged on activate.
 
-const CACHE_NAME = 'gustopos-v1';
+const CACHE_NAME = 'gustopos-v2';
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
@@ -17,7 +21,14 @@ self.addEventListener('activate', (event) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim()),
+      .then(() => self.clients.claim())
+      .then(() => {
+        // Tell all open clients that a new version is live. The app decides
+        // whether to auto-reload or show a banner (see main.tsx).
+        return self.clients.matchAll({ type: 'window' }).then((clients) => {
+          clients.forEach((client) => client.postMessage({ type: 'NEW_VERSION', cacheName: CACHE_NAME }));
+        });
+      }),
   );
 });
 
