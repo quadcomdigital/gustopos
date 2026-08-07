@@ -96,9 +96,24 @@ export default function POSProductModal({
       pool.options.map((opt) => ({
         id: opt.id,
         name: opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? '',
+        inventoryItemId: opt.inventoryItemId,
+        componentId: opt.componentId,
       })),
     );
   }, [visiblePools, inventoryById]);
+
+  // Map a component reference (ingredient/prep/bom id) to its pool chip id so
+  // additions made in the ModifierModal (which are persisted as
+  // selectedModifiers / ingredientOverrides) light up the matching inline
+  // chips when re-opening the product modal.
+  const poolChipByComponentId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const opt of toppingPoolOptions) {
+      if (opt.inventoryItemId) map.set(opt.inventoryItemId, opt.id);
+      if (opt.componentId) map.set(opt.componentId, opt.id);
+    }
+    return map;
+  }, [toppingPoolOptions]);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -109,16 +124,28 @@ export default function POSProductModal({
       setCustomPrice(existingCartItem?.basePrice ?? ((item as any)?.isJolly ? Number((item as any)?.price ?? 0) : 0));  
 
       const rawNotes = existingCartItem?.notes ?? '';
+      let selectedIds: string[] = [];
       if (toppingPoolOptions.length > 0) {
-        const { cleanNotes, selectedIds } = parseExistingToppings(rawNotes, toppingPoolOptions);
+        const { cleanNotes, selectedIds: noteIds } = parseExistingToppings(rawNotes, toppingPoolOptions);
         setNotes(cleanNotes);
-        setSelectedToppingIds(selectedIds);
+        selectedIds = noteIds;
       } else {
         setNotes(rawNotes);
-        setSelectedToppingIds([]);
       }
+      // Preselect chips from persisted selected modifiers (pool options
+      // tracked as groupId/optionId) and ingredient overrides (add), so
+      // additions made via "Personalizza" stay selected on re-open.
+      const fromModifiers = (existingCartItem?.selectedModifiers ?? [])
+        .map((sm) => toppingPoolOptions.find((o) => o.id === sm.optionId)?.id)
+        .filter(Boolean) as string[];
+      const fromOverrides = (existingCartItem?.ingredientOverrides ?? [])
+        .filter((entry) => entry.action === 'add')
+        .map((entry) => poolChipByComponentId.get(entry.ingredientId))
+        .filter(Boolean) as string[];
+      const merged = new Set([...selectedIds, ...fromModifiers, ...fromOverrides]);
+      setSelectedToppingIds([...merged]);
     }
-  }, [isOpen, existingCartItem, toppingPoolOptions]);
+  }, [isOpen, existingCartItem, toppingPoolOptions, poolChipByComponentId]);
 
   const rawModifierGroups: ModifierGroup[] = useMemo(
     () => resolvedItem ? ((resolvedItem.modifierGroups ?? []) as ModifierGroup[]) : [],
