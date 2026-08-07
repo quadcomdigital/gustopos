@@ -40,7 +40,7 @@ export default function PwaUpdateBanner() {
   if (!updateAvailable) return null;
 
   return (
-    <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:w-80 z-[950] bg-primary text-white rounded-xl shadow-2xl p-4 flex items-center justify-between gap-3">
+    <div className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 right-4 md:bottom-4 md:left-auto md:right-4 md:w-80 z-[950] bg-primary text-white rounded-xl shadow-2xl p-4 flex items-center justify-between gap-3">
       <div>
         <p className="text-xs font-bold uppercase tracking-wider">Nuova versione disponibile</p>
         <p className="text-[11px] text-white/70 mt-0.5">Ricarica per aggiornare l'app</p>
