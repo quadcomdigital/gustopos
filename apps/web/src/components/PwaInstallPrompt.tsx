@@ -61,7 +61,7 @@ export default function PwaInstallPrompt() {
   if (installed || !showPrompt || !deferredPrompt) return null;
 
   return (
-    <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:left-auto md:right-4 md:w-80 z-[900] bg-white border border-border rounded-xl shadow-2xl p-4 space-y-3">
+    <div className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 right-4 md:bottom-4 md:left-auto md:right-4 md:w-80 z-[900] bg-white border border-border rounded-xl shadow-2xl p-4 space-y-3">
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-sm font-bold text-primary">Installa GustoPOS</p>

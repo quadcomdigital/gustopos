@@ -20,6 +20,7 @@ import {
   ChevronDown,
   Check,
   Search,
+  RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -61,6 +62,7 @@ interface BackofficeShellProps {
   hasImpersonationSnapshot: boolean;
   onExitImpersonation: () => void;
   onLogout: () => void;
+  onRefreshAll: () => void;
   pendingOrdersCount: number;
   orderHistoryCount: number;
   analyticsEnabled: boolean;
@@ -76,6 +78,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
   const [showTablePicker, setShowTablePicker] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const posOrderMode = useAppStore((s) => s.posOrderMode);
   const posTableNumber = useAppStore((s) => s.posTableNumber);
   const posMenuSearch = useAppStore((s) => s.posMenuSearch);
@@ -89,6 +92,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     hasImpersonationSnapshot,
     onExitImpersonation,
     onLogout,
+    onRefreshAll,
     pendingOrdersCount,
     orderHistoryCount,
     analyticsEnabled,
@@ -107,6 +111,16 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     }, 60_000);
     return () => window.clearInterval(id);
   }, []);
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefreshAll();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const mobilePrimaryRouteKeys: BackofficeRouteKey[] = ['tables', 'pos', 'kitchen', 'dashboard'];
   const activeRoute = routes.find((route) => route.key === activeRouteKey) ?? null;
@@ -174,7 +188,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
           ⚠ Offline — Le operazioni verranno accodate
         </div>
       )}
-      <header className="h-14 md:h-16 bg-primary text-white flex items-center justify-between px-4 md:px-6 shadow-md z-50 shrink-0">
+      <header className="h-[calc(3.5rem+env(safe-area-inset-top))] md:h-[calc(4rem+env(safe-area-inset-top))] pt-[env(safe-area-inset-top)] bg-primary text-white flex items-center justify-between px-4 md:px-6 shadow-md z-50 shrink-0">
         {/* Left side: brand on desktop, POS pills on mobile */}
         <div className="flex items-center gap-2">
           {/* Desktop: brand name */}
@@ -235,6 +249,18 @@ export default function BackofficeShell(props: BackofficeShellProps) {
             <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full ${isOnline ? 'bg-green-400 animate-pulse' : 'bg-rose-400'}`} />
             <span>{isOnline ? 'Online' : 'Offline'}</span>
           </div>
+
+          {/* Refresh all data */}
+          <button
+            onClick={() => void handleRefresh()}
+            disabled={isRefreshing}
+            aria-label="Aggiorna tutti i dati"
+            title="Aggiorna tutti i dati"
+            className="px-2 md:px-3 py-1.5 rounded-full bg-white/15 hover:bg-white/25 transition-colors flex items-center gap-1 md:gap-2 disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={cn(isRefreshing && 'animate-spin')} />
+            <span className="hidden md:inline">{isRefreshing ? 'Aggiorno...' : 'Aggiorna'}</span>
+          </button>
 
           <div className="hidden md:flex px-2 md:px-3 py-1 rounded-full bg-white/15 items-center gap-1 md:gap-2">
             <span className="hidden md:inline">Ora:</span>
@@ -305,7 +331,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
           })}
         </nav>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 pb-24 md:pb-6">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-6">
           <Suspense
             fallback={(
               <div className="flex items-center justify-center h-full text-text-muted">
@@ -321,7 +347,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
         </div>
       </div>
 
-      <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white border-t border-border z-[999] flex shadow-[0_-4px_10px_rgba(0,0,0,0.1)]">
+      <div className="md:hidden fixed bottom-0 left-0 right-0 h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] bg-white border-t border-border z-[999] flex shadow-[0_-4px_10px_rgba(0,0,0,0.1)]">
         {(mobilePrimaryRoutes.length > 0 ? mobilePrimaryRoutes : routes.slice(0, 4)).map((route) => {
           const Icon = ICONS[route.key];
           const isActive = activeRouteKey === route.key;

@@ -746,6 +746,7 @@ interface AppState {
   posMenuSearch: string;
   initDone: boolean;
   hydrate: () => Promise<void>;
+  refreshAllData: () => Promise<void>;
   syncSessionModules: () => Promise<void>;
   loginWithPin: (staffId: string, pin: string) => Promise<boolean>;
   logout: () => Promise<void>;
@@ -1316,6 +1317,80 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     } catch {
       disconnectSocket();
       set({ ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateFiscalExportsCache(), loading: false });
+    }
+  },
+
+  refreshAllData: async () => {
+    // Manual "refresh everything" — refetches session + full bootstrap without
+    // the initDone guard (hydrate only runs once). Used by the header refresh
+    // button. Preserves cart state (posCart/cartStore) on purpose.
+    if (!hasAuthSession() || !get().currentUser) {
+      return;
+    }
+    try {
+      const refreshed = await refreshSession();
+      if (!refreshed) {
+        return;
+      }
+      const currentUser = getStoredUser();
+      if (!currentUser) {
+        return;
+      }
+      const enabledModules = normalizeEnabledModules(currentUser.enabledModules ?? []);
+      const bootstrap = await fetchBootstrap(enabledModules).catch(() => null);
+
+      if (bootstrap) {
+        applyUiTheme(bootstrap.uiSettings);
+        set({
+          ...invalidateDeliveryCache(),
+          ...invalidatePurchasingCache(),
+          ...invalidateShiftsCache(),
+          ...invalidateFiscalExportsCache(),
+          data: bootstrap.data,
+          staff: bootstrap.staff,
+          uiSettings: bootstrap.uiSettings,
+          staffAdmin: bootstrap.staffAdmin,
+          payments: bootstrap.payments,
+          printJobs: bootstrap.printJobs,
+          inventoryItems: enabledModules.includes('inventory') ? bootstrap.inventoryItems : [],
+          bomItems: enabledModules.includes('inventory') ? bootstrap.bomItems : [],
+          prepItems: enabledModules.includes('inventory') ? await fetchPrepItems().catch(() => []) : [],
+          menuItemsAdmin: bootstrap.menuItemsAdmin,
+          categories: bootstrap.categories,
+          customers: bootstrap.customers,
+          orderHistory: bootstrap.orderHistory,
+          customerAnalytics: bootstrap.customerAnalytics,
+          categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
+          currentUser,
+          enabledModules,
+          permissions: currentUser.permissions ?? [],
+          loading: false,
+        });
+      } else {
+        // Bootstrap failed: fall back to targeted refreshes so the button
+        // still gives the user something fresh instead of silently doing nothing.
+        const staffList = await fetchStaff().catch(() => get().staff);
+        const data = enabledModules.includes('kitchen')
+          ? await fetchData().catch(() => get().data ?? createEmptyAppData())
+          : get().data ?? createEmptyAppData();
+        const uiSettings = await fetchUiSettings().catch(() => get().uiSettings);
+        applyUiTheme(uiSettings);
+        set({
+          data,
+          staff: staffList,
+          uiSettings,
+          inventoryItems: enabledModules.includes('inventory') ? data.inventory : get().inventoryItems,
+          prepItems: enabledModules.includes('inventory') ? await fetchPrepItems().catch(() => get().prepItems) : [],
+          categoryModifierPools: data.categoryModifierPools ?? get().categoryModifierPools,
+          currentUser,
+          enabledModules,
+          permissions: currentUser.permissions ?? [],
+          loading: false,
+        });
+      }
+    } catch {
+      // Keep existing data on failure; the button's spinner will stop and the
+      // user can retry. No destructive state change here.
     }
   },
 

@@ -37,6 +37,7 @@ export default function BackofficeEntry() {
   const logout = useAppStore((s) => s.logout);
   const orderHistory = useAppStore((s) => s.orderHistory);
   const uiSettings = useAppStore((s) => s.uiSettings);
+  const refreshAllData = useAppStore((s) => s.refreshAllData);
 
   const { isOnline } = useBackofficeSessionLifecycle({
     currentUser,
@@ -92,6 +93,10 @@ export default function BackofficeEntry() {
     logout();
     setSelectedTable(null);
   };
+  const handleRefreshAll = async () => {
+    await refreshAllData();
+    await refreshOperationalSummaries();
+  };
 
   if (loading) {
     return (
@@ -128,6 +133,7 @@ export default function BackofficeEntry() {
           hasImpersonationSnapshot={hasImpersonationSnapshot}
           onExitImpersonation={() => void exitImpersonation()}
           onLogout={handleLogout}
+          onRefreshAll={() => void handleRefreshAll()}
           pendingOrdersCount={0}
           orderHistoryCount={currentUser.role === 'admin' ? orderHistory.length : 0}
           analyticsEnabled={enabledModules.includes('analytics') && currentUser.role === 'admin'}
@@ -195,6 +201,7 @@ export default function BackofficeEntry() {
         hasImpersonationSnapshot={hasImpersonationSnapshot}
         onExitImpersonation={() => void exitImpersonation()}
         onLogout={handleLogout}
+        onRefreshAll={() => void handleRefreshAll()}
         pendingOrdersCount={pendingOrdersCount}
         orderHistoryCount={currentUser.role === 'admin' ? orderHistory.length : 0}
         analyticsEnabled={enabledModules.includes('analytics') && currentUser.role === 'admin'}
