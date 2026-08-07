@@ -102,6 +102,20 @@ export default function POSProductModal({
     );
   }, [visiblePools, inventoryById]);
 
+  // All pool option ids belonging to this product's category (visible inline
+  // pools AND large "Personalizza" pools). Used to discard stale modifiers
+  // from other products when computing inlineSelectedModifiers.
+  const categoryPoolOptionIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!resolvedItem?.categoryId) return ids;
+    for (const pool of categoryModifierPools) {
+      const belongsToCategory = pool.categoryIds?.includes(resolvedItem.categoryId) || pool.categoryId === resolvedItem.categoryId;
+      if (!belongsToCategory) continue;
+      for (const opt of pool.options ?? []) ids.add(opt.id);
+    }
+    return ids;
+  }, [categoryModifierPools, resolvedItem?.categoryId]);
+
   // Map a component reference (ingredient/prep/bom id) to its pool chip id so
   // additions made in the ModifierModal (which are persisted as
   // selectedModifiers / ingredientOverrides) light up the matching inline
@@ -122,6 +136,12 @@ export default function POSProductModal({
       setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);  
       setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);
       setCustomPrice(existingCartItem?.basePrice ?? ((item as any)?.isJolly ? Number((item as any)?.price ?? 0) : 0));  
+      // Reset group selections when the modal opens: a previous product's
+      // inline modifier choices (e.g. Bun from a burger's "Base" group) must
+      // NOT leak into a product without modifier groups (e.g. a drink).
+      // Without this, a drink would inherit the burger's groupSelections and
+      // print modifiers that don't belong to it (regression: Bun on bar tickets).
+      setGroupSelections({});
 
       const rawNotes = existingCartItem?.notes ?? '';
       let selectedIds: string[] = [];
@@ -281,12 +301,18 @@ export default function POSProductModal({
 
   const inlineSelectedModifiers = useMemo(() => {
     const directGroupIds = new Set(inlineModifierGroups.map((group) => group.id));
-    const mods = selectedModifiers.filter((selected) => !directGroupIds.has(selected.groupId));
+    // Defense-in-depth: keep only modifiers that belong to this product —
+    // either its own inline groups or a pool option of its category. Stale
+    // selections from a previously opened product (e.g. Bun from a burger's
+    // "Base" group) are dropped instead of leaking into the cart/order.
+    const mods = selectedModifiers.filter(
+      (selected) => directGroupIds.has(selected.groupId) || categoryPoolOptionIds.has(selected.optionId),
+    );
     for (const [groupId, optionIds] of Object.entries(groupSelections)) {
       for (const optionId of optionIds) mods.push({ groupId, optionId });
     }
     return mods;
-  }, [groupSelections, inlineModifierGroups, selectedModifiers]);
+  }, [groupSelections, inlineModifierGroups, selectedModifiers, categoryPoolOptionIds]);
 
   const cartIngredientOverrides = useMemo(() => {
     const groupOverrideKeys = new Set<string>();
