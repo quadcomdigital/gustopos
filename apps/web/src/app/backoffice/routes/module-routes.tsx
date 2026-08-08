@@ -91,6 +91,10 @@ export function KitchenRoute() {
 
 export function InventoryRoute() {
   const data = useAppStore((s) => s.data);
+  const loading = useAppStore((s) => s.loading);
+  const error = useAppStore((s) => s.error);
+  const clearError = useAppStore((s) => s.clearError);
+  const refreshAllData = useAppStore((s) => s.refreshAllData);
   const inventoryItems = useAppStore((s) => s.inventoryItems);
   const bomItems = useAppStore((s) => s.bomItems);
   const prepItems = useAppStore((s) => s.prepItems);
@@ -181,6 +185,10 @@ export function InventoryRoute() {
       prepItems={prepItems}
       menuItems={menuItemsAdmin}
       categories={categories}
+      loading={loading}
+      error={error}
+      onClearError={clearError}
+      onRetryAll={() => { clearError(); void refreshAllData(); }}
       categoryModifierPools={categoryModifierPools}
       foodCostMatrix={foodCostMatrix || undefined}
       onRefreshFoodCost={refreshFoodCost}
@@ -218,6 +226,10 @@ export function InventoryRoute() {
 }
 
 export function SimpleCatalogRoute() {
+  const loading = useAppStore((s) => s.loading);
+  const error = useAppStore((s) => s.error);
+  const clearError = useAppStore((s) => s.clearError);
+  const refreshAllData = useAppStore((s) => s.refreshAllData);
   const menuItemsAdmin = useAppStore((s) => s.menuItemsAdmin);
   const categories = useAppStore((s) => s.categories);
   const refreshCategories = useAppStore((s) => s.refreshCategories);
@@ -243,6 +255,10 @@ export function SimpleCatalogRoute() {
       onUpdateMenuItem={updateMenuItem}
       onSetMenuItemActive={setMenuItemActiveAdmin}
       simpleCatalogMode
+      loading={loading}
+      error={error}
+      onClearError={clearError}
+      onRetryAll={() => { clearError(); void refreshAllData(); }}
     />
   );
 }

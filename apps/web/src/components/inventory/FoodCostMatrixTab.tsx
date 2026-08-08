@@ -1,6 +1,8 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Download, Upload, Filter, Search, ChevronDown, ChevronRight } from 'lucide-react';
+import { Download, Upload, Filter, Search, ChevronDown, ChevronRight, BarChart3 } from 'lucide-react';
 import FoodCostImportModal from './FoodCostImportModal';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
+import Skeleton from '../../shared/ui/atoms/Skeleton';
 
 interface FoodCostMatrixRow {
   menuItemId: string;
@@ -151,28 +153,36 @@ export default function FoodCostMatrixTab({
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-text-muted">Caricamento matrice food cost...</div>
+      <div className="space-y-2">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
       </div>
     );
   }
 
   if (matrixData.rows.length === 0 && matrixData.summary.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-4">
-        <div className="text-text-muted text-center">
-          <p className="text-sm font-medium mb-1">Nessun dato food cost disponibile</p>
-          <p className="text-xs">Importa il file Excel con ingredienti (costi) e ricette per popolare la matrice.</p>
-        </div>
-        {onImportXlsx && (
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="px-4 py-2 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent/90 flex items-center gap-2"
-          >
-            <Upload className="w-4 h-4" />
-            Importa File XLSX
-          </button>
-        )}
+      <>
+        <EmptyState
+          icon={<BarChart3 size={24} />}
+          title="Nessun dato food cost disponibile"
+          description="Importa il file Excel con ingredienti (costi) e ricette per popolare la matrice."
+          action={
+            onImportXlsx && (
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="px-4 py-2 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent/90 flex items-center gap-2 min-h-[44px]"
+              >
+                <Upload className="w-4 h-4" />
+                Importa File XLSX
+              </button>
+            )
+          }
+        />
         {onImportXlsx && (
           <FoodCostImportModal
             open={showImportModal}
@@ -180,7 +190,7 @@ export default function FoodCostMatrixTab({
             onImportXlsx={onImportXlsx}
           />
         )}
-      </div>
+      </>
     );
   }
 

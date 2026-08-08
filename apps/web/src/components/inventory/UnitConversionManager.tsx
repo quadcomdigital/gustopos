@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { UnitConversion } from '@gustopos/shared';
 import { Plus, Trash2, ArrowLeftRight } from 'lucide-react';
 import Button from '../../shared/ui/atoms/Button';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 interface UnitConversionManagerProps {
   ingredientName: string;
@@ -128,9 +129,11 @@ export default function UnitConversionManager({
           </p>
         </div>
         {conversions.length === 0 ? (
-          <p className="text-[11px] text-text-muted">
-            Nessuna conversione per {ingredientName}. Aggiungine una per esprimere lo stock in un'altra unità (es. 1 fette = 0.05 {ingredientUnit}).
-          </p>
+          <EmptyState
+            icon={<ArrowLeftRight size={24} />}
+            title="Nessuna conversione."
+            description={`Aggiungine una per esprimere lo stock di ${ingredientName} in un'altra unità (es. 1 fette = 0.05 ${ingredientUnit}).`}
+          />
         ) : (
           <ul className="space-y-1">
             {conversions.map((conv) => (

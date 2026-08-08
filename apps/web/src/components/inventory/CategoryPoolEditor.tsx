@@ -1,7 +1,8 @@
 import type { Category, Ingredient, CategoryModifierPool, BomItem, PrepItem } from '@gustopos/shared';
-import { Trash2, Save, X } from 'lucide-react';
+import { Trash2, Save, X, Boxes } from 'lucide-react';
 import { useState } from 'react';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
 
@@ -269,6 +270,15 @@ export default function CategoryPoolEditor({
       </div>
 
       <div className="space-y-2">
+        {filteredPools.length === 0 && (
+          <EmptyState
+            icon={<Boxes size={24} />}
+            title={pools.length === 0 ? 'Nessun pool configurato.' : 'Nessun pool corrisponde al filtro.'}
+            description={pools.length === 0
+              ? 'Crea un pool di modificatori per assegnare opzioni comuni ai prodotti di una categoria.'
+              : 'Prova a rimuovere il filtro categoria.'}
+          />
+        )}
         {filteredPools.map((pool) => {
           const isEditing = editingPoolId === pool.id;
           return (

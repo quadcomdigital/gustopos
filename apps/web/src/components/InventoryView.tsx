@@ -26,6 +26,10 @@ interface InventoryViewProps {
   prepItems?: PrepItem[];
   menuItems?: MenuItemAdmin[];
   categories?: Category[];
+  loading?: boolean;
+  error?: string | null;
+  onClearError?: () => void;
+  onRetryAll?: () => void;
   categoryModifierPools?: CategoryModifierPool[];
   onRefreshInventory?: () => Promise<void>;
   onRefreshBom?: () => Promise<void>;
@@ -127,6 +131,10 @@ export default function InventoryView({
   prepItems = [],
   menuItems = [],
   categories = [],
+  loading = false,
+  error = null,
+  onClearError,
+  onRetryAll,
   categoryModifierPools = [],
   onRefreshInventory,
   onRefreshBom,
@@ -170,6 +178,10 @@ export default function InventoryView({
       prepItems={prepItems}
       menuItems={menuItems}
       categories={categories}
+      loading={loading}
+      error={error}
+      onClearError={onClearError}
+      onRetryAll={onRetryAll}
       categoryModifierPools={categoryModifierPools}
       simpleCatalogMode={simpleCatalogMode}
       foodCostMatrix={foodCostMatrix}

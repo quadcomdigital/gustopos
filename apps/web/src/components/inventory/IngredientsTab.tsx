@@ -82,7 +82,8 @@ export default function IngredientsTab({
   const [adjustNotes, setAdjustNotes] = useState('');
   const [movementsIngredientId, setMovementsIngredientId] = useState('');
   const [movements, setMovements] = useState<any[]>([]);
-  const [_movementsLoading, setMovementsLoading] = useState(false);
+  const [movementsLoading, setMovementsLoading] = useState(false);
+  const [movementsError, setMovementsError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState('');
   const [conversions, setConversions] = useState<UnitConversion[]>([]);
   const fetchUnitConversions = useAppStore((s) => s.fetchUnitConversions);
@@ -228,7 +229,7 @@ export default function IngredientsTab({
     setIngredientEditTracked(!selectedIngredient.isStockTracked);
 
     // Load unit conversions for this ingredient
-    void fetchUnitConversions(selectedIngredient.id).then(setConversions);
+    void fetchUnitConversions(selectedIngredient.id).then(setConversions).catch(() => setConversions([]));
   }, [selectedIngredient, fetchUnitConversions]);
 
   // Keyboard navigation
@@ -375,14 +376,16 @@ export default function IngredientsTab({
 
   const openMovements = async (id: string) => {
     setMovements([]);
+    setMovementsError(null);
     setMovementsIngredientId(id);
     if (!onFetchMovements) return;
     setMovementsLoading(true);
     try {
       const res = await onFetchMovements(id);
       setMovements(res.movements);
-    } catch {
+    } catch (e: any) {
       setMovements([]);
+      setMovementsError(e?.message ?? 'Errore durante il caricamento dei movimenti.');
     } finally {
       setMovementsLoading(false);
     }
@@ -1173,6 +1176,9 @@ export default function IngredientsTab({
         open={!!movementsIngredientId}
         ingredientName={movementsIngredient?.name ?? ''}
         movements={movements}
+        loading={movementsLoading}
+        error={movementsError}
+        onRetry={movementsIngredientId ? () => void openMovements(movementsIngredientId) : undefined}
         onClose={() => setMovementsIngredientId('')}
       />
 

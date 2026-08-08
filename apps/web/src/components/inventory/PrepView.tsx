@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useId } from 'react';
 import type { PrepItem, Ingredient, BomItem, UnitConversion } from '@gustopos/shared';
-import { ChefHat, Loader2, Plus, Search, Pencil, Trash2, Layers } from 'lucide-react';
+import { ChefHat, Loader2, Plus, Search, Pencil, Trash2, Layers, SearchX } from 'lucide-react';
 import Button from '../../shared/ui/atoms/Button';
 import Field from '../../shared/ui/atoms/Field';
 import Modal from '../../shared/ui/molecules/Modal';
@@ -11,6 +11,8 @@ import SectionHeader from '../../shared/ui/molecules/SectionHeader';
 import UnitSelect from '../../shared/ui/molecules/UnitSelect';
 import ConfirmDialog from '../ConfirmDialog';
 import UnitConversionManager from './UnitConversionManager';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
+import Skeleton from '../../shared/ui/atoms/Skeleton';
 import { useToast } from '../../shared/ui/hooks/useToast';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import {
@@ -27,6 +29,7 @@ interface PrepViewProps {
   inventory: Ingredient[];
   bomItems: BomItem[];
   prepItems: PrepItem[];
+  loading?: boolean;
   onRefresh?: () => Promise<void>;
   initialIngredientId?: string | null;
   onClearInitial?: () => void;
@@ -42,7 +45,7 @@ type PrepGroup = {
   items: PrepItem[];
 };
 
-export default function PrepView({ inventory, bomItems, prepItems, onRefresh, initialIngredientId, onClearInitial }: PrepViewProps) {
+export default function PrepView({ inventory, bomItems, prepItems, loading = false, onRefresh, initialIngredientId, onClearInitial }: PrepViewProps) {
   const { toasts, show: showToast, dismiss: dismissToast } = useToast();
   const searchId = useId();
   const prepareQtyId = (id: string) => `prep-qty-${id}`;
@@ -390,12 +393,26 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
       </div>
 
       {/* Prep items list */}
-      {groupedItems.length === 0 ? (
-        <div className="text-center py-8 text-text-muted text-sm">
-          <ChefHat size={24} className="mx-auto mb-2 opacity-50" />
-          <p>Nessuna preparazione configurata.</p>
-          <p className="text-xs mt-1">Clicca "Nuova Variante" per crearne una.</p>
+      {loading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-16 w-full" />
+          ))}
         </div>
+      ) : groupedItems.length === 0 ? (
+        searchTerm.trim() ? (
+          <EmptyState
+            icon={<SearchX size={24} />}
+            title="Nessuna preparazione corrisponde alla ricerca."
+            description="Prova a cambiare i termini di ricerca."
+          />
+        ) : (
+          <EmptyState
+            icon={<ChefHat size={24} />}
+            title="Nessuna preparazione configurata."
+            description={'Clicca "Nuova Variante" per creare una preparazione da un ingrediente o un BoM.'}
+          />
+        )
       ) : (
         <div className="space-y-4">
           {groupedItems.map((group) => (

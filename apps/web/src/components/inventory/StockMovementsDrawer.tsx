@@ -2,11 +2,17 @@ import { useMemo, useState } from 'react';
 import type { StockMovement } from '@gustopos/shared';
 import Drawer from '../../shared/ui/molecules/Drawer';
 import { ArrowUpRight, ArrowDownRight, Calendar } from 'lucide-react';
+import Skeleton from '../../shared/ui/atoms/Skeleton';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
+import Button from '../../shared/ui/atoms/Button';
 
 interface StockMovementsDrawerProps {
   open: boolean;
   ingredientName: string;
   movements: StockMovement[];
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
   onClose: () => void;
 }
 
@@ -22,6 +28,9 @@ export default function StockMovementsDrawer({
   open,
   ingredientName,
   movements,
+  loading = false,
+  error = null,
+  onRetry,
   onClose,
 }: StockMovementsDrawerProps) {
   const [filterType, setFilterType] = useState('');
@@ -63,8 +72,28 @@ export default function StockMovementsDrawer({
       )}
 
       <div className="space-y-1.5 tabular-nums">
-        {filtered.length === 0 && (
-          <p className="text-sm text-text-muted text-center py-8">Nessun movimento trovato.</p>
+        {loading && (
+          <div className="space-y-1.5">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 w-full" />
+            ))}
+          </div>
+        )}
+        {!loading && error && (
+          <div role="alert" className="rounded border border-danger/30 bg-danger/5 p-4 text-center">
+            <p className="text-sm font-bold text-danger">Impossibile caricare i movimenti.</p>
+            <p className="text-[11px] text-text-muted mt-1">{error}</p>
+            {onRetry && (
+              <Button variant="secondary" size="sm" className="mt-3" onClick={onRetry}>Riprova</Button>
+            )}
+          </div>
+        )}
+        {!loading && !error && filtered.length === 0 && (
+          <EmptyState
+            icon={<Calendar size={24} />}
+            title="Nessun movimento trovato."
+            description="Non risultano movimenti di stock per questo ingrediente con i filtri selezionati."
+          />
         )}
         {filtered.map((movement) => {
           const info = MOVEMENT_LABELS[movement.movementType] ?? { label: movement.movementType, color: 'text-text-muted' };

@@ -17,7 +17,7 @@ import type {
   MenuItemUpdateRequest,
   PrepItem,
 } from '@gustopos/shared';
-import { Package, ChevronUp, ChevronDown, ChefHat } from 'lucide-react';
+import { Package, ChevronUp, ChevronDown, ChefHat, AlertTriangle, BarChart3 } from 'lucide-react';
 import LowStockAlert from './LowStockAlert';
 import StockLevelChart from './StockLevelChart';
 import CategoriesTab from './CategoriesTab';
@@ -27,6 +27,8 @@ import MenuItemsTab from './MenuItemsTab';
 import CategoryPoolEditor from './CategoryPoolEditor';
 import FoodCostMatrixTab from './FoodCostMatrixTab';
 import PrepView from './PrepView';
+import Button from '../../shared/ui/atoms/Button';
+import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import type { CategoryModifierPool, CategoryModifierPoolCreateRequest, CategoryModifierPoolUpdateRequest } from '@gustopos/shared';
 
 export type InventoryTabKey = 'stock' | 'bom' | 'prep' | 'menu' | 'categories' | 'pools' | 'foodcost';
@@ -39,6 +41,10 @@ interface InventoryTabsProps {
   menuItems: MenuItemAdmin[];
   categories: Category[];
   simpleCatalogMode?: boolean;
+  loading?: boolean;
+  error?: string | null;
+  onClearError?: () => void;
+  onRetryAll?: () => void;
   onRefreshInventory?: () => Promise<void>;
   onRefreshBom?: () => Promise<void>;
   onRefreshPrepItems?: () => Promise<void>;
@@ -141,6 +147,10 @@ export default function InventoryTabs({
   menuItems,
   categories,
   simpleCatalogMode = false,
+  loading = false,
+  error = null,
+  onClearError,
+  onRetryAll,
   onRefreshInventory,
   onRefreshBom,
   onRefreshPrepItems,
@@ -220,6 +230,25 @@ export default function InventoryTabs({
           {cardsHidden ? <ChevronDown size={18} className="text-secondary" /> : <ChevronUp size={18} className="text-secondary" />}
         </button>
       </div>
+
+      {/* Inline load error banner with retry */}
+      {error && (
+        <div role="alert" className="mb-4 flex items-start gap-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5">
+          <AlertTriangle size={16} className="text-danger shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-bold text-danger">{error}</p>
+            <p className="text-[10px] text-text-muted mt-0.5">Si è verificato un errore durante il caricamento dei dati.</p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onClearError && (
+              <Button variant="ghost" size="sm" onClick={onClearError}>Ignora</Button>
+            )}
+            {onRetryAll && (
+              <Button variant="secondary" size="sm" onClick={onRetryAll}>Riprova</Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Summary Cards */}
       {!cardsHidden && (
@@ -338,7 +367,7 @@ export default function InventoryTabs({
           <CategoriesTab
             categories={categories}
             simpleCatalogMode={simpleCatalogMode}
-            loading={false}
+            loading={loading}
             onRefresh={onRefreshCategories}
             onCreate={onCreateCategory}
             onUpdate={onUpdateCategory}
@@ -350,7 +379,7 @@ export default function InventoryTabs({
           <IngredientsTab
             inventory={inventory}
             categories={categories}
-            loading={false}
+            loading={loading}
             onRefresh={onRefreshInventory}
             onCreate={onCreateIngredient}
             onUpdate={onUpdateIngredient}
@@ -368,7 +397,7 @@ export default function InventoryTabs({
             prepItems={prepItems}
             inventory={inventory}
             categories={categories}
-            loading={false}
+            loading={loading}
             onRefresh={onRefreshBom}
             onCreate={onCreateBom}
             onUpdate={onUpdateBom}
@@ -383,6 +412,7 @@ export default function InventoryTabs({
             inventory={inventory}
             bomItems={bomItems}
             prepItems={prepItems}
+            loading={loading}
             onRefresh={onRefreshPrepItems}
             initialIngredientId={variantIngredientId}
             onClearInitial={() => setVariantIngredientId(null)}
@@ -398,7 +428,7 @@ export default function InventoryTabs({
             categories={categories}
             categoryModifierPools={categoryModifierPools}
             simpleCatalogMode={simpleCatalogMode}
-            loading={false}
+            loading={loading}
             onRefresh={onRefreshMenu}             onCreate={onCreateMenuItem}
              onCreateMenuProduct={onCreateMenuProduct}
              onUpdate={onUpdateMenuItem}
@@ -431,15 +461,24 @@ export default function InventoryTabs({
           />
         )}
 
-        {activeTab === 'foodcost' && !simpleCatalogMode && foodCostMatrix && (
-          <FoodCostMatrixTab
-            matrixData={foodCostMatrix}
-            onRefresh={onRefreshFoodCost}
-            onUpdateCell={onUpdateFoodCostCell}
-            onImport={onImportFoodCost}
-            onImportXlsx={onImportFoodCostXlsx}
-            onExport={onExportFoodCost}
-          />
+        {activeTab === 'foodcost' && !simpleCatalogMode && (
+          foodCostMatrix ? (
+            <FoodCostMatrixTab
+              matrixData={foodCostMatrix}
+              onRefresh={onRefreshFoodCost}
+              onUpdateCell={onUpdateFoodCostCell}
+              onImport={onImportFoodCost}
+              onImportXlsx={onImportFoodCostXlsx}
+              onExport={onExportFoodCost}
+            />
+          ) : (
+            <LoadingOrEmpty
+              loading
+              icon={<BarChart3 size={24} />}
+              title="Caricamento matrice food cost..."
+              description="Recupero dei costi e dei margini del menu."
+            />
+          )
         )}
       </div>
     </div>

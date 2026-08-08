@@ -130,32 +130,36 @@ export default function ComponentPicker({
           placeholder={searchPlaceholder}
           className="px-3 py-2 rounded border border-border text-sm w-full"
         />
-        {isOpen && filtered.length > 0 && (
+        {isOpen && (
           <div
             ref={listRef}
             className="absolute z-50 mt-1 w-full bg-white border border-border rounded shadow-lg max-h-60 overflow-auto"
           >
-            {filtered.map((candidate, idx) => (
-              <button
-                key={candidate.id}
-                type="button"
-                onClick={() => {
-                  onSelect(candidate.id);
-                  onUnitChange(candidate.unit);
-                  setSearch('');
-                  setIsOpen(false);
-                }}
-                className={`w-full text-left px-3 py-2 text-sm hover:bg-bg/50 flex items-center justify-between ${
-                  idx === highlightIndex ? 'bg-bg/50' : ''
-                }`}
-              >
-                <span className="truncate">{candidate.label}</span>
-                <span className="text-[10px] text-text-muted font-bold ml-2 shrink-0">
-                  {candidate.stockLevel !== undefined && `${candidate.stockLevel} ${candidate.unit}`}
-                  {candidate.unitCost !== undefined && candidate.unitCost > 0 && ` · €${candidate.unitCost.toFixed(2)}`}
-                </span>
-              </button>
-            ))}
+            {filtered.length === 0 ? (
+              <p className="px-3 py-2 text-sm text-text-muted">Nessun componente corrisponde alla ricerca.</p>
+            ) : (
+              filtered.map((candidate, idx) => (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  onClick={() => {
+                    onSelect(candidate.id);
+                    onUnitChange(candidate.unit);
+                    setSearch('');
+                    setIsOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-bg/50 flex items-center justify-between ${
+                    idx === highlightIndex ? 'bg-bg/50' : ''
+                  }`}
+                >
+                  <span className="truncate">{candidate.label}</span>
+                  <span className="text-[10px] text-text-muted font-bold ml-2 shrink-0">
+                    {candidate.stockLevel !== undefined && `${candidate.stockLevel} ${candidate.unit}`}
+                    {candidate.unitCost !== undefined && candidate.unitCost > 0 && ` · €${candidate.unitCost.toFixed(2)}`}
+                  </span>
+                </button>
+              ))
+            )}
           </div>
         )}
       </div>

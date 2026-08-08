@@ -2,6 +2,7 @@ import type { ModifierGroup, Ingredient, CategoryModifierPool, ModifierOption, B
 import { Plus, Trash2, Lock } from 'lucide-react';
 import { generateId } from '../../lib/id';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
+import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
 
@@ -108,10 +109,14 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
         </button>
       </div>
 
-      {value.length === 0 && categoryPools.length > 0 && (
-        <p className="text-[10px] text-text-muted italic">
-          Nessun modificatore aggiuntivo per questo prodotto. Usa il pool della categoria o aggiungi gruppi specifici.
-        </p>
+      {value.length === 0 && (
+        <EmptyState
+          icon={<Plus size={24} />}
+          title="Nessun gruppo modificatore."
+          description={categoryPools.length > 0
+            ? 'Usa il pool della categoria o aggiungi gruppi specifici cliccando "Gruppo".'
+            : 'Clicca "Gruppo" per aggiungere opzioni modificabili (extra, salse, cotture...).'}
+        />
       )}
 
       {value.map((group) => (
