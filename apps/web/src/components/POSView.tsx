@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../store/app-store';
 import { trackUxMetric } from '../shared/ux/metrics';
@@ -11,6 +11,7 @@ import ConfirmDialog from './ConfirmDialog';
 import { CheckoutModal } from './checkout';
 import { useCheckoutStore } from '../store/checkout-store';
 import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
+import Modal from '../shared/ui/molecules/Modal';
 
 interface POSViewProps {
   data: AppData;
@@ -73,6 +74,7 @@ export default function POSView({
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
   const [showCartMobile, setShowCartMobile] = useState(false);
+  const [showCustomerDetailsModal, setShowCustomerDetailsModal] = useState(false);
   const [showTableActions, setShowTableActions] = useState(false);
   const menuSearch = useAppStore((s) => s.posMenuSearch);
   const setMenuSearch = (v: string) => useAppStore.setState({ posMenuSearch: v });
@@ -423,6 +425,15 @@ export default function POSView({
     )
     .slice(0, 8);
 
+  const customerDetailsValid = orderMode !== 'delivery' || deliveryAddress.trim().length >= 5;
+  const customerDetailsConfigured = orderMode === 'delivery'
+    ? customerDetailsValid
+    : Boolean(takeawayCustomerName.trim() || takeawayCustomerPhone.trim() || pickupEta);
+  const customerDetailsNeedsAttention = orderMode === 'delivery' && !customerDetailsValid;
+  const customerDetailsSummary = orderMode === 'delivery'
+    ? deliveryAddress.trim() || 'Indirizzo da aggiungere'
+    : takeawayCustomerName.trim() || 'Cliente non selezionato';
+
   return (
     <div className="flex h-full gap-4 lg:gap-8 relative">
       {/* ============ MENU SECTION ============ */}
@@ -454,81 +465,31 @@ export default function POSView({
             </div>
           </div>
 
-          {/* Customer fields (takeaway / delivery only) */}
+          {/* Takeaway / delivery details trigger (form lives in one modal for all viewports) */}
           {orderMode !== 'dine_in' && (
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <input
-                  value={takeawayCustomerName}
-                  onChange={(e) => {
-                    setTakeawayCustomerName(e.target.value);
-                    setSelectedCustomerId('');
-                  }}
-                  placeholder="Cliente"
-                  className="flex-1 px-3 py-2.5 rounded-lg border border-border text-sm bg-white"
-                />
-                <input
-                  value={takeawayCustomerPhone}
-                  onChange={(e) => setTakeawayCustomerPhone(e.target.value)}
-                  placeholder="Telefono"
-                  className="w-28 px-3 py-2.5 rounded-lg border border-border text-sm bg-white"
-                />
-              </div>
-              <input
-                type="datetime-local"
-                value={pickupEta}
-                onChange={(e) => setPickupEta(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-border text-sm bg-white"
-              />
-              {/* Customer dropdown */}
-              {filteredCustomers.length > 0 && takeawayCustomerName.trim().length > 0 && (
-                <div className="bg-white border border-border rounded-lg shadow-lg max-h-40 overflow-auto">
-                  {filteredCustomers.map((customer) => (
-                    <button
-                      key={customer.id}
-                      onClick={() => {
-                        setSelectedCustomerId(customer.id);
-                        setTakeawayCustomerName(customer.fullName);
-                        setTakeawayCustomerPhone(customer.phone ?? '');
-                        if (orderMode === 'delivery' && customer.addresses && customer.addresses.length > 0) {
-                          const def = customer.addresses.find((a) => a.isDefault) ?? customer.addresses[0];
-                          setDeliveryAddress(def.address);
-                        }
-                      }}
-                      className="w-full text-left px-3 py-2 hover:bg-bg border-b last:border-b-0 border-border/60"
-                    >
-                      <p className="text-sm font-bold text-secondary">{customer.fullName}</p>
-                      <p className="text-[10px] text-text-muted">{customer.phone ?? 'Nessun telefono'}</p>
-                    </button>
-                  ))}
-                </div>
+            <button
+              type="button"
+              onClick={() => setShowCustomerDetailsModal(true)}
+              className={cn(
+                'w-full flex items-center justify-between gap-3 min-h-[52px] px-4 py-3 rounded-xl border text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
+                customerDetailsNeedsAttention ? 'border-danger/50 bg-danger/5 hover:border-danger' : 'border-border bg-white hover:border-accent',
               )}
-              {/* Delivery-specific fields */}
-              {orderMode === 'delivery' && (
-                <>
-                  {customerAddresses.length > 0 && (
-                    <select
-                      value={customerAddresses.some((a) => a.address === deliveryAddress) ? deliveryAddress : ''}
-                      onChange={(e) => {
-                        if (e.target.value) setDeliveryAddress(e.target.value);
-                      }}
-                      className="w-full px-3 py-2.5 rounded-lg border border-border text-sm bg-white"
-                    >
-                      {customerAddresses.map((a) => (
-                        <option key={a.id} value={a.address}>{a.label ? `${a.label} — ` : ''}{a.address}</option>
-                      ))}
-                      <option value="">Altro indirizzo...</option>
-                    </select>
-                  )}
-                  <input value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="Indirizzo consegna" className="w-full px-3 py-2.5 rounded-lg border border-border text-sm bg-white" />
-                  <div className="flex gap-2">
-                    <input value={deliveryCourierName} onChange={(e) => setDeliveryCourierName(e.target.value)} placeholder="Corriere" className="flex-1 px-3 py-2.5 rounded-lg border border-border text-sm bg-white" />
-                    <input value={deliveryCourierPhone} onChange={(e) => setDeliveryCourierPhone(e.target.value)} placeholder="Tel. corriere" className="w-28 px-3 py-2.5 rounded-lg border border-border text-sm bg-white" />
-                  </div>
-                  <input value={deliveryFee} onChange={(e) => setDeliveryFee(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Delivery fee" className="w-full px-3 py-2.5 rounded-lg border border-border text-sm bg-white" />
-                </>
-              )}
-            </div>
+            >
+              <span className="flex items-center gap-3 min-w-0">
+                <span className={cn('w-9 h-9 rounded-full flex items-center justify-center shrink-0', customerDetailsNeedsAttention ? 'bg-danger/10 text-danger' : 'bg-accent/10 text-accent')}>
+                  {customerDetailsNeedsAttention ? <MapPin size={17} /> : <User size={17} />}
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-[10px] font-bold uppercase tracking-widest text-text-muted">
+                    {orderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
+                  </span>
+                  <span className="block text-sm font-bold text-primary truncate">{customerDetailsSummary}</span>
+                </span>
+              </span>
+              <span className={cn('shrink-0 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider', customerDetailsNeedsAttention ? 'text-danger' : 'text-accent')}>
+                {customerDetailsNeedsAttention ? 'Completa' : customerDetailsConfigured ? <><Check size={14} /> Modifica</> : 'Aggiungi'}
+              </span>
+            </button>
           )}
         </div>
 
@@ -611,75 +572,28 @@ export default function POSView({
               <ChevronDown size={14} className="absolute right-3 text-accent pointer-events-none" />
             </button>
           ) : (
-            <div className="relative w-64 max-w-full space-y-1">
-              <input
-                value={takeawayCustomerName}
-                onChange={(e) => {
-                  setTakeawayCustomerName(e.target.value);
-                  setSelectedCustomerId('');
-                }}
-                placeholder="Cliente asporto"
-                className="w-full px-3 py-2 rounded-lg border border-border text-sm"
-              />
-              <input
-                value={takeawayCustomerPhone}
-                onChange={(e) => setTakeawayCustomerPhone(e.target.value)}
-                placeholder="Telefono (opzionale)"
-                className="w-full px-3 py-2 rounded-lg border border-border text-sm"
-              />
-              {(orderMode === 'takeaway' || orderMode === 'delivery') && (
-                <input
-                  type="datetime-local"
-                  value={pickupEta}
-                  onChange={(e) => setPickupEta(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-border text-sm"
-                />
+            <button
+              type="button"
+              onClick={() => setShowCustomerDetailsModal(true)}
+              className={cn(
+                'flex items-center gap-3 min-w-0 max-w-[min(20rem,30vw)] min-h-[52px] px-3 py-2 rounded-xl border text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
+                customerDetailsNeedsAttention ? 'border-danger/50 bg-danger/5 hover:border-danger' : 'border-border bg-white hover:border-accent',
               )}
-              {filteredCustomers.length > 0 && takeawayCustomerName.trim().length > 0 && (
-                <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg max-h-44 overflow-auto">
-                  {filteredCustomers.map((customer) => (
-                    <button
-                      key={customer.id}
-                      onClick={() => {
-                        setSelectedCustomerId(customer.id);
-                        setTakeawayCustomerName(customer.fullName);
-                        setTakeawayCustomerPhone(customer.phone ?? '');
-                        if (orderMode === 'delivery' && customer.addresses && customer.addresses.length > 0) {
-                          const def = customer.addresses.find((a) => a.isDefault) ?? customer.addresses[0];
-                          setDeliveryAddress(def.address);
-                        }
-                      }}
-                      className="w-full text-left px-3 py-2 hover:bg-bg border-b last:border-b-0 border-border/60"
-                    >
-                      <p className="text-sm font-bold text-secondary">{customer.fullName}</p>
-                      <p className="text-[10px] text-text-muted uppercase tracking-wider">{customer.phone ?? 'Nessun telefono'}</p>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {orderMode === 'delivery' && (
-                <>
-                  {customerAddresses.length > 0 && (
-                    <select
-                      value={customerAddresses.some((a) => a.address === deliveryAddress) ? deliveryAddress : ''}
-                      onChange={(e) => {
-                        if (e.target.value) setDeliveryAddress(e.target.value);
-                      }}
-                      className="w-full px-3 py-2 rounded-lg border border-border text-sm"
-                    >
-                      {customerAddresses.map((a) => (
-                        <option key={a.id} value={a.address}>{a.label ? `${a.label} — ` : ''}{a.address}</option>
-                      ))}
-                      <option value="">Altro indirizzo...</option>
-                    </select>
-                  )}
-                  <input value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="Indirizzo consegna" className="w-full px-3 py-2 rounded-lg border border-border text-sm" />
-                  <input value={deliveryCourierName} onChange={(e) => setDeliveryCourierName(e.target.value)} placeholder="Corriere (opzionale)" className="w-full px-3 py-2 rounded-lg border border-border text-sm" />
-                  <input value={deliveryCourierPhone} onChange={(e) => setDeliveryCourierPhone(e.target.value)} placeholder="Telefono corriere (opzionale)" className="w-full px-3 py-2 rounded-lg border border-border text-sm" />
-                  <input value={deliveryFee} onChange={(e) => setDeliveryFee(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Delivery fee" className="w-full px-3 py-2 rounded-lg border border-border text-sm" />
-                </>
-              )}
-            </div>
+              aria-label={orderMode === 'delivery' ? 'Apri dati consegna' : 'Apri dati asporto'}
+            >
+              <span className={cn('w-9 h-9 rounded-full flex items-center justify-center shrink-0', customerDetailsNeedsAttention ? 'bg-danger/10 text-danger' : 'bg-accent/10 text-accent')}>
+                {customerDetailsNeedsAttention ? <MapPin size={17} /> : <User size={17} />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[10px] font-bold uppercase tracking-widest text-text-muted">
+                  {orderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
+                </span>
+                <span className="block max-w-52 truncate text-sm font-bold text-primary">{customerDetailsSummary}</span>
+              </span>
+              <span className={cn('ml-auto shrink-0 text-[10px] font-bold uppercase tracking-wider', customerDetailsNeedsAttention ? 'text-danger' : 'text-accent')}>
+                {customerDetailsNeedsAttention ? 'Completa' : customerDetailsConfigured ? 'Modifica' : 'Aggiungi'}
+              </span>
+            </button>
           )}
         </div>
 
@@ -1061,6 +975,168 @@ export default function POSView({
           </div>
         )}
       </AnimatePresence>
+
+      {/* ============ TAKEAWAY / DELIVERY DETAILS MODAL ============ */}
+      <Modal
+        open={showCustomerDetailsModal && orderMode !== 'dine_in'}
+        onClose={() => setShowCustomerDetailsModal(false)}
+        title={orderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
+        size="md"
+        footer={(
+          <>
+            {orderMode === 'delivery' && !customerDetailsValid && (
+              <p className="w-full text-xs text-danger font-semibold" role="alert">
+                Inserisci un indirizzo di almeno 5 caratteri per creare il delivery.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowCustomerDetailsModal(false)}
+              disabled={!customerDetailsValid}
+              className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-lg bg-accent text-white text-xs font-bold uppercase tracking-wider transition-all hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+            >
+              Conferma dati
+            </button>
+          </>
+        )}
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-bg/40 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Cliente</p>
+            <p className="mt-1 text-xs text-text-muted">Cerca un cliente esistente o inserisci i dati manualmente.</p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block sm:col-span-2">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Nome cliente</span>
+              <input
+                autoFocus
+                value={takeawayCustomerName}
+                onChange={(e) => {
+                  setTakeawayCustomerName(e.target.value);
+                  setSelectedCustomerId('');
+                }}
+                placeholder="Es. Mario Rossi"
+                className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Telefono <span className="font-normal normal-case">(opzionale)</span></span>
+              <input
+                type="tel"
+                value={takeawayCustomerPhone}
+                onChange={(e) => setTakeawayCustomerPhone(e.target.value)}
+                placeholder="Numero di telefono"
+                className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Orario <span className="font-normal normal-case">(opzionale)</span></span>
+              <input
+                type="datetime-local"
+                value={pickupEta}
+                onChange={(e) => setPickupEta(e.target.value)}
+                className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+              />
+            </label>
+          </div>
+
+          {filteredCustomers.length > 0 && takeawayCustomerName.trim().length > 0 && (
+            <div className="rounded-xl border border-border bg-white shadow-sm overflow-hidden" aria-label="Risultati clienti">
+              <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-text-muted bg-bg/50">Clienti trovati</p>
+              <div className="max-h-44 overflow-y-auto">
+                {filteredCustomers.map((customer) => (
+                  <button
+                    type="button"
+                    key={customer.id}
+                    onClick={() => {
+                      setSelectedCustomerId(customer.id);
+                      setTakeawayCustomerName(customer.fullName);
+                      setTakeawayCustomerPhone(customer.phone ?? '');
+                      if (orderMode === 'delivery' && customer.addresses && customer.addresses.length > 0) {
+                        const def = customer.addresses.find((a) => a.isDefault) ?? customer.addresses[0];
+                        setDeliveryAddress(def.address);
+                      }
+                    }}
+                    className="w-full min-h-[52px] text-left px-3 py-2.5 hover:bg-bg border-b last:border-b-0 border-border/60 focus-visible:outline-none focus-visible:bg-bg focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+                  >
+                    <p className="text-sm font-bold text-secondary">{customer.fullName}</p>
+                    <p className="text-[10px] text-text-muted">{customer.phone ?? 'Nessun telefono'}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {orderMode === 'delivery' && (
+            <div className="space-y-3 border-t border-border pt-4">
+              <div className="flex items-center gap-2">
+                <MapPin size={16} className="text-accent" />
+                <p className="text-[10px] font-bold uppercase tracking-widest text-primary">Dettagli consegna</p>
+              </div>
+              {customerAddresses.length > 0 && (
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Indirizzi salvati</span>
+                  <select
+                    value={customerAddresses.some((a) => a.address === deliveryAddress) ? deliveryAddress : ''}
+                    onChange={(e) => {
+                      if (e.target.value) setDeliveryAddress(e.target.value);
+                    }}
+                    className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                  >
+                    <option value="">Seleziona un indirizzo</option>
+                    {customerAddresses.map((a) => (
+                      <option key={a.id} value={a.address}>{a.label ? `${a.label} — ` : ''}{a.address}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Indirizzo consegna <span className="text-danger">*</span></span>
+                <input
+                  value={deliveryAddress}
+                  onChange={(e) => setDeliveryAddress(e.target.value)}
+                  placeholder="Via, numero civico, città"
+                  aria-invalid={!customerDetailsValid}
+                  className={cn('w-full min-h-[44px] px-3 py-2.5 rounded-lg border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1', customerDetailsValid ? 'border-border' : 'border-danger')}
+                />
+                {!customerDetailsValid && <span className="mt-1 block text-[10px] text-danger font-medium">L'indirizzo è obbligatorio.</span>}
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Corriere <span className="font-normal normal-case">(opzionale)</span></span>
+                  <input
+                    value={deliveryCourierName}
+                    onChange={(e) => setDeliveryCourierName(e.target.value)}
+                    placeholder="Nome corriere"
+                    className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Tel. corriere <span className="font-normal normal-case">(opzionale)</span></span>
+                  <input
+                    type="tel"
+                    value={deliveryCourierPhone}
+                    onChange={(e) => setDeliveryCourierPhone(e.target.value)}
+                    placeholder="Telefono corriere"
+                    className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                  />
+                </label>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Costo delivery</span>
+                <input
+                  inputMode="decimal"
+                  value={deliveryFee}
+                  onChange={(e) => setDeliveryFee(e.target.value.replace(/[^0-9.]/g, ''))}
+                  placeholder="0.00"
+                  className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                />
+              </label>
+            </div>
+          )}
+        </div>
+      </Modal>
 
       {/* ============ PRODUCT MODAL ============ */}
       <POSProductModal
