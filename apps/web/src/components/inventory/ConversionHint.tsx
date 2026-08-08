@@ -16,7 +16,7 @@ export default function ConversionHint({ conversions, canonicalUnit }: Conversio
   if (!conversions || conversions.length === 0) return null;
 
   return (
-    <div className="relative group/conversion">
+    <div className="relative group/conversion tabular-nums">
       <Info size={9} className="text-text-muted/50 cursor-help" />
       <div className="absolute bottom-full right-0 mb-1 w-max max-w-[160px] px-2 py-1 rounded bg-gray-900 text-white text-[8px] shadow-lg opacity-0 group-hover/conversion:opacity-100 transition-opacity pointer-events-none z-10">
         {conversions.map((c) => (

@@ -132,7 +132,7 @@ export default function CategoryPoolEditor({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 tabular-nums">
       <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Pool modificatori per categoria</p>
 
       <div className="flex items-center gap-2">

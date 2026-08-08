@@ -129,7 +129,7 @@ export default function AddComponentModal({
       size="md"
       footer={<Button variant="secondary" onClick={handleClose}>Chiudi</Button>}
     >
-      <div className="space-y-3">
+      <div className="space-y-3 tabular-nums">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
           <input

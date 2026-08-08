@@ -296,7 +296,7 @@ export default function BomTab({
         )}
       </div>
 
-      <div className="overflow-auto flex-1 hidden md:block">
+      <div className="overflow-auto flex-1 hidden md:block tabular-nums">
         {/* BoM List */}
         <table className="w-full text-left border-collapse">
           <thead>

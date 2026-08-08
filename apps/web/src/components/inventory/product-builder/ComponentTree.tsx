@@ -285,7 +285,7 @@ export default function ComponentTree({ components, inventory, bomItems, prepIte
   }
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5 tabular-nums">
       {components.map((comp, _idx) => (
         <ComponentRow
           key={`${comp.componentType}:${comp.componentId}`}

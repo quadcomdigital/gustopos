@@ -185,7 +185,7 @@ export default function FoodCostMatrixTab({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 tabular-nums">
       {/* Header with actions */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-text">Food Cost Matrix</h2>

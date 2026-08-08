@@ -106,7 +106,7 @@ export default function UnitConversionManager({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 tabular-nums">
       {/* Conversion preview when a non-base unit is selected (prep flow) */}
       {convertedQty !== null && selectedUnit && unitRate !== null && (
         <div className="bg-accent/5 border border-accent/20 rounded-lg p-3">

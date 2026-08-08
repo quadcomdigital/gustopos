@@ -394,7 +394,7 @@ export default function IngredientsTab({
   );
 
   return (
-    <div ref={listRef} className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px]" tabIndex={-1}>
+    <div ref={listRef} className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px] tabular-nums" tabIndex={-1}>
       <SectionHeader
         title="Ingredienti Singoli"
         actions={

@@ -405,7 +405,7 @@ export default function MenuItemsTab({
       </div>
 
       {/* Products Table (Desktop) */}
-      <div className="hidden md:block overflow-auto flex-1">
+      <div className="hidden md:block overflow-auto flex-1 tabular-nums">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-bg/50 border-b border-border">

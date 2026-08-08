@@ -50,7 +50,7 @@ export default function ModifierEditor({ modifiers, inventory, onChange }: Modif
   );
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 tabular-nums">
       <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">
         Extra disponibili per il cliente
       </p>

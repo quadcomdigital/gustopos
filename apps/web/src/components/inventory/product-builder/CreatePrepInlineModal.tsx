@@ -142,7 +142,7 @@ export default function CreatePrepInlineModal({
         />
       }
     >
-      <div className="space-y-4">
+      <div className="space-y-4 tabular-nums">
         <div>
           <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block mb-1">Ingrediente base</label>
           <SearchableSelect

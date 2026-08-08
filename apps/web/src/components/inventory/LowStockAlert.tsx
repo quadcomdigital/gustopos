@@ -29,7 +29,7 @@ export default function LowStockAlert({ suggestions, onOpenPurchasing }: LowStoc
   }, 0);
 
   return (
-    <div className="rounded-xl border border-warning-300 bg-warning-50 overflow-hidden">
+    <div className="rounded-xl border border-warning-300 bg-warning-50 overflow-hidden tabular-nums">
       <button
         onClick={() => setExpanded((p) => !p)}
         className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-warning-100/50 transition-colors"

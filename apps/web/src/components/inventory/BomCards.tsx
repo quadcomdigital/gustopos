@@ -30,7 +30,7 @@ export default function BomCards({ items, inventory, prepItems = [], onEdit, onD
   if (items.length === 0) return null;
 
   return (
-    <div className="divide-y divide-border">
+    <div className="divide-y divide-border tabular-nums">
       {items.map((item) => {
         const isExpanded = expanded.has(item.id);
         const totalCost = explodeBomCost(item.components, inventory, items, prepItems);

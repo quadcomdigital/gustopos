@@ -199,7 +199,7 @@ export default function InventoryTabs({
   const lowStockCount = simpleCatalogMode ? 0 : inventory.filter((i) => i.quantity <= i.minThreshold && i.isActive && i.isStockTracked).length;
 
   return (
-    <div className="h-full w-full max-w-7xl mx-auto flex flex-col">
+    <div className="h-full w-full max-w-7xl mx-auto flex flex-col tabular-nums">
       {/* Header */}
       <div className="flex items-center justify-between mb-4 sm:mb-6">
         <div>

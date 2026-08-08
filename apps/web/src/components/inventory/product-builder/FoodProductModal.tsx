@@ -326,7 +326,7 @@ export default function FoodProductModal({
           />
         }
       >
-        <div className="space-y-4">
+        <div className="space-y-4 tabular-nums">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             <FormField label="Nome" error={errors.name?.message}>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome prodotto" className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.name)}`} />

@@ -20,7 +20,7 @@ export default function CustomerPreview({ item, inventory }: CustomerPreviewProp
   }, [item.modifiers, inventoryById]);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 tabular-nums">
       <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">
         Anteprima cliente
       </p>

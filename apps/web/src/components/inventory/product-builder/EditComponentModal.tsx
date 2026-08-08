@@ -103,7 +103,7 @@ export default function EditComponentModal({
       }
     >
       {component && (
-        <div className="space-y-4">
+        <div className="space-y-4 tabular-nums">
           <div className="flex items-center gap-3 p-3 rounded-lg bg-bg border border-border">
             {icon}
             <div className="flex-1 min-w-0">

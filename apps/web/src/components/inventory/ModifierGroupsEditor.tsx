@@ -63,7 +63,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
     );
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 tabular-nums">
       {categoryPools.length > 0 && (
         <div className="space-y-2">
           <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted flex items-center gap-1">

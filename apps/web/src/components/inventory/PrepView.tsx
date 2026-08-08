@@ -362,7 +362,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
   const selectedCreateIngredient = inventory.find((i) => i.id === createIngredientId);
 
   return (
-    <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px]">
+    <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden flex flex-col min-h-[400px] tabular-nums">
       <SectionHeader
         title="Preparazioni"
         actions={

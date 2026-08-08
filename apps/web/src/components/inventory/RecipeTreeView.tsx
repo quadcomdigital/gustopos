@@ -29,7 +29,7 @@ export default function RecipeTreeView({ recipe, bomItems, inventory, prepItems 
   };
 
   return (
-    <div className={`space-y-1 ${depth > 0 ? 'ml-4 pl-3 border-l-2 border-border/50' : ''}`}>
+    <div className={`space-y-1 tabular-nums ${depth > 0 ? 'ml-4 pl-3 border-l-2 border-border/50' : ''}`}>
       {recipe.map((component, idx) => (
         <TreeNode
           key={`${component.componentType}-${component.componentId}-${idx}`}

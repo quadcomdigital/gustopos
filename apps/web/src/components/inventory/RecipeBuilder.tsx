@@ -473,7 +473,7 @@ export default function RecipeBuilder({
   }, [components, inventoryById, ingredientById, prepItems, bomItems, showCost]);
 
   return (
-    <div className="space-y-3 rounded border border-border bg-white p-3">
+    <div className="space-y-3 rounded border border-border bg-white p-3 tabular-nums">
       <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Ricetta</p>
 
       {/* Ingredient & Prep section */}

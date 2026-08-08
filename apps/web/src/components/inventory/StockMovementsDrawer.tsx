@@ -62,7 +62,7 @@ export default function StockMovementsDrawer({
         </div>
       )}
 
-      <div className="space-y-1.5">
+      <div className="space-y-1.5 tabular-nums">
         {filtered.length === 0 && (
           <p className="text-sm text-text-muted text-center py-8">Nessun movimento trovato.</p>
         )}

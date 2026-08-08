@@ -40,7 +40,7 @@ export default function StockLevelChart({ inventory }: StockLevelChartProps) {
   if (sorted.length === 0) return null;
 
   return (
-    <div className="rounded-xl border border-border bg-white overflow-hidden">
+    <div className="rounded-xl border border-border bg-white overflow-hidden tabular-nums">
       <button
         onClick={() => setIsOpen((p) => !p)}
         className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-bg/30 transition-colors"

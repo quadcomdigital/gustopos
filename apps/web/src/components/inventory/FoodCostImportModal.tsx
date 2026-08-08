@@ -58,7 +58,7 @@ export default function FoodCostImportModal({
 
   return (
     <Modal open={open} onClose={handleClose} title="Importa Food Cost da Excel">
-      <div className="p-4 max-w-2xl">
+      <div className="p-4 max-w-2xl tabular-nums">
 
         {/* File upload */}
         <div className="mb-4">
