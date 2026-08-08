@@ -21,6 +21,7 @@ export const orderItemSchema = z.object({
   name: z.string().min(1),
   price: z.number().nonnegative('Price cannot be negative'),
   quantity: z.number().int().positive('Quantity must be at least 1'),
+  round: z.number().int().nonnegative().nullable().optional(),
   notes: z.string().max(200).optional(),
   skipKitchenPrint: z.boolean().optional(),
   ingredientOverrides: z

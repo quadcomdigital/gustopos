@@ -293,7 +293,8 @@ export class ConsumerRepository {
         price: Number(item.price),
         quantity: item.quantity,
         ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
-        selectedModifiers: parseSelectedModifiers(item.selectedModifiers)
+        selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        round: item.round ?? undefined,
       });
       itemsByOrderId.set(item.orderId, existing);
     }

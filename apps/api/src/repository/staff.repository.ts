@@ -75,6 +75,7 @@ export class StaffRepository {
       .map((row) => row.moduleKey)
       .filter((value): value is ModuleKey =>
         value === "kitchen" ||
+        value === "course_rounds" ||
         value === "inventory" ||
         value === "customers" ||
         value === "analytics" ||

@@ -463,6 +463,13 @@
       "when": 1785843752096,
       "tag": "0068_stock_movements_ingredient_id_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1786222477909,
+      "tag": "0070_course_rounds",
+      "breakpoints": true
     }
   ]
 }

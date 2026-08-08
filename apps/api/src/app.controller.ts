@@ -24,6 +24,7 @@ import { Throttle } from "@nestjs/throttler";
 import {
   closeTableRequestSchema,
   createOrderRequestSchema,
+  courseRoundsConfigSchema,
   ingredientCreateRequestSchema,
   ingredientUpdateRequestSchema,
   ingredientAdjustRequestSchema,
@@ -129,6 +130,7 @@ import {
   type VoidOrderResponse,
   type CloseTableRequest,
   type CreateOrderRequest,
+  type CourseRoundsConfig,
   type IngredientCreateRequest,
   type IngredientUpdateRequest,
   type IngredientAdjustRequest,
@@ -434,6 +436,18 @@ export class AppController {
     });
 
     return result;
+  }
+
+  @Get("course-rounds/config")
+  @Roles("admin", "waiter")
+  async getCourseRoundsConfig(@Req() request: AuthenticatedRequest): Promise<{ config: CourseRoundsConfig; moduleEnabled: boolean }> {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+    const config = courseRoundsConfigSchema.parse(await this.tenantService.getCourseRoundsConfig(tenantId));
+    const enabledModules = await this.tenantService.getEnabledModulesForTenant(tenantId);
+    return { config, moduleEnabled: enabledModules.includes("course_rounds") };
   }
 
   @Get("orders/history")

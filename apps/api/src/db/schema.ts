@@ -248,6 +248,7 @@ export const orderItems = pgTable("order_items", {
   ingredientOverrides: text("ingredient_overrides").notNull().default("[]"),
   notes: text("notes"),
   selectedModifiers: text("selected_modifiers").notNull().default("[]"),
+  round: integer("round"),
 }, (table) => [
   // Every items-by-order fetch (getPublicData subquery, getOrderById,
   // takeaway, order history, BoM explosion) filters on tenant + orderId.

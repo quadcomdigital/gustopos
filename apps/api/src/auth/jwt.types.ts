@@ -4,6 +4,7 @@ export interface JwtPayload {
   role: "admin" | "waiter" | "chef" | "consumer";
   enabledModules?: Array<
     | "kitchen"
+    | "course_rounds"
     | "inventory"
     | "customers"
     | "analytics"

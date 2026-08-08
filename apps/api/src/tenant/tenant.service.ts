@@ -8,9 +8,11 @@ import type {
   TenantModuleConfigUpsertRequest,
   TenantModuleToggleRequest,
   TenantUpdateRequest,
+  CourseRoundsConfig,
 } from "@gustopos/shared";
 import {
   moduleKeySchema,
+  courseRoundsConfigSchema,
   tenantCreateRequestSchema,
   tenantModuleConfigUpsertRequestSchema,
   tenantModuleToggleRequestSchema,
@@ -259,6 +261,9 @@ export class TenantService {
 
   async upsertTenantModuleConfig(tenantId: string, payload: TenantModuleConfigUpsertRequest): Promise<TenantModuleConfig> {
     const parsed = tenantModuleConfigUpsertRequestSchema.parse(payload);
+    const config = parsed.moduleKey === "course_rounds"
+      ? courseRoundsConfigSchema.parse(parsed.config)
+      : parsed.config;
     const now = new Date();
 
     const existing = await db
@@ -275,7 +280,7 @@ export class TenantService {
           id: `tmc_${crypto.randomUUID()}`,
           tenantId,
           moduleKey: parsed.moduleKey,
-          config: JSON.stringify(parsed.config),
+          config: JSON.stringify(config),
           updatedAt: now,
         })
         .returning();
@@ -283,7 +288,7 @@ export class TenantService {
     } else {
       const updated = await db
         .update(tenantModuleConfigs)
-        .set({ config: JSON.stringify(parsed.config), updatedAt: now })
+        .set({ config: JSON.stringify(config), updatedAt: now })
         .where(eq(tenantModuleConfigs.id, existing[0].id))
         .returning();
       row = updated[0];
@@ -294,7 +299,7 @@ export class TenantService {
       tenantId,
       actor: "superadmin",
       event: "tenant.module.config.upserted",
-      payload: JSON.stringify(parsed),
+      payload: JSON.stringify({ ...parsed, config }),
       createdAt: now,
     });
 
@@ -302,9 +307,16 @@ export class TenantService {
       id: row.id,
       tenantId: row.tenantId,
       moduleKey: moduleKeySchema.parse(row.moduleKey),
-      config: JSON.parse(row.config),
+      config: parsed.moduleKey === "course_rounds"
+        ? courseRoundsConfigSchema.parse(JSON.parse(row.config))
+        : JSON.parse(row.config),
       updatedAt: row.updatedAt.toISOString(),
     };
+  }
+
+  async getCourseRoundsConfig(tenantId: string): Promise<CourseRoundsConfig> {
+    const config = await this.getTenantModuleConfig(tenantId, "course_rounds");
+    return courseRoundsConfigSchema.parse(config?.config ?? {});
   }
 
   async getTenantModuleConfig(tenantId: string, moduleKey: ModuleKey): Promise<TenantModuleConfig | null> {
@@ -323,7 +335,9 @@ export class TenantService {
       id: row.id,
       tenantId: row.tenantId,
       moduleKey: moduleKeySchema.parse(row.moduleKey),
-      config: JSON.parse(row.config),
+      config: moduleKey === "course_rounds"
+        ? courseRoundsConfigSchema.parse(JSON.parse(row.config))
+        : JSON.parse(row.config),
       updatedAt: row.updatedAt.toISOString(),
     };
   }

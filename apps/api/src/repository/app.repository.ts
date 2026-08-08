@@ -4,6 +4,7 @@ import {
   bomItemSchema,
   bomUpsertComponentsRequestSchema,
   createOrderRequestSchema,
+  courseRoundsConfigSchema,
   uiSettingsSchema,
   updateUiSettingsRequestSchema,
   menuItemAdminListResponseSchema,
@@ -286,6 +287,43 @@ export class AppRepository {
     return getTenantIdOrDefault();
   }
 
+  private async validateCourseRoundsOrder(orderType: OrderType, items: CreateOrderRequest["items"]): Promise<void> {
+    const tenantId = this.currentTenantId();
+    const enabledModules = await this.getEnabledModulesRows(tenantId);
+    const configRows = await db
+      .select({ config: tenantModuleConfigs.config })
+      .from(tenantModuleConfigs)
+      .where(and(eq(tenantModuleConfigs.tenantId, tenantId), eq(tenantModuleConfigs.moduleKey, "course_rounds")))
+      .limit(1);
+    const config = courseRoundsConfigSchema.parse(configRows[0] ? JSON.parse(configRows[0].config) : {});
+    const moduleActive = enabledModules.includes("course_rounds") && config.enabled;
+    const hasRound = items.some((item) => item.round !== undefined && item.round !== null);
+
+    if (!moduleActive) {
+      if (hasRound) {
+        throw new Error("Course rounds are disabled for this tenant");
+      }
+      return;
+    }
+
+    if (orderType !== "dine_in") {
+      if (hasRound) {
+        throw new Error("Course rounds are only valid for dine-in orders");
+      }
+      return;
+    }
+
+    for (const item of items) {
+      if (item.round !== undefined && item.round !== null && item.round >= config.labels.length) {
+        throw new Error(`Invalid course round ${item.round}; expected a value from 0 to ${config.labels.length - 1}`);
+      }
+    }
+
+    if (config.required && items.some((item) => item.round === undefined || item.round === null)) {
+      throw new Error("Every dine-in order item requires a course round");
+    }
+  }
+
   private validateThemeContrast(settings: UiSettings) {
     const checks = [
       {
@@ -440,6 +478,7 @@ export class AppRepository {
       .map((row) => row.moduleKey)
       .filter((value): value is ModuleKey =>
         value === "kitchen" ||
+        value === "course_rounds" ||
         value === "inventory" ||
         value === "customers" ||
         value === "analytics" ||
@@ -1151,6 +1190,7 @@ export class AppRepository {
           quantity: orderItems.quantity,
           ingredientOverrides: orderItems.ingredientOverrides,
           selectedModifiers: orderItems.selectedModifiers,
+          round: orderItems.round,
         })
           .from(orderItems)
           .where(and(
@@ -1362,6 +1402,7 @@ export class AppRepository {
         quantity: item.quantity,
         ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
         selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        round: item.round ?? undefined,
       });
       itemsByOrderId.set(item.orderId, existing);
     }
@@ -2154,6 +2195,7 @@ export class AppRepository {
         quantity: item.quantity,
         ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
         selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        round: item.round ?? undefined,
       })),
       total: Number(row.total),
       status: row.status,
@@ -2417,6 +2459,8 @@ export class AppRepository {
       throw new Error("Dine-in orders require table");
     }
 
+    await this.validateCourseRoundsOrder(orderType, parsed.items);
+
     let customerRecord: typeof customers.$inferSelect | null = null;
     if (orderType === "takeaway" || orderType === "delivery") {
       if (!parsed.customerId && !parsed.customerName) {
@@ -2489,6 +2533,7 @@ export class AppRepository {
           ingredientOverrides: JSON.stringify(item.ingredientOverrides ?? []),
           notes: item.notes ?? null,
           selectedModifiers: JSON.stringify(item.selectedModifiers ?? []),
+          round: item.round ?? null,
         }).returning({ id: orderItems.id, menuItemId: orderItems.menuItemId });
         if (!insertedItem) throw new Error("Failed to persist order item");
         insertedOrderItems.push(insertedItem);
@@ -3368,6 +3413,7 @@ export class AppRepository {
           quantity: item.quantity,
           ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
           selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+          round: item.round ?? undefined,
         })),
         total: Number(order.total),
         status: "cancelled",
@@ -3441,6 +3487,7 @@ export class AppRepository {
         quantity: item.quantity,
         ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
         selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        round: item.round ?? undefined,
       });
       itemsByOrderId.set(item.orderId, existing);
     }
@@ -3507,6 +3554,7 @@ export class AppRepository {
         quantity: item.quantity,
         ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
         selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        round: item.round ?? undefined,
       })),
       total: Number(orderRow.total),
       status: orderRow.status,

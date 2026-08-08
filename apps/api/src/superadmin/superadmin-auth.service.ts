@@ -228,6 +228,7 @@ export class SuperadminAuthService {
           value,
         ): value is
           | "kitchen"
+          | "course_rounds"
           | "inventory"
           | "customers"
           | "analytics"
@@ -244,6 +245,7 @@ export class SuperadminAuthService {
           | "fiscal_exports"
           | "simple_catalog" =>
           value === "kitchen" ||
+          value === "course_rounds" ||
           value === "inventory" ||
           value === "customers" ||
           value === "analytics" ||

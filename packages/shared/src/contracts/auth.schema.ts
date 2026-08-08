@@ -5,6 +5,7 @@ import { z } from "zod";
 export const staffRoleSchema = z.enum(["admin", "waiter", "chef"]);
 export const moduleKeySchema = z.enum([
   "kitchen",
+  "course_rounds",
   "inventory",
   "customers",
   "analytics",

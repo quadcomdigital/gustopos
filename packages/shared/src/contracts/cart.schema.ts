@@ -8,6 +8,7 @@ export const cartItemSchema = z.object({
   name: z.string(),
   basePrice: z.number().nonnegative(),
   quantity: z.number().int().positive(),
+  round: z.number().int().nonnegative().nullable().optional(),
   notes: z.string().default(''),
   ingredientOverrides: z.array(z.object({
     ingredientId: z.string(),
