@@ -48,13 +48,13 @@ export default function MenuCards({ items, onEdit, onDelete, onToggleActive, sim
                 {isExpanded ? <ChevronDown size={14} className="text-text-muted shrink-0" /> : <ChevronRight size={14} className="text-text-muted shrink-0" />}
                 <div className="min-w-0">
                   <p className="font-bold text-primary text-sm truncate">{item.name}</p>
-                  <p className="text-[10px] text-text-muted">{item.category} · €{item.price.toFixed(2)}</p>
+                  <p className="text-[11px] text-text-muted">{item.category} · €{item.price.toFixed(2)}</p>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <div className="flex gap-1">
                   {item.printAreas.map((area) => (
-                    <span key={area} className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase bg-bg border border-border">{area}</span>
+                    <span key={area} className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-bg border border-border">{area}</span>
                   ))}
                 </div>
                 <StatusPill label={item.isActive ? 'Attivo' : 'Inattivo'} tone={item.isActive ? 'success' : 'neutral'} />

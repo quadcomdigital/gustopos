@@ -50,7 +50,7 @@ export default function StockLevelChart({ inventory }: StockLevelChartProps) {
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-bold text-secondary uppercase tracking-wider">Livelli di Scorte</p>
-          <p className="text-[10px] text-text-muted">
+          <p className="text-[11px] text-text-muted">
             {sorted.length} {sorted.length === 1 ? 'articolo' : 'articoli'} monitorati
             {criticalCount > 0 && <span className="text-danger font-bold"> · {criticalCount} critici</span>}
             {warningCount > 0 && <span className="text-warning font-bold"> · {warningCount} sotto soglia</span>}
@@ -80,7 +80,7 @@ export default function StockLevelChart({ inventory }: StockLevelChartProps) {
                     />
                   </div>
                   <div className="w-20 sm:w-24 shrink-0 text-right">
-                    <p className={`text-[10px] font-bold ${getTextColor(percent)}`}>
+                    <p className={`text-[11px] font-bold ${getTextColor(percent)}`}>
                       {item.quantity}/{item.minThreshold} {item.unit}
                     </p>
                   </div>

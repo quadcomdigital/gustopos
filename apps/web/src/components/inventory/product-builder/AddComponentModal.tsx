@@ -172,7 +172,7 @@ export default function AddComponentModal({
                     {item.type === 'prep' ? 'Prep' : item.type === 'bom' ? 'BoM' : 'Ingrediente'}
                   </span>
                   {item.stock != null && (
-                    <span className="text-[10px] text-text-muted shrink-0">{item.stock} {item.unit}</span>
+                    <span className="text-[11px] text-text-muted shrink-0">{item.stock} {item.unit}</span>
                   )}
                   {item.existing && (
                     <span className="text-[9px] text-text-muted shrink-0">aggiunto</span>

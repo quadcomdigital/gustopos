@@ -91,7 +91,7 @@ function TreeNode({ component, bomItems, prepItems, inventory, ingredientNameByI
           {component.quantity} {component.unit}
         </span>
         {isBoM && bom && (
-          <span className="text-[10px] text-text-muted">
+          <span className="text-[11px] text-text-muted">
             (resa: {bom.yieldQuantity} {bom.outputUnit})
           </span>
         )}

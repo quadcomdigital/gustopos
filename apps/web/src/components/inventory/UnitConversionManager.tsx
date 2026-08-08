@@ -114,7 +114,7 @@ export default function UnitConversionManager({
           <p className="text-sm text-accent font-medium">
             → {convertedQty.toFixed(3)} {ingredientUnit}
           </p>
-          <p className="text-[10px] text-text-muted mt-0.5">
+          <p className="text-[11px] text-text-muted mt-0.5">
             1 {selectedUnit} = {unitRate.toFixed(4)} {ingredientUnit}
           </p>
         </div>

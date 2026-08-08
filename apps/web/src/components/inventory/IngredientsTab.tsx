@@ -706,7 +706,7 @@ export default function IngredientsTab({
                     <td className="px-3 py-4">
                       <p className="font-bold text-secondary text-sm">{item.name}</p>
                       {item.salePrice != null && (
-                        <p className="text-[10px] text-accent font-bold">€{item.salePrice.toFixed(2)} vendita</p>
+                        <p className="text-[11px] text-accent font-bold">€{item.salePrice.toFixed(2)} vendita</p>
                       )}
                     </td>
                     {isSuppliersEnabled && (
@@ -721,7 +721,7 @@ export default function IngredientsTab({
                     )}
                     <td className="px-6 py-4">
                       <span className="font-bold text-primary text-sm">{item.quantity}</span>
-                      <span className="text-[10px] text-text-muted ml-1 uppercase font-bold">{item.unit}</span>
+                      <span className="text-xs text-text-muted ml-1 font-bold">{item.unit}</span>
                       <div className="mt-1 w-full bg-bg rounded-full h-1.5 overflow-hidden">
                         <div
                           className={`h-full rounded-full transition-all ${
@@ -836,13 +836,13 @@ export default function IngredientsTab({
                   <div className="min-w-0">
                     <p className="font-bold text-primary text-sm truncate">{item.name}</p>
                     {item.salePrice != null && (
-                      <p className="text-[9px] text-accent font-bold">€{item.salePrice.toFixed(2)} vendita</p>
+                      <p className="text-[10px] text-accent font-bold">€{item.salePrice.toFixed(2)} vendita</p>
                     )}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <div className="text-right">
-                    <p className="font-bold text-accent text-sm">{item.quantity} <span className="text-[10px] text-text-muted font-medium">{item.unit}</span></p>
+                    <p className="font-bold text-accent text-sm">{item.quantity} <span className="text-xs text-text-muted font-medium">{item.unit}</span></p>
                     <div className="mt-1 w-full bg-bg rounded-full h-1.5 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${

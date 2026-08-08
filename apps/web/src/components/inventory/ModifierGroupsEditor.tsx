@@ -78,7 +78,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                 {pool.options.map((opt) => {
                   const invItem = opt.inventoryItemId ? inventoryById.get(opt.inventoryItemId) : undefined;
                   return (
-                    <span key={opt.id} className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-bg border border-border/50 text-text-muted">
+                    <span key={opt.id} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-bg border border-border/50 text-text-muted">
                       {opt.name ?? invItem?.name ?? opt.inventoryItemId}
                       {opt.priceDelta !== 0 && (
                         <span className={opt.priceDelta > 0 ? 'text-success-600' : 'text-danger-600'}>

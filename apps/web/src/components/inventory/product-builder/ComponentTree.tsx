@@ -89,7 +89,7 @@ function SubComponentRow({
         min="0.001"
         step="0.001"
       />
-      <span className="text-[9px] text-text-muted shrink-0">{subComp.unit}</span>
+      <span className="text-[10px] text-text-muted shrink-0">{subComp.unit}</span>
       {subComp.componentType === 'ingredient' && (
         <ConversionHint
           conversions={conversionsMap[subComp.componentId] ?? []}
@@ -224,7 +224,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
             <span className="font-medium">{ingredient.name}</span>
             <span>→</span>
             <span>{Number(prep.inputQuantity)} {prep.outputUnit}</span>
-            <span className="text-[9px] text-text-muted ml-auto">Costo: €{(Number(prep.inputQuantity) * (ingredient.unitCost ?? 0)).toFixed(2)}</span>
+            <span className="text-[11px] text-text-muted ml-auto">Costo: €{(Number(prep.inputQuantity) * (ingredient.unitCost ?? 0)).toFixed(2)}</span>
           </div>
         </div>
       )}
@@ -251,7 +251,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
             )}
             <div className="flex items-center justify-between px-2 pt-1">
               {bom.components.length > 0 && (
-                <p className="text-[9px] text-text-muted italic">
+                <p className="text-[10px] text-text-muted italic">
                   Resa: {bom.yieldQuantity} {bom.outputUnit} — Le modifiche si applicano al BoM
                 </p>
               )}

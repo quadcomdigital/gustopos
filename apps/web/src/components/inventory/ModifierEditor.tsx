@@ -77,7 +77,7 @@ export default function ModifierEditor({ modifiers, inventory, onChange }: Modif
                   />
                   <span className="text-[10px] text-text-muted font-bold w-6">€</span>
                 </div>
-                <span className="text-[10px] text-text-muted">
+                <span className="text-[11px] text-text-muted">
                   Cliente vede: +€{((mod.effectivePrice ?? mod.priceDelta) ?? (inv?.salePrice ?? 0)).toFixed(2)}
                 </span>
                 <button

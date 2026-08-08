@@ -31,7 +31,7 @@ export default function CustomerPreview({ item, inventory }: CustomerPreviewProp
       <div className="rounded-xl border-2 border-accent/30 bg-white overflow-hidden shadow-sm">
         <div className="bg-gradient-to-r from-accent to-accent/80 px-4 py-3">
           <p className="text-white font-bold text-lg">{item.name}</p>
-          <p className="text-white/80 text-sm">€{item.price.toFixed(2)}</p>
+          <p className="text-white/90 font-bold text-sm">€{item.price.toFixed(2)}</p>
         </div>
 
         <div className="p-3 space-y-2">

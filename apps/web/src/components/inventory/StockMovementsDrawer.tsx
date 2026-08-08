@@ -118,7 +118,7 @@ export default function StockMovementsDrawer({
                 <p className={`text-sm font-bold ${isPositive ? 'text-success' : 'text-danger'}`}>
                   {isPositive ? '+' : ''}{movement.quantity}
                 </p>
-                <p className="text-[9px] text-text-muted">
+                <p className="text-[10px] text-text-muted">
                   {movement.previousQuantity} → {movement.newQuantity}
                 </p>
               </div>

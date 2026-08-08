@@ -426,7 +426,7 @@ export default function PrepView({ inventory, bomItems, prepItems, loading = fal
                     <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-bold uppercase tracking-wider">Da BoM</span>
                   )}
                 </div>
-                <span className="text-[10px] text-text-muted">
+                <span className="text-[11px] text-text-muted">
                   {group.kind === 'bom'
                     ? <>Resa: <span className="font-bold text-secondary">{group.bomYield} {group.unit}</span></>
                     : <>Stock: <span className="font-bold text-secondary">{group.stockQty} {group.unit}</span></>}
@@ -525,7 +525,7 @@ export default function PrepView({ inventory, bomItems, prepItems, loading = fal
                             </Button>
                           </div>
                           {showCheck && (
-                            <p className={`text-[10px] mt-1 ${hasStock ? 'text-success-600' : 'text-danger-600'}`}>
+                            <p className={`text-[11px] mt-1 ${hasStock ? 'text-success-600' : 'text-danger-600'}`}>
                               {hasStock ? '✓' : '✗'} {needed.toFixed(3)} {group.unit} necessari
                             </p>
                           )}

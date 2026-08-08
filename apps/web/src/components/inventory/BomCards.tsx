@@ -46,7 +46,7 @@ export default function BomCards({ items, inventory, prepItems = [], onEdit, onD
                 {isExpanded ? <ChevronDown size={14} className="text-text-muted shrink-0" /> : <ChevronRight size={14} className="text-text-muted shrink-0" />}
                 <div className="min-w-0">
                   <p className="font-bold text-primary text-sm truncate">{item.name}</p>
-                  <p className="text-[10px] text-text-muted">{item.yieldQuantity} {item.outputUnit} · €{costPerUnit.toFixed(2)}/{item.outputUnit}</p>
+                  <p className="text-[11px] text-text-muted">{item.yieldQuantity} {item.outputUnit} · €{costPerUnit.toFixed(2)}/{item.outputUnit}</p>
                 </div>
               </div>
               <div className="shrink-0 flex items-center gap-2">

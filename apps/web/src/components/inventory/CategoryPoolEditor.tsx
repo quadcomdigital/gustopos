@@ -447,7 +447,7 @@ export default function CategoryPoolEditor({
                     {pool.options.map((opt) => {
                       const invItem = inventory.find((i) => i.id === opt.inventoryItemId);
                       return (
-                        <span key={opt.id} className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-bg border border-border">
+                        <span key={opt.id} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-bg border border-border">
                           {opt.name ?? invItem?.name ?? opt.inventoryItemId}
                           {opt.priceDelta !== 0 && (
                             <span className={opt.priceDelta > 0 ? 'text-success-600' : 'text-danger-600'}>
