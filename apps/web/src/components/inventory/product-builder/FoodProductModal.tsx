@@ -316,7 +316,7 @@ export default function FoodProductModal({
       <Modal
         open={open} onClose={onClose}
         title={isEdit ? `Modifica: ${editItem?.name}` : 'Prodotto food'}
-        size="lg" dirty={dirty}
+        size="lg" dirty={dirty} zIndex={1200}
         footer={
           <SaveFooter
             onCancel={onClose}
@@ -350,7 +350,7 @@ export default function FoodProductModal({
               {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
                 <button key={area} type="button"
                   onClick={() => setPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
-                  className={`px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border ${printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'}`}>
+                  className={`min-h-[44px] px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'}`}>
                   stampa {PRINT_AREA_LABELS[area]}
                 </button>
               ))}

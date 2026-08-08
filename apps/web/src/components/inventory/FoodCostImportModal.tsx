@@ -57,11 +57,11 @@ export default function FoodCostImportModal({
   }, [onClose]);
 
   return (
-    <Modal open={open} onClose={handleClose} title="Importa Food Cost da Excel">
-      <div className="p-4 max-w-2xl tabular-nums">
+    <Modal open={open} onClose={handleClose} title="Importa Food Cost da Excel" size="lg">
+      <div className="max-w-2xl tabular-nums space-y-4">
 
         {/* File upload */}
-        <div className="mb-4">
+        <div>
           <label className="block text-xs text-text-muted mb-1.5">File XLSX</label>
           <label className="flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-border/50 rounded-lg cursor-pointer hover:border-border/80">
             <FileSpreadsheet className="w-5 h-5 text-text-muted" />
@@ -80,14 +80,14 @@ export default function FoodCostImportModal({
 
         {/* Import indicator */}
         {isImporting && (
-          <div className="mb-4 p-3 bg-bg border border-border/50 rounded-lg text-center">
+          <div className="p-3 bg-bg border border-border/50 rounded-lg text-center">
             <div className="text-sm text-text-muted">Importazione in corso...</div>
           </div>
         )}
 
         {/* Error */}
         {error && (
-          <div className="mb-4 p-3 bg-danger-500/10 border border-danger-500/20 rounded-lg flex items-start gap-2">
+          <div className="p-3 bg-danger-500/10 border border-danger-500/20 rounded-lg flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-danger-500 mt-0.5" />
             <span className="text-sm text-danger-500">{error}</span>
           </div>
@@ -95,15 +95,14 @@ export default function FoodCostImportModal({
 
         {/* Import result */}
         {importResult && (
-          <div className="mb-4 space-y-3">
+          <div className="space-y-3">
             {/* Cost matches */}
             {importResult.costMatches.length > 0 && (
               <div className="p-3 bg-bg border border-border/50 rounded-lg">
                 <div className="text-xs font-medium text-text mb-1">
                   <Check className="w-3.5 h-3.5 inline text-success-500 mr-1" />
                   {importResult.costsUpdated} costi ingredienti aggiornati
-                </div>
-                <div className="max-h-40 overflow-y-auto text-xs">
+                </div>                  <div className="max-h-[min(28dvh,10rem)] overflow-y-auto overscroll-contain text-xs">
                   <table className="w-full">
                     <thead>
                       <tr className="text-text-muted">
@@ -141,7 +140,7 @@ export default function FoodCostImportModal({
 
             {/* Errors */}
             {importResult.errors.length > 0 && (
-              <div className="p-3 bg-danger-500/10 border border-danger-500/20 rounded-lg max-h-40 overflow-y-auto">
+              <div className="p-3 bg-danger-500/10 border border-danger-500/20 rounded-lg max-h-[min(28dvh,10rem)] overflow-y-auto overscroll-contain">
                 {importResult.errors.slice(0, 30).map((err, i) => (
                   <div key={i} className="text-xs text-danger-500">{err}</div>
                 ))}
@@ -157,7 +156,7 @@ export default function FoodCostImportModal({
         <div className="flex justify-end">
           <button
             onClick={handleClose}
-            className="px-4 py-2 text-sm text-text-muted hover:text-text"
+            className="min-h-[44px] px-4 py-2 text-sm text-text-muted hover:text-text rounded active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           >
             {importResult ? 'Chiudi' : 'Annulla'}
           </button>

@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { lockBodyScroll, unlockBodyScroll } from '../utils/scrollLock';
 
 interface DrawerProps {
   open: boolean;
@@ -40,11 +41,11 @@ export default function Drawer({ open, onClose, title, children, width = 'md' }:
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    document.body.style.overflow = 'hidden';
+    lockBodyScroll();
     return () => {
       clearTimeout(timer);
       window.removeEventListener('keydown', onKeyDown);
-      document.body.style.overflow = '';
+      unlockBodyScroll();
       previousFocusRef.current?.focus();
     };
   }, [open, onClose]);

@@ -130,7 +130,7 @@ export default function CreatePrepInlineModal({
   const canSave = ingredientId && variants.length > 0 && variants.every((v) => v.name.trim() && Number(v.quantityPerUnit) > 0);
 
   return (
-    <Modal open={open} onClose={handleClose} title="Crea prep" size="md"
+    <Modal open={open} onClose={handleClose} title="Crea prep" size="md" zIndex={1400}
       footer={
         <SaveFooter
           onCancel={handleClose}
@@ -185,7 +185,7 @@ export default function CreatePrepInlineModal({
                     value={v.quantityPerUnit}
                     onChange={(e) => updateVariant(v.id, 'quantityPerUnit', e.target.value)}
                     placeholder="Qtà"
-                    className="w-20 px-2 py-1.5 rounded border border-border text-sm text-right"
+                    className="w-full sm:w-20 px-2 py-2 rounded border border-border text-sm text-right"
                     min="0.001"
                     step="0.001"
                   />

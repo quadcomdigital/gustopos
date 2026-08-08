@@ -74,7 +74,7 @@ export default function CreateIngredientInlineModal({
   };
 
   return (
-    <Modal open={open} onClose={handleClose} title="Nuovo ingrediente" size="lg"
+    <Modal open={open} onClose={handleClose} title="Nuovo ingrediente" size="lg" zIndex={1400}
       footer={
         <SaveFooter
           onCancel={handleClose}
@@ -84,7 +84,7 @@ export default function CreateIngredientInlineModal({
         />
       }
     >
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 tabular-nums">
         <Field label="Nome" error={errors.name?.message}>
           {(props) => (
             <input

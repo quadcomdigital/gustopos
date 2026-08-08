@@ -127,6 +127,7 @@ export default function AddComponentModal({
       onClose={handleClose}
       title="Aggiungi componente"
       size="md"
+      zIndex={1300}
       footer={<Button variant="secondary" onClick={handleClose}>Chiudi</Button>}
     >
       <div className="space-y-3 tabular-nums">
@@ -142,7 +143,7 @@ export default function AddComponentModal({
         </div>
 
         {allResults.length > 0 ? (
-          <div className="max-h-[220px] overflow-y-auto space-y-1">
+          <div className="max-h-[min(35dvh,220px)] overflow-y-auto overscroll-contain space-y-1">
             {allResults.map((item) => {
               const isSelected = selectedItem?.id === item.id && selectedItem?.type === item.type;
               return (

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle, X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { lockBodyScroll, unlockBodyScroll } from '../utils/scrollLock';
 
 interface ModalProps {
   open: boolean;
@@ -11,9 +12,11 @@ interface ModalProps {
   footer?: ReactNode;
   size?: 'sm' | 'md' | 'lg';
   dirty?: boolean;
+  /** Layer used by nested modals so child overlays remain above their parent. */
+  zIndex?: number;
 }
 
-export default function Modal({ open, onClose, title, children, footer, size = 'md', dirty = false }: ModalProps) {
+export default function Modal({ open, onClose, title, children, footer, size = 'md', dirty = false, zIndex = 1200 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -81,11 +84,11 @@ export default function Modal({ open, onClose, title, children, footer, size = '
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    document.body.style.overflow = 'hidden';
+    lockBodyScroll();
     return () => {
       clearTimeout(timer);
       window.removeEventListener('keydown', onKeyDown);
-      document.body.style.overflow = '';
+      unlockBodyScroll();
       previousFocusRef.current?.focus();
     };
   }, [open, handleClose]);
@@ -95,7 +98,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
   return (
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[1200] overflow-y-auto" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="fixed inset-0 overflow-y-auto" style={{ zIndex }} role="dialog" aria-modal="true" aria-label={title}>
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -103,7 +106,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
             className="fixed inset-0 bg-black/50 backdrop-blur-sm"
             onClick={handleBackdropClick}
           />
-          <div className="min-h-full flex items-end sm:items-center justify-center py-4 sm:py-6">
+          <div className="min-h-full flex items-end sm:items-center justify-center p-4 sm:p-6">
           <motion.div
             ref={dialogRef}
             tabIndex={-1}
@@ -122,7 +125,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
                   </span>
                 )}
               </div>
-              <button onClick={handleClose} className="p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0" aria-label="Chiudi">
+              <button onClick={handleClose} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Chiudi">
                 <X size={18} />
               </button>
             </div>
@@ -130,7 +133,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
               {children}
             </div>
             {footer && (
-              <div className="flex items-center justify-end shrink-0 p-4 border-t border-border">
+              <div className="flex flex-wrap items-center justify-end gap-2 shrink-0 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] border-t border-border">
                 {footer}
               </div>
             )}

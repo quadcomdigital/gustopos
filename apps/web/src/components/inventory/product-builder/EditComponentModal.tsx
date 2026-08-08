@@ -93,6 +93,7 @@ export default function EditComponentModal({
       onClose={onClose}
       title={`Modifica: ${componentName}`}
       size="md"
+      zIndex={1300}
       footer={
         <div className="flex flex-wrap items-center gap-2 w-full">
           <Button variant="danger" onClick={() => { onRemove(); onClose(); }}>Rimuovi</Button>
@@ -122,7 +123,7 @@ export default function EditComponentModal({
                 type="number"
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
-                className="w-full px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
+                className="w-full px-3 py-2.5 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                 min="0.001"
                 step="0.001"
               />
@@ -163,7 +164,7 @@ export default function EditComponentModal({
                   autoFocus
                 />
               </div>
-              <div className="max-h-[150px] overflow-y-auto space-y-1">
+              <div className="max-h-[min(28dvh,150px)] overflow-y-auto overscroll-contain space-y-1">
                 {swapCandidates.map((c) => (
                   <button
                     key={`${c.type}:${c.id}`}
