@@ -73,7 +73,9 @@ function TreeNode({ component, bomItems, prepItems, inventory, ingredientNameByI
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="inline-flex items-center gap-1 text-primary hover:text-primary/80"
+            className="inline-flex items-center justify-center gap-1 text-primary hover:text-primary/80 min-w-[44px] min-h-[44px] -ml-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+            aria-label={expanded ? `Comprimi ${name}` : `Espandi ${name}`}
+            aria-expanded={expanded}
           >
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             <Layers size={12} />

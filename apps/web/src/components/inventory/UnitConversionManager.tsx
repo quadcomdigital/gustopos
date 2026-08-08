@@ -145,7 +145,6 @@ export default function UnitConversionManager({
                     onClick={() => void handleDelete(conv.id)}
                     disabled={deletingId === conv.id}
                     aria-label={`Elimina conversione ${conv.fromUnit}`}
-                    className="!p-1"
                   >
                     {confirmDeleteId === conv.id ? (
                       <span className="text-[10px] font-bold px-1">Conferma?</span>

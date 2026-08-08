@@ -132,7 +132,7 @@ function SubComponentRow({
           componentType: subComp.componentType,
           componentId: subComp.componentId,
         })}
-        className="p-1 text-text-muted hover:text-danger hover:bg-danger-50 rounded opacity-0 group-hover:opacity-100 transition-all"
+        className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-danger hover:bg-danger-50 rounded transition-all opacity-0 group-hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         aria-label="Rimuovi componente"
       >
         <Trash2 size={10} />
@@ -188,11 +188,11 @@ function ComponentRow({
     <div className={`flex items-center justify-between rounded border px-3 py-2 ${isInactive ? 'border-warning-300 bg-warning-50' : visual.bg}`}>
       <div className="flex items-center gap-2 min-w-0">
         {canExpand ? (
-          <button type="button" onClick={() => onToggleExpand(comp.componentId)} className="p-0.5 text-text-muted hover:text-primary">
+          <button type="button" onClick={() => onToggleExpand(comp.componentId)} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-primary rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label={isExpanded ? 'Comprimi componente' : 'Espandi componente'} aria-expanded={isExpanded}>
             {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
         ) : (
-          <span className="w-4" />
+          <span className="w-[44px]" />
         )}
         {isInactive ? (
           <AlertTriangle size={14} className="text-warning-600 shrink-0" />
@@ -204,7 +204,7 @@ function ComponentRow({
             type="button"
             onClick={() => onMoveComponent(idx, -1)}
             disabled={idx === 0}
-            className="text-text-muted hover:text-secondary disabled:opacity-30"
+            className="min-w-[44px] min-h-[40px] flex items-center justify-center text-text-muted hover:text-secondary disabled:opacity-30 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             aria-label="Sposta su"
           >
             <ChevronUp size={12} />
@@ -213,7 +213,7 @@ function ComponentRow({
             type="button"
             onClick={() => onMoveComponent(idx, 1)}
             disabled={idx === totalComponents - 1}
-            className="text-text-muted hover:text-secondary disabled:opacity-30"
+            className="min-w-[44px] min-h-[40px] flex items-center justify-center text-text-muted hover:text-secondary disabled:opacity-30 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             aria-label="Sposta giù"
           >
             <ChevronDown size={12} />
@@ -235,7 +235,7 @@ function ComponentRow({
                   setLocalQty(quantityString(comp.quantity));
                 }
               }}
-              className="w-16 px-1 py-0.5 border border-border rounded text-sm inline-block ml-1"
+              className="w-16 px-1 py-0.5 border border-border rounded text-sm inline-block ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               min="0.01"
               step="0.1"
             />
@@ -248,7 +248,8 @@ function ComponentRow({
         type="button"
         onClick={() => onRemove(comp.componentType, comp.componentId)}
         disabled={totalComponents <= 1}
-        className="text-xs font-bold uppercase tracking-wider text-danger disabled:opacity-50 shrink-0 ml-2"
+        className="min-w-[44px] min-h-[44px] flex items-center justify-center text-danger disabled:opacity-50 shrink-0 ml-2 rounded hover:bg-danger-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+        aria-label="Rimuovi componente"
       >
         <Trash2 size={14} />
       </button>
@@ -545,7 +546,7 @@ export default function RecipeBuilder({
                           <select
                             value={subAddType}
                             onChange={(e) => { setSubAddType(e.target.value as 'ingredient' | 'bom' | 'prep'); setSubAddSelectedId(''); }}
-                            className="px-2 py-1.5 rounded border border-border text-[10px]"
+                            className="px-2 py-1.5 rounded border border-border text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                           >
                             <option value="ingredient">Ingrediente</option>
                             <option value="prep">Preparato</option>
@@ -561,7 +562,7 @@ export default function RecipeBuilder({
                                 else setSubAddSelectedId('');
                               }}
                               placeholder="Cerca..."
-                              className="w-full px-2 py-1.5 rounded border border-border text-[10px]"
+                              className="w-full px-2 py-1.5 rounded border border-border text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                             />
                             <datalist id="sub-add-candidates">
                               {subAddCandidates.map((c) => (
@@ -573,7 +574,7 @@ export default function RecipeBuilder({
                             type="number"
                             value={subAddQty}
                             onChange={(e) => setSubAddQty(e.target.value.replace(/[^0-9.]/g, ''))}
-                            className="w-16 px-2 py-1.5 rounded border border-border text-[10px] text-center"
+                            className="w-16 px-2 py-1.5 rounded border border-border text-[10px] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                             min="0.01"
                             step="0.1"
                           />
@@ -608,14 +609,15 @@ export default function RecipeBuilder({
                               setSubAddQty('1');
                             }}
                             disabled={!subAddSelectedId}
-                            className="px-2 py-1.5 rounded text-[9px] font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
+                            className="min-w-[44px] min-h-[44px] flex items-center justify-center px-2 py-1.5 rounded text-[9px] font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                            aria-label="Aggiungi al BoM"
                           >
                             <Plus size={10} />
                           </button>
                           <button
                             type="button"
                             onClick={() => setSubAddBomId(null)}
-                            className="px-2 py-1.5 rounded text-[9px] font-bold uppercase tracking-wider text-text-muted hover:text-danger transition-colors"
+                            className="min-h-[44px] px-2 py-1.5 rounded text-[9px] font-bold uppercase tracking-wider text-text-muted hover:text-danger transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                           >
                             Annulla
                           </button>
@@ -630,7 +632,7 @@ export default function RecipeBuilder({
                             setSubAddQty('1');
                             setSubAddUnit('kg');
                           }}
-                          className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-accent hover:text-accent/80 transition-colors"
+                          className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-accent hover:text-accent/80 transition-colors min-h-[44px] px-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                         >
                           <Plus size={10} />
                           Aggiungi componente al BoM
@@ -646,7 +648,7 @@ export default function RecipeBuilder({
                         <button
                           type="button"
                           onClick={() => onOpenBomTab(bom.id)}
-                          className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-accent hover:text-accent/80 transition-colors"
+                          className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-accent hover:text-accent/80 transition-colors min-h-[44px] px-1.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                         >
                           <ExternalLink size={10} />
                           Apri in BoM

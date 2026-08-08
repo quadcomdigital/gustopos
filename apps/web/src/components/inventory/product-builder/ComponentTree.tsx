@@ -85,7 +85,7 @@ function SubComponentRow({
             (e.target as HTMLInputElement).blur();
           }
         }}
-        className="w-14 px-1.5 py-0.5 rounded border border-border text-[10px] text-center"
+        className="w-14 px-1.5 py-0.5 rounded border border-border text-[10px] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         min="0.001"
         step="0.001"
       />
@@ -96,21 +96,21 @@ function SubComponentRow({
           canonicalUnit={subComp.unit}
         />
       )}
-      <button
-        type="button"
-        onClick={() => {
-          if (onBomComponentEdit) {
-            onBomComponentEdit(bomId, 'remove', {
-              componentType: subComp.componentType,
-              componentId: subComp.componentId,
-            });
-          }
-        }}
-        className="p-2 text-text-muted hover:text-danger hover:bg-danger-50 rounded sm:opacity-0 sm:group-hover:opacity-100 transition-all"
-        aria-label="Rimuovi componente"
-      >
-        <Trash2 size={10} />
-      </button>
+<button
+          type="button"
+          onClick={() => {
+            if (onBomComponentEdit) {
+              onBomComponentEdit(bomId, 'remove', {
+                componentType: subComp.componentType,
+                componentId: subComp.componentId,
+              });
+            }
+          }}
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-danger hover:bg-danger-50 rounded transition-all sm:opacity-0 sm:group-hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+          aria-label="Rimuovi componente"
+        >
+          <Trash2 size={10} />
+        </button>
     </div>
   );
 }
@@ -166,11 +166,17 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
     <div className="border border-border rounded-lg overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 bg-white hover:bg-bg/50 transition-colors">
         {canExpand ? (
-          <button type="button" onClick={() => setExpanded(!expanded)} className="p-0.5 text-text-muted hover:text-primary">
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 rounded"
+            aria-label={expanded ? 'Comprimi componente' : 'Espandi componente'}
+            aria-expanded={expanded}
+          >
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
         ) : (
-          <span className="w-5" />
+          <span className="w-[44px] shrink-0" />
         )}
 
         <span className="shrink-0">{icon}</span>
@@ -196,16 +202,16 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
               (e.target as HTMLInputElement).blur();
             }
           }}
-          className="w-16 px-2 py-1 rounded border border-border text-xs text-center"
+          className="w-16 px-2 py-1 rounded border border-border text-xs text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           min="0.001"
           step="0.001"
         />
         <span className="text-[10px] text-text-muted shrink-0">{component.unit}</span>
 
-        <button type="button" onClick={onEdit} className="p-1.5 text-text-muted hover:text-primary hover:bg-bg rounded transition-colors" aria-label="Modifica">
+        <button type="button" onClick={onEdit} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-primary hover:bg-bg rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Modifica">
           <Pencil size={13} />
         </button>
-        <button type="button" onClick={onRemove} className="p-1.5 text-text-muted hover:text-danger hover:bg-danger-50 rounded transition-colors" aria-label="Rimuovi">
+        <button type="button" onClick={onRemove} className="min-w-[44px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-danger hover:bg-danger-50 rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Rimuovi">
           <Trash2 size={13} />
         </button>
       </div>
@@ -253,11 +259,11 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
                 <button
                   type="button"
                   onClick={() => onOpenBomTab(bom.id)}
-                  className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-accent hover:text-accent/80 transition-colors shrink-0"
-                >
-                  <ExternalLink size={10} />
-                  Apri in BoM
-                </button>
+className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-accent hover:text-accent/80 transition-colors shrink-0 min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded px-1.5"
+                  >
+                    <ExternalLink size={10} />
+                    Apri in BoM
+                  </button>
               )}
             </div>
           </div>

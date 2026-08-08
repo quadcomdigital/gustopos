@@ -30,7 +30,7 @@ export default forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled || loading}
         className={cn(
-          'inline-flex items-center justify-center gap-2 rounded font-bold uppercase tracking-wider border transition-all active:scale-[0.98]',
+          'inline-flex items-center justify-center gap-2 rounded font-bold uppercase tracking-wider border transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
           variantStyles[variant],
           sizeStyles[size],
           (disabled || loading) && 'opacity-50 cursor-not-allowed',

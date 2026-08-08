@@ -768,8 +768,9 @@ export default function IngredientsTab({
                             <p className="text-[9px] font-bold text-text-muted uppercase tracking-tighter">Attivo</p>
                             <button
                               onClick={() => void toggleIngredientActive(item)}
-                              className="inline-flex items-center gap-1 text-xs font-bold"
+                              className="inline-flex items-center justify-center gap-1 text-xs font-bold min-h-[44px] px-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                               aria-label={`Attivo: ${item.isActive ? 'Si' : 'No'}`}
+                              aria-pressed={item.isActive}
                             >
                               {item.isActive ? (
                                 <ToggleRight size={18} className="text-accent" />
@@ -1046,7 +1047,9 @@ export default function IngredientsTab({
             {selectedIngredient && (
               <button
                 onClick={() => void toggleIngredientActive(selectedIngredient)}
-                className="inline-flex items-center gap-1 text-xs font-bold"
+                className="inline-flex items-center justify-center gap-1 text-xs font-bold min-h-[44px] px-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                aria-label={`Attivo: ${selectedIngredient.isActive ? 'Si' : 'No'}`}
+                aria-pressed={selectedIngredient.isActive}
               >
                 {selectedIngredient.isActive ? (
                   <ToggleRight size={20} className="text-accent" />

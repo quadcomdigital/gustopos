@@ -631,7 +631,7 @@ export default function BomTab({
                       {isInactive && <AlertTriangle size={10} className="text-warning-600" />}
                       <span className="font-bold uppercase text-[9px]">{componentTypeLabel(comp.componentType)}</span>
                       {candidate?.label ?? comp.componentId} · {comp.quantity} {comp.unit}
-                      <button onClick={() => removeCreateComponent(idx)} className="ml-1 text-danger font-bold text-xs">✕</button>
+                      <button onClick={() => removeCreateComponent(idx)} className="ml-1 min-w-[44px] min-h-[44px] flex items-center justify-center text-danger font-bold rounded hover:bg-danger-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Rimuovi componente">✕</button>
                     </span>
                   );
                 })}

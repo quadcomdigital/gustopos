@@ -154,11 +154,12 @@ export default function CategoryPoolEditor({
               key={cat.id}
               type="button"
               onClick={() => toggleCategory(cat.id)}
-              className={`px-3 py-1.5 min-h-[40px] rounded text-[10px] font-bold border transition-all ${
+              className={`px-3 py-1.5 min-h-[44px] rounded text-[10px] font-bold border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
                 selectedCategoryIds.includes(cat.id)
                   ? 'bg-accent text-white border-accent'
                   : 'bg-bg text-secondary border-border hover:border-accent'
               }`}
+              aria-pressed={selectedCategoryIds.includes(cat.id)}
             >
               {cat.name}
             </button>
@@ -282,11 +283,12 @@ export default function CategoryPoolEditor({
                           key={cat.id}
                           type="button"
                           onClick={() => toggleEditCategory(cat.id)}
-                          className={`px-3 py-1.5 min-h-[40px] rounded text-[10px] font-bold border transition-all ${
+                          className={`px-3 py-1.5 min-h-[44px] rounded text-[10px] font-bold border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
                             editCategoryIds.includes(cat.id)
                               ? 'bg-accent text-white border-accent'
                               : 'bg-bg text-secondary border-border hover:border-accent'
                           }`}
+                          aria-pressed={editCategoryIds.includes(cat.id)}
                         >
                           {cat.name}
                         </button>

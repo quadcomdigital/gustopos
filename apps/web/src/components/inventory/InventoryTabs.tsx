@@ -212,8 +212,10 @@ export default function InventoryTabs({
         </div>
         <button
           onClick={() => setCardsHidden(!cardsHidden)}
-          className="p-2 rounded-lg border border-border hover:bg-bg transition-colors"
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center p-2 rounded-lg border border-border hover:bg-bg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
           title={cardsHidden ? 'Mostra riepilogo' : 'Nascondi riepilogo'}
+          aria-label={cardsHidden ? 'Mostra riepilogo' : 'Nascondi riepilogo'}
+          aria-expanded={!cardsHidden}
         >
           {cardsHidden ? <ChevronDown size={18} className="text-secondary" /> : <ChevronUp size={18} className="text-secondary" />}
         </button>
@@ -298,7 +300,7 @@ export default function InventoryTabs({
           <button
             key={key}
             onClick={() => handleTabSwitch(key)}
-            className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-all border-b-2 -mb-px ${
+            className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-all border-b-2 -mb-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset rounded-t ${
               activeTab === key
                 ? 'text-primary border-primary'
                 : 'text-text-muted border-transparent hover:text-secondary'
@@ -319,7 +321,7 @@ export default function InventoryTabs({
             <button
               key={key}
               onClick={() => handleTabSwitch(key)}
-              className={`py-2.5 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 whitespace-nowrap flex-shrink-0 ${
+              className={`py-2.5 px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 whitespace-nowrap flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset ${
                 activeTab === key ? 'bg-primary text-white shadow-sm' : 'text-secondary'
               }`}
               style={{ scrollSnapAlign: 'start' }}

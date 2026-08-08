@@ -192,7 +192,7 @@ export default function CreatePrepInlineModal({
                   <div className="w-full sm:w-24">
                     <UnitSelect value={v.unit} onChange={(u) => updateVariant(v.id, 'unit', u)} placeholder="Unità" />
                   </div>
-                  <button type="button" onClick={() => removeVariant(v.id)} className="p-2 text-text-muted hover:text-danger shrink-0" aria-label="Rimuovi variante">
+                  <button type="button" onClick={() => removeVariant(v.id)} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-2 text-text-muted hover:text-danger hover:bg-danger-50 rounded shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Rimuovi variante">
                     <Trash2 size={14} />
                   </button>
                 </div>

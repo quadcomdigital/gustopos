@@ -71,7 +71,7 @@ export default function ModifierEditor({ modifiers, inventory, onChange }: Modif
                     type="number"
                     value={mod.priceDelta}
                     onChange={(e) => updateDelta(mod.inventoryItemId, Number(e.target.value.replace(/[^0-9.-]/g, '') || '0'))}
-                    className="w-16 px-1.5 py-1 rounded border border-border text-[10px] font-bold text-right"
+                    className="w-16 px-1.5 py-1 rounded border border-border text-[10px] font-bold text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                     placeholder="0"
                     step="0.5"
                   />
@@ -83,7 +83,8 @@ export default function ModifierEditor({ modifiers, inventory, onChange }: Modif
                 <button
                   type="button"
                   onClick={() => removeModifier(mod.inventoryItemId)}
-                  className="text-danger hover:text-danger/80"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-danger hover:text-danger/80 rounded hover:bg-danger-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                  aria-label="Rimuovi extra"
                 >
                   <Trash2 size={14} />
                 </button>

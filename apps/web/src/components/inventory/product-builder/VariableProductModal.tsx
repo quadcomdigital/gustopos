@@ -222,7 +222,7 @@ export default function VariableProductModal({
               <div className="flex items-center gap-1.5">
                 <input type="number" value={v.quantity} onChange={(e) => updateVariant(v.id, 'quantity', e.target.value)} placeholder="Qtà" className="w-full min-w-0 flex-1 sm:flex-none sm:w-16 px-2 py-1.5 rounded border border-border text-sm text-right" min="0.001" />
                 <span className="text-[10px] text-text-muted shrink-0">{v.unit}</span>
-                <button type="button" onClick={() => removeVariant(v.id)} className="p-2 text-text-muted hover:text-danger shrink-0" aria-label="Rimuovi variante"><Trash2 size={14} /></button>
+                <button type="button" onClick={() => removeVariant(v.id)} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-2 text-text-muted hover:text-danger hover:bg-danger-50 rounded shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Rimuovi variante"><Trash2 size={14} /></button>
               </div>
             </div>
           ))}

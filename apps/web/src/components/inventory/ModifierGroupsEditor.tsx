@@ -101,7 +101,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
         <button
           type="button"
           onClick={() => onChange([...value, createGroup()])}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+          className="inline-flex items-center gap-1 px-2 py-1 min-h-[44px] rounded border border-border text-[10px] font-bold uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
         >
           <Plus size={12} />
           Gruppo
@@ -124,7 +124,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                   value.map((entry) => (entry.id === group.id ? { ...entry, name: e.target.value } : entry)),
                 )
               }
-              className="px-3 py-2 rounded border border-border text-sm"
+              className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
               placeholder="Nome gruppo (es: Extra, Salse)"
             />
             <input
@@ -138,7 +138,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                   ),
                 )
               }
-              className="px-3 py-2 rounded border border-border text-sm"
+              className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
               placeholder="Min selezioni"
             />
             <input
@@ -152,7 +152,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                   ),
                 )
               }
-              className="px-3 py-2 rounded border border-border text-sm"
+              className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
               placeholder="Max selezioni"
             />
             <div className="flex items-center justify-between gap-2">
@@ -163,14 +163,14 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                     value.map((entry) => (entry.id === group.id ? { ...entry, required: !entry.required } : entry)),
                   )
                 }
-                className="px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+                className="min-h-[44px] px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
               >
                 {group.required ? 'Obbligatorio' : 'Opzionale'}
               </button>
               <button
                 type="button"
                 onClick={() => onChange(value.filter((entry) => entry.id !== group.id))}
-                className="px-2 py-2 rounded border border-danger text-danger"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center px-2 py-2 rounded border border-danger text-danger hover:bg-danger-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                 aria-label="Rimuovi gruppo modificatore"
               >
                 <Trash2 size={14} />
@@ -195,7 +195,8 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                           updateOption(group.id, option.id, { inventoryItemId: first?.id, componentType: 'ingredient', componentId: first?.id, name: first?.name ?? option.name });
                         }
                       }}
-                      className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-info-50 text-info-700 border-info-200' : 'bg-warning-50 text-warning-700 border-warning-200'}`}
+                      className={`min-h-[44px] px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${isIngredientMode ? 'bg-info-50 text-info-700 border-info-200' : 'bg-warning-50 text-warning-700 border-warning-200'}`}
+                      aria-pressed={isIngredientMode}
                     >
                       {componentType === 'prep' ? 'Prep' : componentType === 'bom' ? 'BoM' : 'Ingrediente'}
                     </button>
@@ -207,7 +208,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                         const nextType = e.target.value as 'ingredient' | 'prep' | 'bom';
                         updateOption(group.id, option.id, { componentType: nextType, componentId: undefined, inventoryItemId: undefined });
                       }}
-                      className="px-3 py-2 rounded border border-border text-sm"
+                      className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                     >
                       <option value="ingredient">Ingrediente</option>
                       <option value="prep">Prep</option>
@@ -228,13 +229,13 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                       }
                       min="0.01"
                       step="0.01"
-                      className="px-3 py-2 rounded border border-border text-sm"
+                      className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                       placeholder="Qtà"
                     />
                     <select
                       value={option.unit}
                       onChange={(e) => updateOption(group.id, option.id, { unit: e.target.value })}
-                      className="px-3 py-2 rounded border border-border text-sm"
+                      className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                     >
                       {UNIT_OPTIONS.map((u) => (
                         <option key={u} value={u}>{u}</option>
@@ -247,20 +248,22 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                         updateOption(group.id, option.id, { priceDelta: Number(e.target.value) || 0 })
                       }
                       step="0.5"
-                      className="px-3 py-2 rounded border border-border text-sm"
+                      className="px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                       placeholder="Delta prezzo (€)"
                     />
                     <button
                       type="button"
                       onClick={() => updateOption(group.id, option.id, { isDefault: !option.isDefault })}
-                      className="px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+                      className="min-h-[44px] px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                      aria-pressed={option.isDefault}
                     >
                       {option.isDefault ? 'Default' : 'Non default'}
                     </button>
                     <button
                       type="button"
                       onClick={() => updateOption(group.id, option.id, { isActive: !option.isActive })}
-                      className="px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+                      className="min-h-[44px] px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                      aria-pressed={option.isActive}
                     >
                       {option.isActive ? 'Attiva' : 'Disattiva'}
                     </button>
@@ -275,7 +278,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                           ),
                         )
                       }
-                      className="px-2 py-2 rounded border border-danger text-danger text-[10px] font-bold uppercase tracking-wider"
+                      className="min-h-[44px] px-2 py-2 rounded border border-danger text-danger text-[10px] font-bold uppercase tracking-wider hover:bg-danger-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
                     >
                       Rimuovi
                     </button>
@@ -292,7 +295,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                   ),
                 )
               }
-              className="px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider"
+              className="min-h-[44px] px-2 py-2 rounded border border-border text-[10px] font-bold uppercase tracking-wider focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
             >
               + Opzione
             </button>

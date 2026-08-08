@@ -332,7 +332,9 @@ export default function FoodCostMatrixTab({
                     <td className="p-2 text-center">
                       <button
                         onClick={() => toggleExpanded(item.menuItemId)}
-                        className="p-1 hover:bg-border/20 rounded"
+                        className="min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-border/20 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
+                        aria-label={isExpanded ? `Comprimi dettagli ${item.menuItemName}` : `Espandi dettagli ${item.menuItemName}`}
+                        aria-expanded={isExpanded}
                       >
                         {isExpanded ? (
                           <ChevronDown className="w-4 h-4 text-text-muted" />

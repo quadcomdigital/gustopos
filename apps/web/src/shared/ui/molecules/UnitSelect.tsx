@@ -77,7 +77,7 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
           setIsOpen((prev) => !prev);
           setTimeout(() => inputRef.current?.focus(), 0);
         }}
-        className="w-full min-h-11 px-3 py-2 rounded border border-border bg-white text-left text-sm flex items-center justify-between"
+        className="w-full min-h-11 px-3 py-2 rounded border border-border bg-white text-left text-sm flex items-center justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
       >
         <span className={value ? 'text-secondary' : 'text-text-muted'}>
           {isCustom ? `${value} (custom)` : value || placeholder}
@@ -111,7 +111,7 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
                 }
               }}
               placeholder="Cerca o digita un'unità..."
-              className="w-full text-sm outline-none bg-transparent"
+              className="w-full text-sm outline-none bg-transparent focus-visible:ring-0"
             />
           </div>
           <div className="max-h-56 overflow-y-auto space-y-1">
@@ -121,7 +121,7 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
                 type="button"
                 onClick={() => { onChange(unit.value); setIsOpen(false); setQuery(''); }}
                 className={cn(
-                  'w-full flex items-center justify-between text-left px-2 py-2 rounded text-sm',
+                  'w-full flex items-center justify-between text-left px-2 py-2 rounded text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset',
                   index === highlightedIndex && 'bg-bg',
                 )}
               >
@@ -133,7 +133,7 @@ export default function UnitSelect({ value, onChange, placeholder = 'Unità', cl
               <button
                 type="button"
                 onClick={() => { onChange(query.trim()); setIsOpen(false); setQuery(''); }}
-                className="w-full text-left px-2 py-2 rounded text-sm text-accent hover:bg-bg"
+                className="w-full text-left px-2 py-2 rounded text-sm text-accent hover:bg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
               >
                 Usa "{query.trim()}" come unità personalizzata
               </button>

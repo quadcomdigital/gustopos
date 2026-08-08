@@ -37,7 +37,7 @@ export default function NewProductSelectionModal({
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
               <p className="text-xs font-bold uppercase tracking-widest text-primary">Nuovo prodotto</p>
-              <button onClick={onClose} className="p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted" aria-label="Chiudi">
+              <button onClick={onClose} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1" aria-label="Chiudi">
                 <X size={18} />
               </button>
             </div>

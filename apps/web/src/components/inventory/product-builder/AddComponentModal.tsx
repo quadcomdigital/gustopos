@@ -136,7 +136,7 @@ export default function AddComponentModal({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Cerca ingrediente, prep o BoM..."
-            className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm"
+            className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
             autoFocus
           />
         </div>
@@ -151,7 +151,7 @@ export default function AddComponentModal({
                   type="button"
                   disabled={item.existing}
                   onClick={() => handleItemClick(item.type, item.id, item.name, item.unit)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded border text-left transition-colors ${
+                  className={`w-full min-h-[44px] flex items-center gap-2 px-3 py-2 rounded border text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                     isSelected
                       ? 'border-accent bg-accent/5 ring-1 ring-accent'
                       : item.existing
@@ -201,7 +201,7 @@ export default function AddComponentModal({
                   type="number"
                   value={configQty}
                   onChange={(e) => setConfigQty(e.target.value.replace(/[^0-9.]/g, ''))}
-                  className="w-full px-2 py-1.5 rounded border border-border text-sm"
+                  className="w-full px-2 py-1.5 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                   min="0.001"
                   step="0.001"
                 />

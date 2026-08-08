@@ -110,7 +110,7 @@ export default function EditComponentModal({
               <p className="text-sm font-bold text-primary truncate">{componentName}</p>
               <p className="text-[10px] text-text-muted uppercase tracking-wider">{component.componentType}</p>
             </div>
-            <button type="button" onClick={() => setShowSwap(!showSwap)} className="text-[10px] font-bold uppercase tracking-wider text-accent hover:underline">
+            <button type="button" onClick={() => setShowSwap(!showSwap)} className="min-h-[44px] inline-flex items-center text-[10px] font-bold uppercase tracking-wider text-accent hover:underline px-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1">
               {showSwap ? 'Annulla swap' : 'Scambia'}
             </button>
           </div>
@@ -122,7 +122,7 @@ export default function EditComponentModal({
                 type="number"
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
-                className="w-full px-3 py-2 rounded border border-border text-sm"
+                className="w-full px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                 min="0.001"
                 step="0.001"
               />
@@ -159,7 +159,7 @@ export default function EditComponentModal({
                   value={swapSearch}
                   onChange={(e) => setSwapSearch(e.target.value)}
                   placeholder="Cerca nuovo componente..."
-                  className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm"
+                  className="w-full pl-8 pr-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:border-accent"
                   autoFocus
                 />
               </div>
@@ -169,7 +169,7 @@ export default function EditComponentModal({
                     key={`${c.type}:${c.id}`}
                     type="button"
                     onClick={() => { onSwap(c.type, c.id); onClose(); }}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded border border-border hover:border-accent hover:bg-accent/5 text-left transition-colors"
+                    className="w-full min-h-[44px] flex items-center gap-2 px-3 py-2 rounded border border-border hover:border-accent hover:bg-accent/5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                   >
                     {c.type === 'prep' ? <ChefHat size={14} className="text-type-prep" /> : c.type === 'bom' ? <Layers size={14} className="text-type-bom" /> : <Package size={14} className="text-type-ingredient" />}
                     <span className="text-sm text-primary truncate">{c.name}</span>
