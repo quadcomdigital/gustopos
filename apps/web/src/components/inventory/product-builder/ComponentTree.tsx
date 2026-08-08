@@ -49,10 +49,10 @@ function SubComponentRow({
         : bomItems.find((b) => b.id === subComp.componentId)?.name ?? subComp.componentId;
 
   const subIcon = subComp.componentType === 'prep'
-    ? <ChefHat size={12} className="text-blue-600" />
+    ? <ChefHat size={12} className="text-type-prep" />
     : subComp.componentType === 'bom'
-      ? <Layers size={12} className="text-purple-600" />
-      : <Package size={12} className="text-green-600" />;
+      ? <Layers size={12} className="text-type-bom" />
+      : <Package size={12} className="text-type-ingredient" />;
 
   const subLabel = subComp.componentType === 'prep' ? 'Prep' : subComp.componentType === 'bom' ? 'BoM' : 'Ingred';
 
@@ -106,7 +106,7 @@ function SubComponentRow({
             });
           }
         }}
-        className="p-2 text-text-muted hover:text-danger hover:bg-red-50 rounded sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+        className="p-2 text-text-muted hover:text-danger hover:bg-danger-50 rounded sm:opacity-0 sm:group-hover:opacity-100 transition-all"
         aria-label="Rimuovi componente"
       >
         <Trash2 size={10} />
@@ -153,10 +153,10 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
   const bom = component.componentType === 'bom' ? bomItems.find((b) => b.id === component.componentId) : null;
 
   const icon = component.componentType === 'prep'
-    ? <ChefHat size={14} className="text-blue-600" />
+    ? <ChefHat size={14} className="text-type-prep" />
     : component.componentType === 'bom'
-      ? <Layers size={14} className="text-purple-600" />
-      : <Package size={14} className="text-green-600" />;
+      ? <Layers size={14} className="text-type-bom" />
+      : <Package size={14} className="text-type-ingredient" />;
 
   const typeLabel = component.componentType === 'prep' ? 'Prep' : component.componentType === 'bom' ? 'BoM' : 'Ingrediente';
 
@@ -205,7 +205,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
         <button type="button" onClick={onEdit} className="p-1.5 text-text-muted hover:text-primary hover:bg-bg rounded transition-colors" aria-label="Modifica">
           <Pencil size={13} />
         </button>
-        <button type="button" onClick={onRemove} className="p-1.5 text-text-muted hover:text-danger hover:bg-red-50 rounded transition-colors" aria-label="Rimuovi">
+        <button type="button" onClick={onRemove} className="p-1.5 text-text-muted hover:text-danger hover:bg-danger-50 rounded transition-colors" aria-label="Rimuovi">
           <Trash2 size={13} />
         </button>
       </div>
@@ -226,7 +226,7 @@ function ComponentRow({ component, inventory, bomItems, prepItems, onEdit, onRem
       {/* Expanded BoM detail: show sub-components with inline editing */}
       {expanded && component.componentType === 'bom' && bom && (
         <div className="bg-bg/30 border-t border-border">
-          <div className="ml-5 pl-3 border-l-2 border-purple-200 py-2 pr-3 space-y-1.5">
+          <div className="ml-5 pl-3 border-l-2 border-type-bom-200 py-2 pr-3 space-y-1.5">
             {bom.components.length === 0 ? (
               <p className="text-[10px] text-text-muted italic px-2">Nessun componente in questo BoM</p>
             ) : (

@@ -416,19 +416,19 @@ export default function IngredientsTab({
           onClick={() => setFilterLowStock((prev) => !prev)}
           className={`w-full border-b px-4 py-3 flex items-center gap-2 sm:gap-3 shrink-0 text-left transition-colors ${
             filterLowStock
-              ? 'bg-amber-100 border-amber-400'
-              : 'bg-amber-50 border-amber-300 hover:bg-amber-100'
+              ? 'bg-warning-100 border-warning-400'
+              : 'bg-warning-50 border-warning-300 hover:bg-warning-100'
           }`}
         >
-          <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
-            <AlertTriangle size={18} className="text-amber-600" />
+          <div className="w-8 h-8 bg-warning-100 rounded-lg flex items-center justify-center shrink-0">
+            <AlertTriangle size={18} className="text-warning-600" />
           </div>
           <div>
-            <p className="text-xs sm:text-sm font-bold text-amber-800">
+            <p className="text-xs sm:text-sm font-bold text-warning-800">
               {lowStockCount} sotto soglia
-              {filterLowStock && <span className="ml-2 text-[10px] uppercase tracking-wider text-amber-600">(filtrato)</span>}
+              {filterLowStock && <span className="ml-2 text-[10px] uppercase tracking-wider text-warning-600">(filtrato)</span>}
             </p>
-            <p className="text-[10px] sm:text-xs text-amber-600">
+            <p className="text-[10px] sm:text-xs text-warning-600">
               {filterLowStock ? 'Clicca per mostrare tutti' : 'Clicca per filtrare'}
             </p>
           </div>

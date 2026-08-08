@@ -41,8 +41,8 @@ export default function ConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-[1300] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={title}>
-      <button className="absolute inset-0 bg-black/40" onClick={onCancel} aria-label="Chiudi conferma" />
-      <div className="relative w-full max-w-sm md:max-w-md bg-white border border-border rounded-xl shadow-2xl p-4 space-y-3">
+      <button className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} aria-label="Chiudi conferma" />
+      <div className="relative w-full max-w-sm md:max-w-md bg-white border border-border rounded-xl shadow-2xl p-4 space-y-3 max-h-[95dvh] overflow-y-auto">
         <h3 className="text-sm font-bold text-secondary uppercase tracking-wider">{title}</h3>
         <p className="text-sm text-text-muted">{message}</p>
         <div className="grid grid-cols-2 gap-2">

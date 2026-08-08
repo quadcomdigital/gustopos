@@ -79,10 +79,10 @@ function SubComponentRow({
         : bomItems.find((b) => b.id === subComp.componentId)?.name ?? subComp.componentId;
 
   const subIcon = subComp.componentType === 'prep'
-    ? <ChefHat size={10} className="text-blue-600" />
+    ? <ChefHat size={10} className="text-type-prep" />
     : subComp.componentType === 'bom'
-      ? <Layers size={10} className="text-purple-600" />
-      : <Leaf size={10} className="text-green-600" />;
+      ? <Layers size={10} className="text-type-bom" />
+      : <Leaf size={10} className="text-type-ingredient" />;
 
   const commit = () => {
     const v = Number(localQty);
@@ -132,7 +132,7 @@ function SubComponentRow({
           componentType: subComp.componentType,
           componentId: subComp.componentId,
         })}
-        className="p-1 text-text-muted hover:text-danger hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-all"
+        className="p-1 text-text-muted hover:text-danger hover:bg-danger-50 rounded opacity-0 group-hover:opacity-100 transition-all"
         aria-label="Rimuovi componente"
       >
         <Trash2 size={10} />
@@ -164,10 +164,10 @@ function ComponentRow({
   const isExpanded = isBom && expandedBoms.has(comp.componentId);
   const canExpand = isBom && !!bom && bom.components.length > 0;
   const visual = comp.componentType === 'ingredient'
-    ? { Icon: Leaf, color: 'text-green-600', bg: 'bg-green-50 border-green-200', label: 'Ingrediente' }
+    ? { Icon: Leaf, color: 'text-type-ingredient', bg: 'bg-type-ingredient-50 border-type-ingredient-200', label: 'Ingrediente' }
     : comp.componentType === 'prep'
-      ? { Icon: ChefHat, color: 'text-orange-600', bg: 'bg-orange-50 border-orange-200', label: 'Preparato' }
-      : { Icon: Layers, color: 'text-purple-600', bg: 'bg-purple-50 border-purple-200', label: 'Composto' };
+      ? { Icon: ChefHat, color: 'text-type-prep', bg: 'bg-type-prep-50 border-type-prep-200', label: 'Preparato' }
+      : { Icon: Layers, color: 'text-type-bom', bg: 'bg-type-bom-50 border-type-bom-200', label: 'Composto' };
   const IconComponent = visual.Icon;
 
   const lineCost = showCost ? (
@@ -185,7 +185,7 @@ function ComponentRow({
   ) : undefined;
 
   return (
-    <div className={`flex items-center justify-between rounded border px-3 py-2 ${isInactive ? 'border-amber-300 bg-amber-50' : visual.bg}`}>
+    <div className={`flex items-center justify-between rounded border px-3 py-2 ${isInactive ? 'border-warning-300 bg-warning-50' : visual.bg}`}>
       <div className="flex items-center gap-2 min-w-0">
         {canExpand ? (
           <button type="button" onClick={() => onToggleExpand(comp.componentId)} className="p-0.5 text-text-muted hover:text-primary">
@@ -195,7 +195,7 @@ function ComponentRow({
           <span className="w-4" />
         )}
         {isInactive ? (
-          <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+          <AlertTriangle size={14} className="text-warning-600 shrink-0" />
         ) : (
           <IconComponent size={14} className={`${visual.color} shrink-0`} />
         )}
@@ -522,7 +522,7 @@ export default function RecipeBuilder({
                 const bom = bomItems.find((b) => b.id === comp.componentId);
                 if (!bom || bom.components.length === 0) return null;
                 return (
-                  <div className="ml-8 pl-3 border-l-2 border-purple-200 py-2 space-y-1.5 bg-bg/30 rounded-b-lg border-x border-b border-border">
+                  <div className="ml-8 pl-3 border-l-2 border-type-bom-200 py-2 space-y-1.5 bg-bg/30 rounded-b-lg border-x border-b border-border">
                     {bom.components
                       .map((subComp, subIdx) => (
                         <SubComponentRow

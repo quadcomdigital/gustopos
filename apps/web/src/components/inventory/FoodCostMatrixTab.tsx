@@ -306,12 +306,12 @@ export default function FoodCostMatrixTab({
                     <td className="p-2 text-text text-right">{formatCurrency(item.totalCost)}</td>
                     <td className="p-2 text-text text-right">{formatCurrency(item.currentPrice)}</td>
                     <td className="p-2 text-right">
-                      <span className={item.margin >= 0 ? 'text-green-500' : 'text-red-500'}>
+                      <span className={item.margin >= 0 ? 'text-success-500' : 'text-danger-500'}>
                         {formatCurrency(item.margin)}
                       </span>
                     </td>
                     <td className="p-2 text-right">
-                      <span className={item.marginPercent >= 0.6667 ? 'text-green-500' : 'text-yellow-500'}>
+                      <span className={item.marginPercent >= 0.6667 ? 'text-success-500' : 'text-warning-500'}>
                         {formatMargin(item.marginPercent)}
                       </span>
                     </td>
@@ -322,8 +322,8 @@ export default function FoodCostMatrixTab({
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           item.status === 'ok'
-                            ? 'bg-green-500/20 text-green-500'
-                            : 'bg-yellow-500/20 text-yellow-500'
+                            ? 'bg-success-500/20 text-success-500'
+                            : 'bg-warning-500/20 text-warning-500'
                         }`}
                       >
                         {item.status === 'ok' ? '✓ OK' : '⚠ Da Cambiare'}

@@ -333,7 +333,7 @@ export default function BomTab({
                   <td className="px-6 py-4">
                     <p className="font-bold text-secondary text-sm">{item.name}</p>
                     {inactiveCount > 0 && (
-                      <p className="text-[9px] text-amber-600 font-bold flex items-center gap-1 mt-0.5">
+                      <p className="text-[9px] text-warning-600 font-bold flex items-center gap-1 mt-0.5">
                         <AlertTriangle size={10} />
                         {inactiveCount} componente/i inattivo/i
                       </p>
@@ -627,8 +627,8 @@ export default function BomTab({
                   const ing = comp.componentType === 'ingredient' ? inventory.find((i) => i.id === comp.componentId) : undefined;
                   const isInactive = ing && !ing.isActive;
                   return (
-                    <span key={`${comp.componentId}-${idx}`} className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-medium text-secondary ${isInactive ? 'bg-amber-50 border-amber-300' : 'bg-bg border-border'}`}>
-                      {isInactive && <AlertTriangle size={10} className="text-amber-600" />}
+                    <span key={`${comp.componentId}-${idx}`} className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-medium text-secondary ${isInactive ? 'bg-warning-50 border-warning-300' : 'bg-bg border-border'}`}>
+                      {isInactive && <AlertTriangle size={10} className="text-warning-600" />}
                       <span className="font-bold uppercase text-[9px]">{componentTypeLabel(comp.componentType)}</span>
                       {candidate?.label ?? comp.componentId} · {comp.quantity} {comp.unit}
                       <button onClick={() => removeCreateComponent(idx)} className="ml-1 text-danger font-bold text-xs">✕</button>

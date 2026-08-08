@@ -71,13 +71,13 @@ export default function Drawer({ open, onClose, title, children, width = 'md' }:
             transition={{ type: 'spring', damping: 28, stiffness: 350 }}
             className={cn('relative bg-white w-full h-full shadow-2xl flex flex-col overflow-hidden outline-none', widthClass)}
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <div className="flex items-center justify-between px-4 pt-[calc(0.75rem+env(safe-area-inset-top))] md:pt-3 pb-3 border-b border-border shrink-0">
               <p className="text-xs font-bold uppercase tracking-widest text-primary truncate">{title}</p>
-              <button onClick={onClose} className="p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0" aria-label="Chiudi">
+              <button onClick={onClose} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0" aria-label="Chiudi">
                 <X size={18} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-[calc(1rem+env(safe-area-inset-bottom))]">
               {children}
             </div>
           </motion.div>

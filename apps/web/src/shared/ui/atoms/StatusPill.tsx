@@ -9,10 +9,10 @@ interface StatusPillProps {
 
 const TONE_CLASSNAME: Record<NonNullable<StatusPillProps['tone']>, string> = {
   neutral: 'bg-bg text-secondary border-border',
-  pending: 'bg-amber-100 text-amber-800 border-amber-200',
-  info: 'bg-blue-100 text-blue-800 border-blue-200',
-  success: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  danger: 'bg-red-100 text-red-800 border-red-200',
+  pending: 'bg-warning-100 text-warning-800 border-warning-200',
+  info: 'bg-info-100 text-info-800 border-info-200',
+  success: 'bg-success-100 text-success-800 border-success-200',
+  danger: 'bg-danger-100 text-danger-800 border-danger-200',
 };
 
 const TONE_ICON: Record<NonNullable<StatusPillProps['tone']>, React.ReactNode> = {

@@ -82,10 +82,10 @@ export default function EditComponentModal({
   };
 
   const icon = component?.componentType === 'prep'
-    ? <ChefHat size={16} className="text-blue-600" />
+    ? <ChefHat size={16} className="text-type-prep" />
     : component?.componentType === 'bom'
-      ? <Layers size={16} className="text-purple-600" />
-      : <Package size={16} className="text-green-600" />;
+      ? <Layers size={16} className="text-type-bom" />
+      : <Package size={16} className="text-type-ingredient" />;
 
   return (
     <Modal
@@ -171,7 +171,7 @@ export default function EditComponentModal({
                     onClick={() => { onSwap(c.type, c.id); onClose(); }}
                     className="w-full flex items-center gap-2 px-3 py-2 rounded border border-border hover:border-accent hover:bg-accent/5 text-left transition-colors"
                   >
-                    {c.type === 'prep' ? <ChefHat size={14} className="text-blue-600" /> : c.type === 'bom' ? <Layers size={14} className="text-purple-600" /> : <Package size={14} className="text-green-600" />}
+                    {c.type === 'prep' ? <ChefHat size={14} className="text-type-prep" /> : c.type === 'bom' ? <Layers size={14} className="text-type-bom" /> : <Package size={14} className="text-type-ingredient" />}
                     <span className="text-sm text-primary truncate">{c.name}</span>
                   </button>
                 ))}

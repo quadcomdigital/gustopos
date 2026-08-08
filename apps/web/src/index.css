@@ -13,6 +13,65 @@
   --color-border: #e2e8f0;
   --color-text-main: #2d3748;
   --color-text-muted: #718096;
+
+  /* Success (green) scale */
+  --color-success-50: #f0fdf4;
+  --color-success-100: #dcfce7;
+  --color-success-200: #bbf7d0;
+  --color-success-300: #86efac;
+  --color-success-400: #4ade80;
+  --color-success-500: #22c55e;
+  --color-success-600: #16a34a;
+  --color-success-700: #15803d;
+  --color-success-800: #166534;
+  --color-success-900: #14532d;
+
+  /* Warning (amber) scale */
+  --color-warning-50: #fffbeb;
+  --color-warning-100: #fef3c7;
+  --color-warning-200: #fde68a;
+  --color-warning-300: #fcd34d;
+  --color-warning-400: #fbbf24;
+  --color-warning-500: #f59e0b;
+  --color-warning-600: #d97706;
+  --color-warning-700: #b45309;
+  --color-warning-800: #92400e;
+  --color-warning-900: #78350f;
+
+  /* Danger (red) scale */
+  --color-danger-50: #fef2f2;
+  --color-danger-100: #fee2e2;
+  --color-danger-200: #fecaca;
+  --color-danger-300: #fca5a5;
+  --color-danger-400: #f87171;
+  --color-danger-500: #ef4444;
+  --color-danger-600: #dc2626;
+  --color-danger-700: #b91c1c;
+  --color-danger-800: #991b1b;
+  --color-danger-900: #7f1d1d;
+
+  /* Info (blue) scale */
+  --color-info-50: #eff6ff;
+  --color-info-100: #dbeafe;
+  --color-info-200: #bfdbfe;
+  --color-info-300: #93c5fd;
+  --color-info-400: #60a5fa;
+  --color-info-500: #3b82f6;
+  --color-info-600: #2563eb;
+  --color-info-700: #1d4ed8;
+  --color-info-800: #1e40af;
+  --color-info-900: #1e3a8a;
+
+  /* Component-type colors (ingredient / prep / bom) */
+  --color-type-ingredient: #16a34a;
+  --color-type-ingredient-50: #f0fdf4;
+  --color-type-ingredient-200: #bbf7d0;
+  --color-type-prep: #2563eb;
+  --color-type-prep-50: #eff6ff;
+  --color-type-prep-200: #bfdbfe;
+  --color-type-bom: #7c3aed;
+  --color-type-bom-50: #f5f3ff;
+  --color-type-bom-200: #ddd6fe;
 }
 
 @layer base {
@@ -38,10 +97,10 @@
     @apply px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wide;
   }
   
-  .badge-warning { @apply bg-orange-100 text-orange-800; }
-  .badge-success { @apply bg-green-100 text-green-800; }
-  .badge-danger { @apply bg-red-100 text-red-800; }
-  .badge-info { @apply bg-blue-100 text-blue-800; }
+  .badge-warning { @apply bg-warning-100 text-warning-800; }
+  .badge-success { @apply bg-success-100 text-success-800; }
+  .badge-danger { @apply bg-danger-100 text-danger-800; }
+  .badge-info { @apply bg-info-100 text-info-800; }
 }
 
 /* Dark Mode — system preference */
@@ -57,6 +116,61 @@
     --color-border: #2d3748;
     --color-text-main: #e2e8f0;
     --color-text-muted: #a0aec0;
+
+    /* Status scales under dark mode */
+    --color-success-50: #0b2417;
+    --color-success-100: #123528;
+    --color-success-200: #1d4736;
+    --color-success-300: #2a6349;
+    --color-success-400: #38825c;
+    --color-success-500: #46a06f;
+    --color-success-600: #5cb885;
+    --color-success-700: #7fd1a3;
+    --color-success-800: #a5e3c0;
+    --color-success-900: #c9f0db;
+
+    --color-warning-50: #2b1d0a;
+    --color-warning-100: #3a2a10;
+    --color-warning-200: #4e3916;
+    --color-warning-300: #6b4e1d;
+    --color-warning-400: #8a6826;
+    --color-warning-500: #ab8430;
+    --color-warning-600: #d0a23f;
+    --color-warning-700: #e8bc66;
+    --color-warning-800: #f5d59a;
+    --color-warning-900: #fbe9c5;
+
+    --color-danger-50: #2b1012;
+    --color-danger-100: #3d1417;
+    --color-danger-200: #521b1f;
+    --color-danger-300: #6e2428;
+    --color-danger-400: #8c2e32;
+    --color-danger-500: #ab3a3f;
+    --color-danger-600: #cf4b51;
+    --color-danger-700: #e27478;
+    --color-danger-800: #f0a3a6;
+    --color-danger-900: #f8d0d1;
+
+    --color-info-50: #0e1c2e;
+    --color-info-100: #16283f;
+    --color-info-200: #1f3752;
+    --color-info-300: #2a4a6e;
+    --color-info-400: #3a618c;
+    --color-info-500: #517fab;
+    --color-info-600: #6f9dc9;
+    --color-info-700: #94bbe0;
+    --color-info-800: #bcd7ee;
+    --color-info-900: #dbeafa;
+
+    --color-type-ingredient: #4ade80;
+    --color-type-ingredient-50: #0f2d1d;
+    --color-type-ingredient-200: #1f4a33;
+    --color-type-prep: #60a5fa;
+    --color-type-prep-50: #12233d;
+    --color-type-prep-200: #233b5a;
+    --color-type-bom: #a78bfa;
+    --color-type-bom-50: #241c3d;
+    --color-type-bom-200: #3b3260;
   }
 }
 

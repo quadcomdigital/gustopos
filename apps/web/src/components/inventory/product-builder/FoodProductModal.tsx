@@ -497,7 +497,7 @@ export default function FoodProductModal({
           )}
 
           {marginWarning && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded border border-amber-300 bg-amber-50 text-amber-800 text-xs">
+            <div className="flex items-center gap-2 px-3 py-2 rounded border border-warning-300 bg-warning-50 text-warning-800 text-xs">
               <AlertTriangle size={14} className="shrink-0" />
               {marginWarning}
             </div>

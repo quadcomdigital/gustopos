@@ -29,29 +29,29 @@ export default function LowStockAlert({ suggestions, onOpenPurchasing }: LowStoc
   }, 0);
 
   return (
-    <div className="rounded-xl border border-amber-300 bg-amber-50 overflow-hidden">
+    <div className="rounded-xl border border-warning-300 bg-warning-50 overflow-hidden">
       <button
         onClick={() => setExpanded((p) => !p)}
-        className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-amber-100/50 transition-colors"
+        className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-warning-100/50 transition-colors"
       >
-        <div className="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center shrink-0">
-          <AlertTriangle size={18} className="text-amber-600" />
+        <div className="w-8 h-8 bg-warning-100 rounded-lg flex items-center justify-center shrink-0">
+          <AlertTriangle size={18} className="text-warning-600" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-amber-800">
+          <p className="text-sm font-bold text-warning-800">
             {suggestions.length} {suggestions.length === 1 ? 'articolo sotto soglia' : 'articoli sotto soglia'}
           </p>
-          <p className="text-xs text-amber-600">
+          <p className="text-xs text-warning-600">
             {expanded ? 'Nascondi dettagli' : 'Clicca per vedere i dettagli'}
           </p>
         </div>
-        {expanded ? <ChevronDown size={16} className="text-amber-600" /> : <ChevronRight size={16} className="text-amber-600" />}
+        {expanded ? <ChevronDown size={16} className="text-warning-600" /> : <ChevronRight size={16} className="text-warning-600" />}
       </button>
 
       {expanded && (
-        <div className="px-4 pb-4 space-y-2 border-t border-amber-200">
+        <div className="px-4 pb-4 space-y-2 border-t border-warning-200">
           {suggestions.map((s) => (
-            <div key={s.ingredientId} className="flex items-center justify-between py-2 border-b border-amber-200/50 last:border-0">
+            <div key={s.ingredientId} className="flex items-center justify-between py-2 border-b border-warning-200/50 last:border-0">
               <div className="min-w-0">
                 <p className="text-sm font-bold text-secondary truncate">
                   {s.name}
@@ -73,7 +73,7 @@ export default function LowStockAlert({ suggestions, onOpenPurchasing }: LowStoc
           ))}
 
           {totalEstimatedCost > 0 && (
-            <div className="flex items-center justify-between pt-2 border-t border-amber-200">
+            <div className="flex items-center justify-between pt-2 border-t border-warning-200">
               <span className="text-xs font-bold text-secondary">Totale stimato</span>
               <span className="text-sm font-bold text-primary">€{totalEstimatedCost.toFixed(2)}</span>
             </div>

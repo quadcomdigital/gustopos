@@ -199,7 +199,7 @@ export default function InventoryTabs({
   const lowStockCount = simpleCatalogMode ? 0 : inventory.filter((i) => i.quantity <= i.minThreshold && i.isActive && i.isStockTracked).length;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full w-full max-w-7xl mx-auto flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between mb-4 sm:mb-6">
         <div>
@@ -224,7 +224,7 @@ export default function InventoryTabs({
       <div className="mb-4 sm:mb-6 space-y-3">
         <div className={`grid gap-3 sm:gap-4 ${simpleCatalogMode ? 'grid-cols-2 md:grid-cols-3' : 'grid-cols-2 md:grid-cols-4'}`}>
           <div className="panel-card">
-            <div className="w-8 h-8 sm:w-10 sm:h-10 bg-blue-50 text-accent rounded-lg flex items-center justify-center mb-2 sm:mb-3">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 bg-info-50 text-accent rounded-lg flex items-center justify-center mb-2 sm:mb-3">
               <Package size={18} />
             </div>
             <p className="text-[9px] sm:text-[10px] font-bold text-text-muted uppercase tracking-widest">
@@ -243,7 +243,7 @@ export default function InventoryTabs({
           )}
           {!simpleCatalogMode && (
             <div className="panel-card">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-orange-50 text-warning rounded-lg flex items-center justify-center mb-2 sm:mb-3">
+              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-warning-50 text-warning rounded-lg flex items-center justify-center mb-2 sm:mb-3">
                 <ChefHat size={18} />
               </div>
               <p className="text-[9px] sm:text-[10px] font-bold text-text-muted uppercase tracking-widest">Preparazioni</p>
@@ -251,7 +251,7 @@ export default function InventoryTabs({
             </div>
           )}
           <div className="panel-card">
-            <div className="w-8 h-8 sm:w-10 sm:h-10 bg-green-50 text-success rounded-lg flex items-center justify-center mb-2 sm:mb-3">
+            <div className="w-8 h-8 sm:w-10 sm:h-10 bg-success-50 text-success rounded-lg flex items-center justify-center mb-2 sm:mb-3">
               <span className="text-success font-bold text-lg">€</span>
             </div>
             <p className="text-[9px] sm:text-[10px] font-bold text-text-muted uppercase tracking-widest">

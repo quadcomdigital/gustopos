@@ -161,11 +161,11 @@ export default function AddComponentModal({
                 >
                   {isSelected && <Check size={14} className="text-accent shrink-0" />}
                   {item.type === 'prep' ? (
-                    <ChefHat size={14} className="text-blue-600 shrink-0" />
+                    <ChefHat size={14} className="text-type-prep shrink-0" />
                   ) : item.type === 'bom' ? (
-                    <Layers size={14} className="text-purple-600 shrink-0" />
+                    <Layers size={14} className="text-type-bom shrink-0" />
                   ) : (
-                    <Package size={14} className="text-green-600 shrink-0" />
+                    <Package size={14} className="text-type-ingredient shrink-0" />
                   )}
                   <span className="text-sm font-medium text-primary truncate flex-1">{item.name}</span>
                   <span className="text-[9px] font-bold uppercase tracking-wider text-text-muted px-1.5 py-0.5 rounded bg-bg shrink-0">
@@ -191,7 +191,7 @@ export default function AddComponentModal({
         {selectedItem && (
           <div className="border border-accent/40 bg-accent/5 rounded-lg p-3 space-y-2">
             <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted flex items-center gap-1.5">
-              <Package size={12} className={selectedItem.type === 'prep' ? 'text-blue-600' : selectedItem.type === 'bom' ? 'text-purple-600' : 'text-green-600'} />
+              <Package size={12} className={selectedItem.type === 'prep' ? 'text-type-prep' : selectedItem.type === 'bom' ? 'text-type-bom' : 'text-type-ingredient'} />
               {selectedItem.name}
             </p>
             <div className="flex flex-col sm:flex-row sm:items-end gap-2">

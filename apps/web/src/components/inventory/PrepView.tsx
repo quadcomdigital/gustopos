@@ -508,7 +508,7 @@ export default function PrepView({ inventory, bomItems, prepItems, onRefresh, in
                             </Button>
                           </div>
                           {showCheck && (
-                            <p className={`text-[10px] mt-1 ${hasStock ? 'text-green-600' : 'text-red-600'}`}>
+                            <p className={`text-[10px] mt-1 ${hasStock ? 'text-success-600' : 'text-danger-600'}`}>
                               {hasStock ? '✓' : '✗'} {needed.toFixed(3)} {group.unit} necessari
                             </p>
                           )}

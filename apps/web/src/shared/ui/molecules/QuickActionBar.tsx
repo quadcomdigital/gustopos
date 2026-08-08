@@ -35,7 +35,7 @@ export default function QuickActionBar({ actions, className }: QuickActionBarPro
               action.tone === 'primary'
                 ? 'bg-primary text-white border-primary'
                 : action.tone === 'danger'
-                  ? 'bg-red-50 text-red-700 border-red-300'
+                  ? 'bg-danger-50 text-danger-700 border-danger-300'
                   : 'bg-white text-secondary border-border',
             )}
           >

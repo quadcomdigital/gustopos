@@ -87,9 +87,9 @@ export default function FoodCostImportModal({
 
         {/* Error */}
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5" />
-            <span className="text-sm text-red-500">{error}</span>
+          <div className="mb-4 p-3 bg-danger-500/10 border border-danger-500/20 rounded-lg flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-danger-500 mt-0.5" />
+            <span className="text-sm text-danger-500">{error}</span>
           </div>
         )}
 
@@ -100,7 +100,7 @@ export default function FoodCostImportModal({
             {importResult.costMatches.length > 0 && (
               <div className="p-3 bg-bg border border-border/50 rounded-lg">
                 <div className="text-xs font-medium text-text mb-1">
-                  <Check className="w-3.5 h-3.5 inline text-green-500 mr-1" />
+                  <Check className="w-3.5 h-3.5 inline text-success-500 mr-1" />
                   {importResult.costsUpdated} costi ingredienti aggiornati
                 </div>
                 <div className="max-h-40 overflow-y-auto text-xs">
@@ -130,10 +130,10 @@ export default function FoodCostImportModal({
             {importResult.recipesImported > 0 && (
               <div className="p-3 bg-bg border border-border/50 rounded-lg">
                 <div className="text-xs font-medium text-text">
-                  <Check className="w-3.5 h-3.5 inline text-green-500 mr-1" />
+                  <Check className="w-3.5 h-3.5 inline text-success-500 mr-1" />
                   {importResult.recipesImported} ricette importate
                   {importResult.recipesSkipped > 0 && (
-                    <span className="text-yellow-500 ml-2">({importResult.recipesSkipped} saltate)</span>
+                    <span className="text-warning-500 ml-2">({importResult.recipesSkipped} saltate)</span>
                   )}
                 </div>
               </div>
@@ -141,12 +141,12 @@ export default function FoodCostImportModal({
 
             {/* Errors */}
             {importResult.errors.length > 0 && (
-              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg max-h-40 overflow-y-auto">
+              <div className="p-3 bg-danger-500/10 border border-danger-500/20 rounded-lg max-h-40 overflow-y-auto">
                 {importResult.errors.slice(0, 30).map((err, i) => (
-                  <div key={i} className="text-xs text-red-500">{err}</div>
+                  <div key={i} className="text-xs text-danger-500">{err}</div>
                 ))}
                 {importResult.errors.length > 30 && (
-                  <div className="text-xs text-red-500 mt-1">...e altri {importResult.errors.length - 30}</div>
+                  <div className="text-xs text-danger-500 mt-1">...e altri {importResult.errors.length - 30}</div>
                 )}
               </div>
             )}

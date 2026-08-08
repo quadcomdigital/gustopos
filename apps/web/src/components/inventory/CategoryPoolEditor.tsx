@@ -11,8 +11,8 @@ interface CategoryPoolEditorProps {
   inventory: Ingredient[];
   prepItems?: PrepItem[];
   bomItems?: BomItem[];
-  onCreatePool: (payload: { categoryIds: string[]; name: string; options: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
-  onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
+  onCreatePool: (payload: { categoryIds: string[]; name: string; options: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
+  onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
   onDeletePool: (id: string) => Promise<void>;
 }
 
@@ -438,7 +438,7 @@ export default function CategoryPoolEditor({
                         <span key={opt.id} className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-bg border border-border">
                           {opt.name ?? invItem?.name ?? opt.inventoryItemId}
                           {opt.priceDelta !== 0 && (
-                            <span className={opt.priceDelta > 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                            <span className={opt.priceDelta > 0 ? 'text-success-600' : 'text-danger-600'}>
                               {' '}{opt.priceDelta > 0 ? '+' : ''}€{opt.priceDelta.toFixed(2)}
                             </span>
                           )}

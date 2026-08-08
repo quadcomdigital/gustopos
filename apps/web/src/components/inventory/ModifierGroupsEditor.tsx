@@ -80,7 +80,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                     <span key={opt.id} className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-bg border border-border/50 text-text-muted">
                       {opt.name ?? invItem?.name ?? opt.inventoryItemId}
                       {opt.priceDelta !== 0 && (
-                        <span className={opt.priceDelta > 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                        <span className={opt.priceDelta > 0 ? 'text-success-600' : 'text-danger-600'}>
                           {' '}{opt.priceDelta > 0 ? '+' : ''}€{opt.priceDelta.toFixed(2)}
                         </span>
                       )}
@@ -195,7 +195,7 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                           updateOption(group.id, option.id, { inventoryItemId: first?.id, componentType: 'ingredient', componentId: first?.id, name: first?.name ?? option.name });
                         }
                       }}
-                      className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}
+                      className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border ${isIngredientMode ? 'bg-info-50 text-info-700 border-info-200' : 'bg-warning-50 text-warning-700 border-warning-200'}`}
                     >
                       {componentType === 'prep' ? 'Prep' : componentType === 'bom' ? 'BoM' : 'Ingrediente'}
                     </button>

@@ -95,14 +95,15 @@ export default function Modal({ open, onClose, title, children, footer, size = '
   return (
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-[1200] flex items-end sm:items-center justify-center" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="fixed inset-0 z-[1200] overflow-y-auto" role="dialog" aria-modal="true" aria-label={title}>
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm"
             onClick={handleBackdropClick}
           />
+          <div className="min-h-full flex items-end sm:items-center justify-center py-4 sm:py-6">
           <motion.div
             ref={dialogRef}
             tabIndex={-1}
@@ -110,13 +111,13 @@ export default function Modal({ open, onClose, title, children, footer, size = '
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 60 }}
             transition={{ type: 'spring', damping: 28, stiffness: 350 }}
-            className={cn('relative bg-white w-full rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[88vh] sm:max-h-[85vh] flex flex-col overflow-hidden outline-none', widthClass)}
+            className={cn('relative bg-white w-full rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[95dvh] flex flex-col overflow-hidden outline-none', widthClass)}
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
               <div className="flex items-center gap-2 min-w-0">
                 <p className="text-xs font-bold uppercase tracking-widest text-primary truncate">{title}</p>
                 {dirty && (
-                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 border border-amber-300">
+                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-warning-100 text-warning-700 border border-warning-300">
                     Modificato
                   </span>
                 )}
@@ -144,8 +145,8 @@ export default function Modal({ open, onClose, title, children, footer, size = '
                   className="absolute inset-0 z-10 flex items-center justify-center bg-white/95 backdrop-blur-sm rounded-t-2xl sm:rounded-2xl"
                 >
                   <div className="flex flex-col items-center gap-4 px-6 py-8 text-center max-w-xs">
-                    <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center">
-                      <AlertTriangle size={24} className="text-amber-600" />
+                    <div className="w-12 h-12 rounded-full bg-warning-100 flex items-center justify-center">
+                      <AlertTriangle size={24} className="text-warning-600" />
                     </div>
                     <div>
                       <p className="text-sm font-bold text-primary">Modifiche non salvate</p>
@@ -170,6 +171,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
               )}
             </AnimatePresence>
           </motion.div>
+          </div>
         </div>
       )}
     </AnimatePresence>
