@@ -3,6 +3,7 @@ import {
   appDataSchema,
   ingredientSchema,
   orderSchema,
+  reservationSchema,
   tableSchema,
   uiSettingsSchema,
   printBridgeSchema,
@@ -14,6 +15,7 @@ import {
   type AppData,
   type Ingredient,
   type Order,
+  type Reservation,
   type PrintBridge,
   type PrintJob,
   type Table,
@@ -24,6 +26,7 @@ export const socketEvents = {
   orderNew: "order:new",
   orderUpdate: "order:update",
   ordersUpdate: "orders:update",
+  reservationUpdate: "reservation:update",
   inventoryUpdate: "inventory:update",
   tablesUpdate: "tables:update",
   dataUpdate: "data:update",
@@ -70,6 +73,7 @@ export const socketEventPayloadSchema = {
   [socketEvents.orderNew]: orderSchema,
   [socketEvents.orderUpdate]: orderSchema,
   [socketEvents.ordersUpdate]: ordersUpdatePatchSchema,
+  [socketEvents.reservationUpdate]: reservationSchema,
   [socketEvents.inventoryUpdate]: z.array(ingredientSchema),
   [socketEvents.tablesUpdate]: z.array(tableSchema),
   [socketEvents.dataUpdate]: appDataSchema,
@@ -132,4 +136,4 @@ export function onSocketEvent<E extends SocketEventName>(
 
 // Re-exported payload types for convenience so consumers do not need to
 // import from the contract modules directly when typing socket handlers.
-export type { AppData, Ingredient, Order, PrintBridge, PrintJob, Table, UiSettings };
+export type { AppData, Ingredient, Order, Reservation, PrintBridge, PrintJob, Table, UiSettings };

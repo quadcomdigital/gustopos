@@ -321,6 +321,19 @@ export class AppController {
     }
   }
 
+  /**
+   * Post-commit realtime sync for reservations. The reservation mutation has
+   * already committed when this is called; a socket/pubsub failure must not
+   * turn a successful mutation into a 500 response.
+   */
+  private async emitReservationUpdateSafely(reservation: Reservation, tenantId?: string): Promise<void> {
+    try {
+      await this.realtimeGateway.emit(socketEvents.reservationUpdate, reservation, tenantId);
+    } catch (err) {
+      console.warn("[realtime] reservation:update emit failed, skipping:", err);
+    }
+  }
+
   private async resolveConsumerUserId(request: AuthenticatedRequest, tenantId: string): Promise<string | null> {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
@@ -531,7 +544,8 @@ export class AppController {
   @RequiresModule("reservations")
   createReservation(@Body() payload: ReservationCreateRequest): Promise<Reservation> {
     const parsed = reservationCreateRequestSchema.parse(payload);
-    return this.tablesRepo.createReservation(parsed).then((reservation) => {
+    return this.tablesRepo.createReservation(parsed).then(async (reservation) => {
+      await this.emitReservationUpdateSafely(reservation);
       this.auditLogService.log("reservation.created", {
         targetId: reservation.id,
         details: { status: reservation.status, reservedFor: reservation.reservedFor, partySize: reservation.partySize },
@@ -550,6 +564,7 @@ export class AppController {
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
+    await this.emitReservationUpdateSafely(updated);
     this.auditLogService.log("reservation.updated", {
       targetId: id,
       details: { status: updated.status, payload: parsed },
@@ -566,6 +581,7 @@ export class AppController {
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
+    await this.emitReservationUpdateSafely(updated);
     this.auditLogService.log("reservation.confirmed", {
       targetId: id,
       details: { status: updated.status },
@@ -582,6 +598,7 @@ export class AppController {
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
+    await this.emitReservationUpdateSafely(updated);
     this.auditLogService.log("reservation.cancelled", {
       targetId: id,
       details: { status: updated.status },
@@ -605,6 +622,7 @@ export class AppController {
     if (!updated) {
       throw new NotFoundException("Reservation not found");
     }
+    await this.emitReservationUpdateSafely(updated);
     this.auditLogService.log("reservation.no_show", {
       targetId: id,
       details: { status: updated.status, reason: parsed.reason },
@@ -2511,7 +2529,9 @@ export class AppController {
     });
 
     try {
-      return await this.tablesRepo.createReservation(parsed);
+      const reservation = await this.tablesRepo.createReservation(parsed);
+      await this.emitReservationUpdateSafely(reservation, tenant.id);
+      return reservation;
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Reservation create failed");
     }

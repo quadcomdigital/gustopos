@@ -326,6 +326,29 @@ async function refreshCurrentReservations(get: () => AppState): Promise<void> {
   await state.refreshReservations(state.reservationsQuery ?? { limit: 200 }, true);
 }
 
+function reservationMatchesQuery(reservation: Reservation, query: ReservationsQuery): boolean {
+  const reservedFor = new Date(reservation.reservedFor).getTime();
+  const from = query.from ? new Date(query.from).getTime() : null;
+  const to = query.to ? new Date(query.to).getTime() : null;
+  return (query.status === undefined || reservation.status === query.status)
+    && (from === null || reservedFor >= from)
+    && (to === null || reservedFor <= to);
+}
+
+function upsertReservationForQuery(
+  existing: Reservation[],
+  incoming: Reservation,
+  query: ReservationsQuery,
+): Reservation[] {
+  const withoutIncoming = existing.filter((reservation) => reservation.id !== incoming.id);
+  if (!reservationMatchesQuery(incoming, query)) {
+    return withoutIncoming;
+  }
+  return [...withoutIncoming, incoming]
+    .sort((left, right) => new Date(right.reservedFor).getTime() - new Date(left.reservedFor).getTime())
+    .slice(0, query.limit ?? 200);
+}
+
 function invalidateDeliveryCache(): Pick<AppState, 'deliveryOrders' | 'deliveryOrdersQuery' | 'deliveryOrdersQueryKey' | 'deliveryOrdersFetchedAt'> {
   deliveryRequestSequence += 1;
   deliveryInFlight.clear();
@@ -459,6 +482,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   socket.off(socketEvents.orderNew);
   socket.off(socketEvents.orderUpdate);
   socket.off(socketEvents.ordersUpdate);
+  socket.off(socketEvents.reservationUpdate);
   socket.off(socketEvents.inventoryUpdate);
   socket.off(socketEvents.tablesUpdate);
   socket.off(socketEvents.dataUpdate);
@@ -553,6 +577,21 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
         };
       }
       return state;
+    });
+  });
+
+  onSocketEvent(socket, socketEvents.reservationUpdate, (incoming: Reservation) => {
+    if (!hasModuleEnabled(get(), 'reservations')) {
+      return;
+    }
+    set((state: AppState) => {
+      if (!state.reservationsQuery) {
+        return state;
+      }
+      return {
+        reservations: upsertReservationForQuery(state.reservations, incoming, state.reservationsQuery),
+        reservationsFetchedAt: Date.now(),
+      };
     });
   });
 

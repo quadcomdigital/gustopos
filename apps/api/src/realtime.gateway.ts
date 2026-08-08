@@ -17,6 +17,7 @@ const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
   "order:new": ["kitchen"],
   "order:update": ["kitchen"],
   "orders:update": ["kitchen"],
+  "reservation:update": ["reservations"],
   "inventory:update": ["inventory"],
   "tables:update": ["kitchen"],
   "settings:update": [],
