@@ -130,6 +130,7 @@ import {
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   uiSettingsSchema,
+  courseRoundsConfigSchema,
   printLogoUploadResponseSchema,
   prepItemSchema,
   prepItemCreateRequestSchema,
@@ -277,6 +278,7 @@ import {
   type VoidOrderRequest,
   type VoidOrderResponse,
   type UiSettings,
+  type CourseRoundsConfig,
   type PrintLogoUploadResponse,
   type FiscalPrinterConfig,
   type FiscalPrinterConfigUpdateRequest,
@@ -1042,6 +1044,21 @@ export async function fetchOrderHistory(filters: OrderHistoryFilters = {}): Prom
 export async function fetchUiSettings(): Promise<UiSettings> {
   const response = await authorizedFetch(`${API_URL}/api/settings`);
   return readJson(response, uiSettingsSchema);
+}
+
+export type CourseRoundsConfigResponse = {
+  config: CourseRoundsConfig;
+  moduleEnabled: boolean;
+};
+
+const courseRoundsConfigResponseSchema = z.object({
+  config: courseRoundsConfigSchema,
+  moduleEnabled: z.boolean(),
+});
+
+export async function fetchCourseRoundsConfig(): Promise<CourseRoundsConfigResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/course-rounds/config`);
+  return readJson(response, courseRoundsConfigResponseSchema);
 }
 
 export async function updateUiSettings(payload: UpdateUiSettingsRequest): Promise<UiSettings> {

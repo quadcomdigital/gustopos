@@ -573,12 +573,13 @@ export class AppRepository {
   private buildEscPosPayload(params: {
     order: Order;
     area: PrintArea;
-    items: Array<{ name: string; quantity: number; price: number; notes: string; modifiers: string[]; modifierOptionIds: string[]; overrides: string[] }>;
+    items: Array<{ name: string; quantity: number; price: number; notes: string; modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; round?: number | null }>;
     kitchenSummary: Record<string, number> | null;
     settings: UiSettings;
     priceDeltaByOptionId: Map<string, number>;
+    roundLabels?: string[];
   }): string {
-    const { order, area, items, kitchenSummary, settings, priceDeltaByOptionId } = params;
+    const { order, area, items, kitchenSummary, settings, priceDeltaByOptionId, roundLabels = [] } = params;
     const showPrice = area === "cashier";
     const ep = new EscPosBuilder();
 
@@ -611,6 +612,12 @@ export class AppRepository {
     }
     ep.line();
 
+    const hasRoundPresentation = area !== "cashier" && items.some((item) => item.round !== undefined && item.round !== null);
+    const printItems = hasRoundPresentation
+      ? [...items].sort((left, right) => (left.round ?? Number.MAX_SAFE_INTEGER) - (right.round ?? Number.MAX_SAFE_INTEGER))
+      : items;
+
+    let printedRound: number | null | undefined = undefined;
     if (kitchenSummary && area === "kitchen" && Object.keys(kitchenSummary).length > 0) {
       const sep = "-".repeat(RECEIPT_WIDTH);
       ep.bold(true).line(sep);
@@ -623,7 +630,14 @@ export class AppRepository {
       ep.bold(false).line();
     }
 
-    for (const item of items) {
+    for (const item of printItems) {
+      if (hasRoundPresentation && item.round !== printedRound) {
+        printedRound = item.round ?? null;
+        const sectionLabel = item.round === null || item.round === undefined
+          ? "SENZA PORTATA"
+          : roundLabels[item.round] ?? `PORTATA ${item.round + 1}`;
+        ep.bold(true).align("center").line(`--- ${sectionLabel} ---`).align("left").bold(false);
+      }
       const label = `${item.quantity}x ${item.name}`;
       if (showPrice) {
         const priceStr = `EUR ${(item.price * item.quantity).toFixed(2)}`;
@@ -765,10 +779,22 @@ export class AppRepository {
       }
     }
 
+    const roundsConfigRows = await db
+      .select({ config: tenantModuleConfigs.config })
+      .from(tenantModuleConfigs)
+      .where(and(eq(tenantModuleConfigs.tenantId, tenantId), eq(tenantModuleConfigs.moduleKey, "course_rounds")))
+      .limit(1);
+    const enabledModules = await this.getEnabledModulesRows(tenantId);
+    const roundsConfig = courseRoundsConfigSchema.parse(roundsConfigRows[0] ? JSON.parse(roundsConfigRows[0].config) : {});
+    const roundsPresentationEnabled = order.orderType === "dine_in"
+      && enabledModules.includes("course_rounds")
+      && roundsConfig.enabled
+      && order.items.some((item) => item.round !== undefined && item.round !== null);
+
     const areaByMenuId = await this.resolvePrintAreasForMenuIds(menuIds);
     const itemsByArea = new Map<PrintArea, Array<{
       name: string; quantity: number; price: number; notes: string;
-      modifiers: string[]; modifierOptionIds: string[]; overrides: string[];
+      modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; round?: number | null;
     }>>();
 
     for (const item of order.items) {
@@ -796,6 +822,7 @@ export class AppRepository {
         modifiers: modStrings,
         modifierOptionIds: modOptionIds,
         overrides: ovrStrings,
+        ...(roundsPresentationEnabled ? { round: item.round ?? null } : {}),
       };
 
       for (const area of areas) {
@@ -826,6 +853,7 @@ export class AppRepository {
           kitchenSummary: null,
           settings,
           priceDeltaByOptionId,
+          roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
         }),
         error: null,
         createdAt: now,

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, ArrowDownUp } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../store/app-store';
 import { trackUxMetric } from '../shared/ux/metrics';
@@ -12,6 +12,7 @@ import { CheckoutModal } from './checkout';
 import { useCheckoutStore } from '../store/checkout-store';
 import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
 import Modal from '../shared/ui/molecules/Modal';
+import RoundReorderDialog from './RoundReorderDialog';
 
 interface POSViewProps {
   data: AppData;
@@ -86,6 +87,7 @@ export default function POSView({
   // the secondary modifier modal is open, including for a not-yet-carted item.
   type ModifierDraft = {
     quantity: number;
+    round?: number | null;
     notes: string;
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
@@ -95,6 +97,10 @@ export default function POSView({
   const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
   const [modifierDraft, setModifierDraft] = useState<ModifierDraft | null>(null);
+  const [showRoundReorder, setShowRoundReorder] = useState(false);
+  const courseRoundsConfig = useAppStore((s) => s.courseRoundsConfig);
+  const courseRoundsModuleEnabled = useAppStore((s) => s.courseRoundsModuleEnabled);
+  const roundsActive = courseRoundsModuleEnabled && courseRoundsConfig.enabled && orderMode === 'dine_in';
 
   // Sync table from external navigation (e.g. tables view → POS)
   React.useEffect(() => {
@@ -231,6 +237,7 @@ export default function POSView({
     selectedModifiers: Array<{ groupId: string; optionId: string }>,
     modifierPriceDelta: number = 0,
     customPrice?: number,
+    round?: number | null,
   ) => {
     if (modalItem?.editCartItem) {
       updatePosCartItem(modalItem.editCartItem.cartItemId, {
@@ -239,6 +246,7 @@ export default function POSView({
         ingredientOverrides,
         selectedModifiers,
         modifierPriceDelta,
+        ...(roundsActive ? { round: round ?? null } : { round: undefined }),
         ...(customPrice !== undefined ? { basePrice: customPrice } : {}),
       });
     } else {
@@ -251,6 +259,7 @@ export default function POSView({
         ingredientOverrides,
         selectedModifiers,
         modifierPriceDelta,
+        ...(roundsActive ? { round: round ?? null } : {}),
       });
     }
     setModalItem(null);
@@ -266,6 +275,7 @@ export default function POSView({
     if (draft?.cartItemId) {
       updatePosCartItem(draft.cartItemId, {
         ...(draft ? { quantity: draft.quantity, notes: draft.notes } : {}),
+        ...(roundsActive ? { round: draft?.round ?? null } : { round: undefined }),
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
         modifierPriceDelta: payload.modifierPriceDelta,
@@ -277,6 +287,7 @@ export default function POSView({
         basePrice: modifierModalItem.price,
         quantity: draft?.quantity ?? 1,
         notes: draft?.notes ?? '',
+        ...(roundsActive ? { round: draft?.round ?? null } : {}),
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
         modifierPriceDelta: payload.modifierPriceDelta,
@@ -336,12 +347,12 @@ export default function POSView({
               customerPhone: takeawayCustomerPhone.trim() || undefined,
               pickupEta: pickupEta ? new Date(pickupEta).toISOString() : undefined,
             }
-          : {}),
-        items: posCart.map((ci) => ({
+          : {}),          items: posCart.map((ci) => ({
           id: ci.menuItemId,
           name: ci.name,
           price: ci.basePrice + ci.modifierPriceDelta,
           quantity: ci.quantity,
+          ...(roundsActive && ci.round !== undefined ? { round: ci.round } : {}),
           notes: ci.notes || undefined,
           skipKitchenPrint: skipKitchenById.has(ci.cartItemId) || undefined,
           ingredientOverrides: ci.ingredientOverrides.length > 0 ? ci.ingredientOverrides : undefined,
@@ -662,13 +673,26 @@ export default function POSView({
         )}
       >
         <div className="px-4 py-3 border-b border-border bg-bg/30">
-          <div className="flex items-center justify-between">
-            <h2 className="text-[10px] sm:text-xs font-bold text-primary uppercase tracking-widest">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-[10px] sm:text-xs font-bold text-primary uppercase tracking-widest truncate">
               {orderMode === 'dine_in' ? `Tavolo ${posTableNumber}` : orderMode === 'takeaway' ? 'Asporto' : 'Delivery'}
             </h2>
-            <div className="flex items-center gap-1 text-[9px] text-text-muted">
-              <User size={10} />
-              <span>{currentStaffName}</span>
+            <div className="flex items-center gap-2 shrink-0">
+              {roundsActive && posCart.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowRoundReorder(true)}
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-accent hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  aria-label="Imposta ordine delle portate"
+                  title="Imposta ordine delle portate"
+                >
+                  <ArrowDownUp size={17} />
+                </button>
+              )}
+              <div className="flex items-center gap-1 text-[9px] text-text-muted">
+                <User size={10} />
+                <span>{currentStaffName}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -770,6 +794,11 @@ export default function POSView({
                         className="flex-1 text-left min-w-0 active:opacity-70 transition-opacity"
                       >
                         <span className="font-bold text-secondary text-xs truncate block">{item.name}</span>
+                        {roundsActive && item.round !== undefined && item.round !== null && (
+                          <span className="mt-1 inline-flex max-w-full truncate rounded-full bg-accent/10 px-2 py-0.5 text-[9px] font-bold text-accent">
+                            {courseRoundsConfig.labels[item.round] ?? `Portata ${item.round + 1}`}
+                          </span>
+                        )}
                       </button>
                       <div className="flex items-center bg-white rounded-lg border border-border shrink-0">
                         <button
@@ -1148,14 +1177,33 @@ export default function POSView({
         orderMode={orderMode}
         existingCartItem={modalItem?.editCartItem}
         menuItems={data.menu}
+        courseRoundsConfig={courseRoundsConfig}
+        courseRoundsModuleEnabled={courseRoundsModuleEnabled}
+        onOpenRoundReorder={roundsActive && posCart.length > 0 ? () => {
+          setModalItem(null);
+          setShowRoundReorder(true);
+        } : undefined}
         categoryModifierPools={categoryModifierPools}
-        onOpenModifierModal={(draft) => {
-          if (modalItem?.item) {
+        onOpenModifierModal={(draft) => {          if (modalItem?.item) {
             const itemToEdit = modalItem.item;
             setModifierDraft(draft ?? null);
             setModalItem(null);
             setModifierModalItem(itemToEdit);
           }
+        }}
+      />
+
+      {/* ============ ROUND REORDER DIALOG ============ */}
+      <RoundReorderDialog
+        open={showRoundReorder && roundsActive && posCart.length > 0}
+        cart={posCart}
+        config={courseRoundsConfig}
+        onClose={() => setShowRoundReorder(false)}
+        onApply={(rounds) => {
+          for (const item of posCart) {
+            updatePosCartItem(item.cartItemId, { round: rounds[item.cartItemId] ?? null });
+          }
+          setShowRoundReorder(false);
         }}
       />
 

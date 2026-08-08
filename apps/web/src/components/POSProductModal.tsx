@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import type { CartItem, Ingredient, MenuItem, CategoryModifierPool, ModifierGroup, ModifierOption } from '@gustopos/shared';
+import type { CartItem, CourseRoundsConfig, Ingredient, MenuItem, CategoryModifierPool, ModifierGroup, ModifierOption } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Plus, Minus, ShoppingCart, Settings, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -32,6 +32,7 @@ interface POSProductModalProps {
     selectedModifiers: Array<{ groupId: string; optionId: string }>,
     modifierPriceDelta: number,
     customPrice?: number,
+    round?: number | null,
   ) => void;
   inventory: Ingredient[];
   orderMode: 'dine_in' | 'takeaway' | 'delivery';
@@ -39,6 +40,7 @@ interface POSProductModalProps {
   menuItems: MenuItem[];
   onOpenModifierModal?: (draft?: {
     quantity: number;
+    round?: number | null;
     notes: string;
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
@@ -46,6 +48,9 @@ interface POSProductModalProps {
     cartItemId?: string;
   }) => void;
   categoryModifierPools?: CategoryModifierPool[];
+  courseRoundsConfig: CourseRoundsConfig;
+  courseRoundsModuleEnabled: boolean;
+  onOpenRoundReorder?: () => void;
 }
 
 export default function POSProductModal({
@@ -59,6 +64,9 @@ export default function POSProductModal({
   menuItems,
   onOpenModifierModal,
   categoryModifierPools = [],
+  courseRoundsConfig,
+  courseRoundsModuleEnabled,
+  onOpenRoundReorder,
 }: POSProductModalProps) {
   const [quantity, setQuantity] = useState(existingCartItem?.quantity ?? 1);
   const [notes, setNotes] = useState(existingCartItem?.notes ?? '');
@@ -72,6 +80,8 @@ export default function POSProductModal({
   const [groupSelections, setGroupSelections] = useState<Record<string, string[]>>({});
   const [selectedToppingIds, setSelectedToppingIds] = useState<string[]>([]);
   const [customPrice, setCustomPrice] = useState<number>(existingCartItem?.basePrice ?? 0);
+  const [selectedRound, setSelectedRound] = useState<number | null>(existingCartItem?.round ?? null);
+  const roundsActive = courseRoundsModuleEnabled && courseRoundsConfig.enabled && _orderMode === 'dine_in';
 
   const resolvedItem = menuItems.find((m) => m.id === item?.id) ?? item;
   const isJolly = Boolean((resolvedItem as any)?.isJolly);
@@ -135,7 +145,8 @@ export default function POSProductModal({
       setIngredientOverrides(existingCartItem?.ingredientOverrides ?? []);  
       setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);  
       setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);
-      setCustomPrice(existingCartItem?.basePrice ?? ((item as any)?.isJolly ? Number((item as any)?.price ?? 0) : 0));  
+      setCustomPrice(existingCartItem?.basePrice ?? ((item as any)?.isJolly ? Number((item as any)?.price ?? 0) : 0));
+      setSelectedRound(existingCartItem?.round ?? null);
       // Reset group selections when the modal opens: a previous product's
       // inline modifier choices (e.g. Bun from a burger's "Base" group) must
       // NOT leak into a product without modifier groups (e.g. a drink).
@@ -416,6 +427,53 @@ export default function POSProductModal({
 
               <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (es: senza glutine, ben cotta...)" className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:border-accent focus:outline-none" />
 
+              {roundsActive && (
+                <div className="rounded-xl border border-border bg-bg/40 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">Portata</h3>
+                      <p className="text-[10px] text-text-muted mt-0.5">{selectedRound === null ? 'Scegli quando servirla' : courseRoundsConfig.labels[selectedRound]}</p>
+                    </div>
+                    {selectedRound !== null && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRound(null)}
+                        className="min-h-[44px] px-2 text-[10px] font-bold text-text-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+                      >
+                        Rimuovi
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {courseRoundsConfig.labels.map((label, index) => (
+                      <button
+                        type="button"
+                        key={label + index}
+                        onClick={() => setSelectedRound(index)}
+                        className={cn(
+                          'min-h-[44px] px-3 rounded-full border text-xs font-bold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                          selectedRound === index ? 'border-accent bg-accent text-white shadow-sm' : 'border-border bg-white text-secondary hover:border-accent hover:text-accent',
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {courseRoundsConfig.required && selectedRound === null && (
+                    <p className="text-[10px] text-danger font-semibold" role="alert">Seleziona una portata per continuare.</p>
+                  )}
+                  {onOpenRoundReorder && (
+                    <button
+                      type="button"
+                      onClick={onOpenRoundReorder}
+                      className="w-full min-h-[44px] rounded-lg border border-border text-[10px] font-bold uppercase tracking-wider text-text-muted hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    >
+                      Imposta portate per tutto il carrello
+                    </button>
+                  )}
+                </div>
+              )}
+
               {isJolly && (
                 <div className="space-y-1.5">
                   <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">Prezzo ad-hoc</h3>
@@ -545,9 +603,9 @@ export default function POSProductModal({
               {!isSimpleModifier && (
                 <button
                   type="button"
-                  onClick={() => onOpenModifierModal?.({
-                  quantity,
-                  notes: combinedNotes,
+                  onClick={() => onOpenModifierModal?.({                    quantity,
+                    round: roundsActive ? selectedRound : undefined,
+                    notes: combinedNotes,
                 ingredientOverrides: cartIngredientOverrides,
                 selectedModifiers: inlineSelectedModifiers,
                   modifierPriceDelta: inlineModifierPriceDelta,
@@ -567,8 +625,8 @@ export default function POSProductModal({
             <div className="px-4 py-3 sm:px-5 sm:py-4 border-t border-border shrink-0">
               <button
                 ref={confirmButtonRef}
-                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta, isJolly ? (customPrice || 0) : undefined)}
-                disabled={!requiredInlineGroupsSatisfied}
+                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta, isJolly ? (customPrice || 0) : undefined, roundsActive ? selectedRound : undefined)}
+                disabled={!requiredInlineGroupsSatisfied || (roundsActive && courseRoundsConfig.required && selectedRound === null)}
                 className="w-full flex items-center justify-center gap-2 py-4 bg-accent text-white rounded-xl active:bg-blue-800 active:scale-[0.98] transition-all text-sm font-bold uppercase tracking-widest shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ShoppingCart size={18} />

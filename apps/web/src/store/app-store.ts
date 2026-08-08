@@ -95,6 +95,7 @@ import {
   type TransferTableResponse,
   type SelfOrderSessionRotateResponse,
   type UiSettings,
+  type CourseRoundsConfig,
   defaultUiSettings,
   updateUiSettingsRequestSchema,
   type UpdateOrderRequest,
@@ -157,6 +158,7 @@ import {
   fetchPayments,
   fetchPrintJobs,
   fetchUiSettings,
+  fetchCourseRoundsConfig,
   fetchStaff,
   getStoredUser,
   hasAuthSession,
@@ -460,6 +462,30 @@ function normalizeEnabledModules(enabledModules: ModuleKey[]): ModuleKey[] {
   return result;
 }
 
+const defaultCourseRoundsConfig: CourseRoundsConfig = {
+  enabled: false,
+  labels: ['1ª portata', '2ª portata', '3ª portata'],
+  required: false,
+};
+
+async function loadCourseRoundsState(enabledModules: ModuleKey[]): Promise<{
+  courseRoundsConfig: CourseRoundsConfig;
+  courseRoundsModuleEnabled: boolean;
+}> {
+  if (!enabledModules.includes('course_rounds')) {
+    return { courseRoundsConfig: defaultCourseRoundsConfig, courseRoundsModuleEnabled: false };
+  }
+  try {
+    const response = await fetchCourseRoundsConfig();
+    return {
+      courseRoundsConfig: response.config,
+      courseRoundsModuleEnabled: response.moduleEnabled && response.config.enabled,
+    };
+  } catch {
+    return { courseRoundsConfig: defaultCourseRoundsConfig, courseRoundsModuleEnabled: false };
+  }
+}
+
 function createEmptyAppData(): AppData {
   return {
     orders: [],
@@ -722,6 +748,8 @@ function areSameUsers(left: Staff | null, right: Staff | null): boolean {
 
 interface AppState {
   loading: boolean;
+  courseRoundsConfig: CourseRoundsConfig;
+  courseRoundsModuleEnabled: boolean;
   error: string | null;
   tenantContext: { tenantId: string; tenantSlug?: string } | null;
   enabledModules: ModuleKey[];
@@ -859,6 +887,7 @@ interface AppState {
   refreshUiSettings: () => Promise<void>;
   updateUiSettings: (payload: UiSettings) => Promise<void>;
   updatePrintingSettings: (payload: { printing: Partial<UiSettings['printing']> }) => Promise<void>;
+  refreshCourseRoundsConfig: () => Promise<void>;
   refreshReservations: (query?: ReservationsQuery, force?: boolean) => Promise<void>;
   createReservation: (payload: ReservationCreateRequest) => Promise<void>;
   updateReservation: (id: string, payload: ReservationUpdateRequest) => Promise<void>;
@@ -1170,6 +1199,8 @@ async function _loadAdminBootstrap(enabledModules: ModuleKey[]) {
 
 export const useAppStore = create<AppState>()(persist((set, get) => ({
   loading: true,
+  courseRoundsConfig: { enabled: false, labels: ['1ª portata', '2ª portata', '3ª portata'], required: false },
+  courseRoundsModuleEnabled: false,
   error: null,
   tenantContext: null,
   enabledModules: [],
@@ -1278,7 +1309,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const refreshed = await refreshSession();
       if (!refreshed) {
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), ...invalidateFiscalExportsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), ...invalidateFiscalExportsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], courseRoundsConfig: defaultCourseRoundsConfig, courseRoundsModuleEnabled: false, permissions: [] });
         return;
       }
 
@@ -1287,7 +1318,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         // Refresh succeeded but user payload is missing/corrupted: this is a real auth-session corruption.
         clearAuthSession();
         disconnectSocket();
-        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), ...invalidateFiscalExportsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], permissions: [] });
+        set({ ...invalidateReservationsCache(), ...invalidateDeliveryCache(), ...invalidatePurchasingCache(), ...invalidateShiftsCache(), ...invalidateFiscalExportsCache(), loading: false, data: null, currentUser: null, tenantContext: null, enabledModules: [], courseRoundsConfig: defaultCourseRoundsConfig, courseRoundsModuleEnabled: false, permissions: [] });
         return;
       }
 
@@ -1297,6 +1328,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
       // Single bootstrap call instead of sequential fetches
       const bootstrap = await fetchBootstrap(enabledModules).catch(() => null);
+      const courseRoundsState = await loadCourseRoundsState(enabledModules);
 
       if (bootstrap) {
         applyUiTheme(bootstrap.uiSettings);
@@ -1346,6 +1378,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           inventoryItems: enabledModules.includes('inventory') ? data.inventory : [],
           prepItems: enabledModules.includes('inventory') ? await fetchPrepItems().catch(() => []) : [],
           categoryModifierPools: data.categoryModifierPools ?? [],
+          ...courseRoundsState,
           currentUser,
           tenantContext,
           enabledModules,
@@ -1377,6 +1410,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const enabledModules = normalizeEnabledModules(currentUser.enabledModules ?? []);
       const bootstrap = await fetchBootstrap(enabledModules).catch(() => null);
+      const courseRoundsState = await loadCourseRoundsState(enabledModules);
 
       if (bootstrap) {
         applyUiTheme(bootstrap.uiSettings);
@@ -1400,6 +1434,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           orderHistory: bootstrap.orderHistory,
           customerAnalytics: bootstrap.customerAnalytics,
           categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
+          ...courseRoundsState,
           currentUser,
           enabledModules,
           permissions: currentUser.permissions ?? [],
@@ -1421,6 +1456,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           inventoryItems: enabledModules.includes('inventory') ? data.inventory : get().inventoryItems,
           prepItems: enabledModules.includes('inventory') ? await fetchPrepItems().catch(() => get().prepItems) : [],
           categoryModifierPools: data.categoryModifierPools ?? get().categoryModifierPools,
+          ...courseRoundsState,
           currentUser,
           enabledModules,
           permissions: currentUser.permissions ?? [],
@@ -1448,6 +1484,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           currentUser: null,
           tenantContext: null,
           enabledModules: [],
+          courseRoundsConfig: defaultCourseRoundsConfig,
+          courseRoundsModuleEnabled: false,
           permissions: [],
           data: null,
           loading: false,
@@ -1459,6 +1497,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       const currentUser = getStoredUser();
       const normalizedModules = normalizeEnabledModules(currentUser?.enabledModules ?? []);
       const activeModules = new Set(normalizedModules);
+      const courseRoundsState = await loadCourseRoundsState(normalizedModules);
       const shouldLoadCoreData = normalizedModules.includes('kitchen');
       const shouldReloadData = shouldLoadCoreData && !get().data;
 
@@ -1500,6 +1539,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         currentUser: areSameUsers(state.currentUser, currentUser) ? state.currentUser : currentUser,
         tenantContext: currentUser ? { tenantId: currentUser.tenantId, tenantSlug: undefined } : null,
         enabledModules: normalizedModules,
+        ...courseRoundsState,
         permissions: currentUser?.permissions ?? [],
         data: nextData,
         inventoryItems: activeModules.has('inventory') ? nextData.inventory : [],
@@ -1558,6 +1598,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
       // Single bootstrap call instead of sequential fetches
       const bootstrap = await fetchBootstrap(normalizedModules).catch(() => null);
+      const courseRoundsState = await loadCourseRoundsState(normalizedModules);
 
       if (bootstrap) {
         applyUiTheme(bootstrap.uiSettings);
@@ -1586,6 +1627,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           orderHistory: bootstrap.orderHistory,
           customerAnalytics: bootstrap.customerAnalytics,
           categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
+          ...courseRoundsState,
           loading: false,
         });
       } else {
@@ -1611,6 +1653,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           inventoryItems: normalizedModules.includes('inventory') ? data.inventory : [],
           prepItems: normalizedModules.includes('inventory') ? await fetchPrepItems().catch(() => []) : [],
           categoryModifierPools: data.categoryModifierPools ?? [],
+          ...courseRoundsState,
           loading: false,
         });
       }
@@ -1632,6 +1675,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       currentUser: null,
       tenantContext: null,
       enabledModules: [],
+      courseRoundsConfig: defaultCourseRoundsConfig,
+      courseRoundsModuleEnabled: false,
       permissions: [],
       data: null,
       staffAdmin: [],
@@ -2873,6 +2918,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
+  refreshCourseRoundsConfig: async () => {
+    const state = await loadCourseRoundsState(get().enabledModules);
+    set(state);
+  },
+
   refreshUiSettings: async () => {
     try {
       const currentUser = get().currentUser;
@@ -3638,5 +3688,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     posOrderMode: state.posOrderMode,
     posTableNumber: state.posTableNumber,
     localBridgeConfig: state.localBridgeConfig,
+    courseRoundsConfig: state.courseRoundsConfig,
+    courseRoundsModuleEnabled: state.courseRoundsModuleEnabled,
   }),
 }));
