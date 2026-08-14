@@ -63,6 +63,7 @@ export default function POSView({
   const removeFromPosCart = useAppStore((s) => s.removeFromPosCart);
   const clearPosCart = useAppStore((s) => s.clearPosCart);
   const setCartContext = useAppStore((s) => s.setCartContext);
+  const relocateCart = useAppStore((s) => s.relocateCart);
   const prepItems = useAppStore((s) => s.prepItems);
   const [takeawayCustomerName, setTakeawayCustomerName] = useState('');
   const [takeawayCustomerPhone, setTakeawayCustomerPhone] = useState('');
@@ -441,6 +442,29 @@ export default function POSView({
     if (!selectedTable) return;
     setRelocateSourceTableId(selectedTable.id);
     setRelocateMode(mode);
+  };
+
+  // After a successful move/merge, transfer the not-yet-sent cart of the
+  // source table into the target table and switch the POS screen to it.
+  const relocateCartToTarget = (targetTableId: string) => {
+    const targetTable = data.tables.find((t) => t.id === targetTableId);
+    if (!targetTable) return;
+    const sourceKey = `dine_in:${posTableNumber}`;
+    const targetKey = `dine_in:${targetTable.number}`;
+    relocateCart(sourceKey, targetKey);
+    setTableNumber(targetTable.number);
+  };
+
+  const handleTransferTable = async (sourceTableId: string, targetTableId: string) => {
+    if (!onTransferTable) return;
+    await onTransferTable(sourceTableId, targetTableId);
+    relocateCartToTarget(targetTableId);
+  };
+
+  const handleMergeTable = async (sourceTableId: string, targetTableId: string) => {
+    if (!onMergeTable) return;
+    await onMergeTable(sourceTableId, targetTableId);
+    relocateCartToTarget(targetTableId);
   };
 
   const filteredCustomers = customers
@@ -1292,8 +1316,8 @@ export default function POSView({
             setRelocateMode(null);
             setRelocateSourceTableId('');
           }}
-          onTransfer={onTransferTable}
-          onMerge={onMergeTable}
+          onTransfer={handleTransferTable}
+          onMerge={handleMergeTable}
         />
       )}
     </div>

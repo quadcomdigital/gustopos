@@ -939,6 +939,7 @@ interface AppState {
   removeFromPosCart: (cartItemId: string) => void;
   clearPosCart: () => void;
   setCartContext: (key: string) => void;
+  relocateCart: (sourceKey: string, targetKey: string) => void;
 
   // ─── Print-bridge pool (Phase E) ───────────────────────────────────────
   printBridges: PrintBridge[];
@@ -1725,6 +1726,25 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     const updated = { ...state.cartStore, [state.cartContextKey]: [...state.posCart] };
     if (updated[key] === undefined) delete updated[key];
     set({ cartStore: updated, cartContextKey: key, posCart: updated[key] ?? [] });
+  },
+
+  relocateCart: (sourceKey, targetKey) => {
+    set((state) => {
+      const sourceCart = state.cartStore[sourceKey] ?? [];
+      const targetCart = state.cartStore[targetKey] ?? [];
+      const nextCartStore = { ...state.cartStore };
+      if (sourceCart.length > 0) {
+        nextCartStore[targetKey] = [...targetCart, ...sourceCart];
+      } else if (targetCart.length === 0) {
+        delete nextCartStore[targetKey];
+      }
+      delete nextCartStore[sourceKey];
+      return {
+        cartStore: nextCartStore,
+        cartContextKey: targetKey,
+        posCart: nextCartStore[targetKey] ?? [],
+      };
+    });
   },
 
   addToPosCart: (item) => {
