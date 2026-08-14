@@ -4,7 +4,7 @@ import {
   SelfOrderSessionRotateResponse,
 } from '@gustopos/shared';
 import { cn } from '../lib/utils';
-import { X, QrCode, Link as LinkIcon, ArrowRight } from 'lucide-react';
+import { X, QrCode, Link as LinkIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface TablesViewProps {
@@ -23,7 +23,6 @@ export default function TablesView({
   const [selfOrderQr, setSelfOrderQr] = useState<{ tableNumber: string; url: string; expiresAt: string } | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
-  const [actionSheetTableId, setActionSheetTableId] = useState('');
 
   const orderedTables = useMemo(() => {
     return [...data.tables].sort((a, b) => {
@@ -36,7 +35,6 @@ export default function TablesView({
     });
   }, [data.tables]);
 
-  const actionSheetTable = data.tables.find((t) => t.id === actionSheetTableId) ?? null;
 
   const handleRotateSelfOrderQr = async (tableId: string) => {
     if (!onRotateSelfOrderQr) return;
@@ -67,7 +65,7 @@ export default function TablesView({
           return (
             <div
               key={table.id}
-              onClick={() => setActionSheetTableId(table.id)}
+              onClick={() => onSelectTable(table.number)}
               className={cn(
                 "relative p-4 rounded-xl border transition-all flex flex-col items-center justify-center gap-2 h-32 cursor-pointer active:scale-95",
                 table.status === 'occupied'
@@ -93,54 +91,6 @@ export default function TablesView({
           );
         })}
       </div>
-
-      {/* Table Actions Bottom Sheet */}
-      <AnimatePresence>
-        {actionSheetTable && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[1000] flex items-end sm:items-center justify-center bg-primary/40 backdrop-blur-sm"
-            onClick={() => setActionSheetTableId('')}
-          >
-            <motion.div
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
-              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="bg-white w-full sm:max-w-sm sm:rounded-2xl rounded-t-2xl shadow-2xl overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="p-4 border-b border-border flex items-center justify-between">
-                <h3 className="text-lg font-bold text-primary uppercase tracking-tight">
-                  Tavolo {actionSheetTable.number}
-                </h3>
-                <button
-                  onClick={() => setActionSheetTableId('')}
-                  className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-bg rounded-full transition-colors text-text-muted"
-                  aria-label="Chiudi"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="p-4 space-y-3">
-                <button
-                  onClick={() => {
-                    setActionSheetTableId('');
-                    onSelectTable(actionSheetTable.number);
-                  }}
-                  className="w-full min-h-[52px] flex items-center gap-3 px-4 rounded-xl border border-border hover:border-accent transition-colors text-left"
-                >
-                  <ArrowRight size={18} className="text-accent shrink-0" />
-                  <span className="text-sm font-bold text-primary">Apri POS</span>
-                </button>
-
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Self-Order QR Info */}
       {selfOrderQr && (
