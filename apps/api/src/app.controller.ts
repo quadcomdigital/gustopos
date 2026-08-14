@@ -2365,10 +2365,9 @@ export class AppController {
   @Roles("admin", "waiter")
   @RequiresModule("kitchen")
   async mergeTable(@Param("id") id: string, @Body() payload: MergeTableRequest) {
-    const mergePayload = mergeTableRequestSchema.parse(payload);
-
     let result;
     try {
+      const mergePayload = mergeTableRequestSchema.parse(payload);
       result = await this.tablesRepo.mergeTable(id, mergePayload);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Merge failed");
