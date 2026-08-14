@@ -58,6 +58,7 @@ export function isSocketEventName(value: string): value is SocketEventName {
 export const ordersUpdatePatchSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_paid"), tableNumber: z.string() }),
   z.object({ action: z.literal("move"), fromTableNumber: z.string(), toTableNumber: z.string() }),
+  z.object({ action: z.literal("merge"), fromTableNumber: z.string(), toTableNumber: z.string() }),
 ]);
 
 export type OrdersUpdatePatch = z.infer<typeof ordersUpdatePatchSchema>;

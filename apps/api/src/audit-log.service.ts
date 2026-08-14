@@ -13,6 +13,7 @@ type AuditEvent =
   | "table.split.share_paid"
   | "table.pay_items"
   | "table.transfer"
+  | "table.merge"
   | "table.updated"
   | "table.deleted"
   | "payment.refund"

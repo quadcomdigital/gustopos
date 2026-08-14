@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, ArrowDownUp } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, ArrowDownUp, MoveRight, GitMerge } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAppStore } from '../store/app-store';
 import { trackUxMetric } from '../shared/ux/metrics';
@@ -13,6 +13,7 @@ import { useCheckoutStore } from '../store/checkout-store';
 import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
 import Modal from '../shared/ui/molecules/Modal';
 import RoundReorderDialog from './RoundReorderDialog';
+import TableMoveMergeDialog, { type TableRelocateMode } from './TableMoveMergeDialog';
 
 interface POSViewProps {
   data: AppData;
@@ -29,6 +30,8 @@ interface POSViewProps {
   initialTable?: string;
   onOpenTablesView?: (tableNumber: string) => void;
   canCloseTable?: boolean;
+  onTransferTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
+  onMergeTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
 }
 
 export default function POSView({
@@ -46,6 +49,8 @@ export default function POSView({
   initialTable = '1',
   onOpenTablesView,
   canCloseTable = false,
+  onTransferTable,
+  onMergeTable,
 }: POSViewProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>('Tutti');
   const orderMode = useAppStore((s) => s.posOrderMode);
@@ -77,6 +82,8 @@ export default function POSView({
   const [showCartMobile, setShowCartMobile] = useState(false);
   const [showCustomerDetailsModal, setShowCustomerDetailsModal] = useState(false);
   const [showTableActions, setShowTableActions] = useState(false);
+  const [relocateMode, setRelocateMode] = useState<TableRelocateMode | null>(null);
+  const [relocateSourceTableId, setRelocateSourceTableId] = useState('');
   const menuSearch = useAppStore((s) => s.posMenuSearch);
   const setMenuSearch = (v: string) => useAppStore.setState({ posMenuSearch: v });
 
@@ -989,6 +996,32 @@ export default function POSView({
                         : 'Libero'}
                   </p>
                 </div>
+                {selectedTable?.status === 'occupied' && onTransferTable && onMergeTable && (
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => {
+                        setRelocateSourceTableId(selectedTable.id);
+                        setRelocateMode('move');
+                        setShowTableActions(false);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-3 bg-white text-primary border border-border rounded-xl hover:border-accent transition-all font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
+                    >
+                      <MoveRight size={16} />
+                      Sposta su altro tavolo
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRelocateSourceTableId(selectedTable.id);
+                        setRelocateMode('merge');
+                        setShowTableActions(false);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-3 bg-white text-primary border border-border rounded-xl hover:border-accent transition-all font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
+                    >
+                      <GitMerge size={16} />
+                      Unisci conto con…
+                    </button>
+                  </div>
+                )}
                 <button
                   onClick={() => {
                     setShowTableActions(false);
@@ -1242,6 +1275,22 @@ export default function POSView({
 
       {/* ============ CHECKOUT MODAL ============ */}
       <CheckoutModal />
+
+      {/* ============ MOVE / MERGE DIALOG ============ */}
+      {relocateMode && relocateSourceTableId && onTransferTable && onMergeTable && (
+        <TableMoveMergeDialog
+          open
+          mode={relocateMode}
+          sourceTableId={relocateSourceTableId}
+          data={data}
+          onClose={() => {
+            setRelocateMode(null);
+            setRelocateSourceTableId('');
+          }}
+          onTransfer={onTransferTable}
+          onMerge={onMergeTable}
+        />
+      )}
     </div>
   );
 }

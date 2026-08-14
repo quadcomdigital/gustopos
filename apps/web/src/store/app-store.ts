@@ -93,6 +93,8 @@ import {
   type StaffUpdateRequest,
   type TransferTableRequest,
   type TransferTableResponse,
+  type MergeTableRequest,
+  type MergeTableResponse,
   type SelfOrderSessionRotateResponse,
   type UiSettings,
   type CourseRoundsConfig,
@@ -172,6 +174,7 @@ import {
   getTablePaymentStatus as getTablePaymentStatusRequest,
   isDuplicateIdempotentError,
   transferTable as transferTableRequest,
+  mergeTable as mergeTableRequest,
   rotateSelfOrderQrSession,
   replaceBomComponents as replaceBomComponentsRequest,
   addBomComponent as addBomComponentRequest,
@@ -590,7 +593,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
           },
         };
       }
-      if (patch.action === 'move') {
+      if (patch.action === 'move' || patch.action === 'merge') {
         return {
           data: {
             ...state.data,
@@ -832,6 +835,10 @@ interface AppState {
     sourceTableId: string,
     payload: TransferTableRequest,
   ) => Promise<TransferTableResponse>;
+  mergeTable: (
+    sourceTableId: string,
+    payload: MergeTableRequest,
+  ) => Promise<MergeTableResponse>;
   rotateSelfOrderQrForTable: (tableId: string) => Promise<SelfOrderSessionRotateResponse>;
   refreshStaffAdmin: () => Promise<void>;
   createStaffAdmin: (payload: StaffCreateRequest) => Promise<void>;
@@ -2200,6 +2207,26 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const result = await transferTableRequest(sourceTableId, payload);
       // Socket-first: tables:update + orders:update (move) aggiornano lo store.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  mergeTable: async (sourceTableId, payload) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        enqueueBlockedAction(set as StoreSet, 'kitchen', { action: 'mergeTable', sourceTableId, payload });
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      const result = await mergeTableRequest(sourceTableId, payload);
+      // Socket-first: tables:update + orders:update (merge) aggiornano lo store.
       if (!getSocket().connected) {
         const data = await fetchData();
         set({ data });

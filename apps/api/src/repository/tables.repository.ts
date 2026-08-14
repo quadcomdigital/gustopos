@@ -9,6 +9,7 @@ import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight, buildCashierReceiptPayload } from "./utils/escpos-builder";
 import { deliveryTransitions } from "./utils/state-machines";
+import { collectCurrentSessionPaymentIds } from "./utils/merge-payments";
 import crypto from "node:crypto";
 import {
   closeTableRequestSchema, closeTableResponseSchema,
@@ -17,6 +18,7 @@ import {
   paySelectedItemsRequestSchema, paySelectedItemsResponseSchema,
   markShareAsPaidRequestSchema, markShareAsPaidResponseSchema,
   transferTableRequestSchema, transferTableResponseSchema,
+  mergeTableRequestSchema, mergeTableResponseSchema,
   reservationCreateRequestSchema, reservationUpdateRequestSchema,
   reservationSchema, reservationListResponseSchema, reservationsQuerySchema,
   reservationStatusSchema, reservationNoShowRequestSchema,
@@ -33,6 +35,7 @@ import {
   type PaySelectedItemsRequest, type PaySelectedItemsResponse,
   type MarkShareAsPaidRequest, type MarkShareAsPaidResponse,
   type TransferTableRequest, type TransferTableResponse,
+  type MergeTableRequest, type MergeTableResponse,
   type Reservation, type ReservationCreateRequest, type ReservationUpdateRequest,
   type ReservationsQuery, type ReservationsSummary,
   type DeliveryOrder, type DeliveryStatusUpdateRequest, type DeliveryUpsertRequest,
@@ -1242,6 +1245,132 @@ export class TablesRepository {
     });
   }
 
+  /**
+   * Shared by transferTable (move) and mergeTable (unificazione conto).
+   *
+   * Relocates the source table's OPEN orders onto the target table and
+   * re-points the current-session payments (the ones linked to those open
+   * order items) onto the target, so getTablePaymentStatus/closeTable see a
+   * single unified bill. Historical payments (items on paid/cancelled orders)
+   * are left untouched. Blocks when a split bill is in progress (pending share)
+   * on either table.
+   */
+  private async relocateOpenOrdersAndPayments(
+    tx: typeof db,
+    sourceTableId: string,
+    sourceTableNumber: string,
+    targetTableId: string,
+    targetTableNumber: string,
+  ): Promise<{ movedOrders: number; movedPayments: number }> {
+    const tenantId = getTenantIdOrDefault();
+
+    // Serialize concurrent transfer/merge on the same tables (mirrors closeTable).
+    await tx.execute(sql`
+      SELECT id FROM tables
+      WHERE tenant_id = ${tenantId} AND id = ${sourceTableId}
+      FOR UPDATE
+    `);
+    await tx.execute(sql`
+      SELECT id FROM tables
+      WHERE tenant_id = ${tenantId} AND id = ${targetTableId}
+      FOR UPDATE
+    `);
+
+    const openOrders = await tx
+      .select()
+      .from(orders)
+      .where(and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableNumber, sourceTableNumber),
+        ne(orders.status, "paid"),
+        ne(orders.status, "cancelled"),
+      ));
+
+    if (openOrders.length === 0) {
+      throw new Error("No open orders to relocate");
+    }
+
+    // Block merge/move while a split bill is in progress on either table.
+    const pendingSplitShares = await tx
+      .select({ id: payments.id })
+      .from(payments)
+      .where(and(
+        eq(payments.tenantId, tenantId),
+        inArray(payments.tableId, [sourceTableId, targetTableId]),
+        eq(payments.paymentStatus, "pending"),
+        isNotNull(payments.shareIndex),
+      ))
+      .limit(1);
+
+    if (pendingSplitShares.length > 0) {
+      throw new Error("Sposta/Unisci non disponibile con conto diviso in corso");
+    }
+
+    // Re-point current-session payments (linked to the open order items).
+    const orderIds = openOrders.map((o) => o.id);
+    let movedPayments = 0;
+    if (orderIds.length > 0) {
+      const orderItemRows = await tx
+        .select({ id: orderItems.id })
+        .from(orderItems)
+        .where(and(eq(orderItems.tenantId, tenantId), inArray(orderItems.orderId, orderIds)));
+      const openOrderItemIds = orderItemRows.map((row) => row.id);
+
+      if (openOrderItemIds.length > 0) {
+        const paymentItemRows = await tx
+          .select({ paymentId: paymentItems.paymentId, orderItemId: paymentItems.orderItemId })
+          .from(paymentItems)
+          .where(and(eq(paymentItems.tenantId, tenantId), inArray(paymentItems.orderItemId, openOrderItemIds)));
+
+        const paymentIds = collectCurrentSessionPaymentIds(openOrderItemIds, paymentItemRows);
+        if (paymentIds.length > 0) {
+          await tx
+            .update(payments)
+            .set({ tableId: targetTableId, tableNumber: targetTableNumber })
+            .where(and(eq(payments.tenantId, tenantId), inArray(payments.id, paymentIds)));
+          movedPayments = paymentIds.length;
+        }
+      }
+    }
+
+    // Move open orders onto the target table.
+    await tx
+      .update(orders)
+      .set({ tableNumber: targetTableNumber })
+      .where(and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableNumber, sourceTableNumber),
+        ne(orders.status, "paid"),
+        ne(orders.status, "cancelled"),
+      ));
+
+    // Free the source table.
+    await tx
+      .update(tables)
+      .set({ status: "free", currentOrderId: null })
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId)));
+
+    // Occupy the target table, pointing currentOrderId at the earliest open order.
+    const targetOpenOrder = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableNumber, targetTableNumber),
+        ne(orders.status, "paid"),
+        ne(orders.status, "cancelled"),
+      ))
+      .orderBy(asc(orders.timestamp))
+      .limit(1);
+
+    await tx
+      .update(tables)
+      .set({ status: "occupied", currentOrderId: targetOpenOrder[0]?.id ?? null })
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, targetTableId)));
+
+    return { movedOrders: openOrders.length, movedPayments };
+  }
+
   async transferTable(sourceTableId: string, payload: TransferTableRequest): Promise<TransferTableResponse | null> {
     const parsed = transferTableRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
@@ -1270,45 +1399,65 @@ export class TablesRepository {
         return null;
       }
 
-      const openOrders = await tx
-        .select()
-        .from(orders)
-        .where(and(
-          eq(orders.tenantId, tenantId),
-          eq(orders.tableNumber, sourceTable.number),
-          ne(orders.status, "paid"),
-          ne(orders.status, "cancelled"),
-        ));
-
-      if (openOrders.length === 0) {
-        throw new Error("No open orders to transfer");
-      }
-
-      await tx
-        .update(orders)
-        .set({ tableNumber: targetTable.number })
-        .where(and(
-          eq(orders.tenantId, tenantId),
-          eq(orders.tableNumber, sourceTable.number),
-          ne(orders.status, "paid"),
-          ne(orders.status, "cancelled"),
-        ));
-
-      await tx
-        .update(tables)
-        .set({ status: "free", currentOrderId: null })
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId)));
-
-      await tx
-        .update(tables)
-        .set({ status: "occupied", currentOrderId: openOrders[0].id })
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, parsed.targetTableId)));
+      const { movedOrders } = await this.relocateOpenOrdersAndPayments(
+        tx,
+        sourceTable.id,
+        sourceTable.number,
+        targetTable.id,
+        targetTable.number,
+      );
 
       return transferTableResponseSchema.parse({
         success: true,
         sourceTableId,
         targetTableId: parsed.targetTableId,
-        movedOrders: openOrders.length,
+        movedOrders,
+      });
+    });
+  }
+
+  async mergeTable(sourceTableId: string, payload: MergeTableRequest): Promise<MergeTableResponse | null> {
+    const parsed = mergeTableRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+    if (parsed.targetTableId === sourceTableId) {
+      throw new Error("Target table must differ from source table");
+    }
+
+    return withTenantTx(async (tx) => {
+      const sourceRows = await tx
+        .select()
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId)))
+        .limit(1);
+      const sourceTable = sourceRows[0];
+      if (!sourceTable) {
+        return null;
+      }
+
+      const targetRows = await tx
+        .select()
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, parsed.targetTableId)))
+        .limit(1);
+      const targetTable = targetRows[0];
+      if (!targetTable) {
+        return null;
+      }
+
+      const { movedOrders, movedPayments } = await this.relocateOpenOrdersAndPayments(
+        tx,
+        sourceTable.id,
+        sourceTable.number,
+        targetTable.id,
+        targetTable.number,
+      );
+
+      return mergeTableResponseSchema.parse({
+        success: true,
+        sourceTableId,
+        targetTableId: parsed.targetTableId,
+        mergedOrders: movedOrders,
+        mergedPayments: movedPayments,
       });
     });
   }

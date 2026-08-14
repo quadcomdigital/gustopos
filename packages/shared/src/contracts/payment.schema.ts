@@ -144,6 +144,20 @@ export const transferTableResponseSchema = z.object({
   movedOrders: z.number().int(),
 });
 
+// ─── Merge Table (unificazione conto) ───────────────────────────────────────
+
+export const mergeTableRequestSchema = z.object({
+  targetTableId: z.string().min(1),
+});
+
+export const mergeTableResponseSchema = z.object({
+  success: z.boolean(),
+  sourceTableId: z.string(),
+  targetTableId: z.string(),
+  mergedOrders: z.number().int(),
+  mergedPayments: z.number().int(),
+});
+
 // ─── Payment History / Refunds ──────────────────────────────────────────────
 
 export const paymentFiltersSchema = z.object({
@@ -187,6 +201,8 @@ export type MarkShareAsPaidRequest = z.infer<typeof markShareAsPaidRequestSchema
 export type MarkShareAsPaidResponse = z.infer<typeof markShareAsPaidResponseSchema>;
 export type TransferTableRequest = z.infer<typeof transferTableRequestSchema>;
 export type TransferTableResponse = z.infer<typeof transferTableResponseSchema>;
+export type MergeTableRequest = z.infer<typeof mergeTableRequestSchema>;
+export type MergeTableResponse = z.infer<typeof mergeTableResponseSchema>;
 export type PaymentFilters = z.infer<typeof paymentFiltersSchema>;
 export type PaymentsListResponse = z.infer<typeof paymentsListResponseSchema>;
 export type RefundPaymentRequest = z.infer<typeof refundPaymentRequestSchema>;

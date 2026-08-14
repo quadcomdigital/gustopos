@@ -4,21 +4,33 @@ import {
   SelfOrderSessionRotateResponse,
 } from '@gustopos/shared';
 import { cn } from '../lib/utils';
-import { X, QrCode, Link as LinkIcon } from 'lucide-react';
+import { X, QrCode, Link as LinkIcon, ArrowRight, MoveRight, GitMerge } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import TableMoveMergeDialog, { type TableRelocateMode } from './TableMoveMergeDialog';
 
 interface TablesViewProps {
   data: AppData;
   onSelectTable: (tableNumber: string) => void;
   onRotateSelfOrderQr?: (tableId: string) => Promise<SelfOrderSessionRotateResponse>;
+  onTransferTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
+  onMergeTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
 }
 
-export default function TablesView({ data, onSelectTable, onRotateSelfOrderQr }: TablesViewProps) {
+export default function TablesView({
+  data,
+  onSelectTable,
+  onRotateSelfOrderQr,
+  onTransferTable,
+  onMergeTable,
+}: TablesViewProps) {
   const [showQrSheet, setShowQrSheet] = useState(false);
   const [qrSelectedTableId, setQrSelectedTableId] = useState('');
   const [selfOrderQr, setSelfOrderQr] = useState<{ tableNumber: string; url: string; expiresAt: string } | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [actionSheetTableId, setActionSheetTableId] = useState('');
+  const [relocateSourceTableId, setRelocateSourceTableId] = useState('');
+  const [relocateMode, setRelocateMode] = useState<TableRelocateMode | null>(null);
 
   const orderedTables = useMemo(() => {
     return [...data.tables].sort((a, b) => {
@@ -30,6 +42,9 @@ export default function TablesView({ data, onSelectTable, onRotateSelfOrderQr }:
       return a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' });
     });
   }, [data.tables]);
+
+  const actionSheetTable = data.tables.find((t) => t.id === actionSheetTableId) ?? null;
+  const canRelocate = actionSheetTable?.status === 'occupied' && Boolean(onTransferTable && onMergeTable);
 
   const handleRotateSelfOrderQr = async (tableId: string) => {
     if (!onRotateSelfOrderQr) return;
@@ -43,6 +58,12 @@ export default function TablesView({ data, onSelectTable, onRotateSelfOrderQr }:
     } finally {
       setActionBusy(false);
     }
+  };
+
+  const openRelocate = (mode: TableRelocateMode) => {
+    setRelocateSourceTableId(actionSheetTableId);
+    setRelocateMode(mode);
+    setActionSheetTableId('');
   };
 
   return (
@@ -60,7 +81,7 @@ export default function TablesView({ data, onSelectTable, onRotateSelfOrderQr }:
           return (
             <div
               key={table.id}
-              onClick={() => onSelectTable(table.number)}
+              onClick={() => setActionSheetTableId(table.id)}
               className={cn(
                 "relative p-4 rounded-xl border transition-all flex flex-col items-center justify-center gap-2 h-32 cursor-pointer active:scale-95",
                 table.status === 'occupied'
@@ -86,6 +107,88 @@ export default function TablesView({ data, onSelectTable, onRotateSelfOrderQr }:
           );
         })}
       </div>
+
+      {/* Table Actions Bottom Sheet */}
+      <AnimatePresence>
+        {actionSheetTable && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[1000] flex items-end sm:items-center justify-center bg-primary/40 backdrop-blur-sm"
+            onClick={() => setActionSheetTableId('')}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+              className="bg-white w-full sm:max-w-sm sm:rounded-2xl rounded-t-2xl shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-4 border-b border-border flex items-center justify-between">
+                <h3 className="text-lg font-bold text-primary uppercase tracking-tight">
+                  Tavolo {actionSheetTable.number}
+                </h3>
+                <button
+                  onClick={() => setActionSheetTableId('')}
+                  className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-bg rounded-full transition-colors text-text-muted"
+                  aria-label="Chiudi"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-4 space-y-3">
+                <button
+                  onClick={() => {
+                    setActionSheetTableId('');
+                    onSelectTable(actionSheetTable.number);
+                  }}
+                  className="w-full min-h-[52px] flex items-center gap-3 px-4 rounded-xl border border-border hover:border-accent transition-colors text-left"
+                >
+                  <ArrowRight size={18} className="text-accent shrink-0" />
+                  <span className="text-sm font-bold text-primary">Apri POS</span>
+                </button>
+
+                {canRelocate && (
+                  <>
+                    <button
+                      onClick={() => openRelocate('move')}
+                      className="w-full min-h-[52px] flex items-center gap-3 px-4 rounded-xl border border-border hover:border-accent transition-colors text-left"
+                    >
+                      <MoveRight size={18} className="text-accent shrink-0" />
+                      <span className="text-sm font-bold text-primary">Sposta su altro tavolo</span>
+                    </button>
+                    <button
+                      onClick={() => openRelocate('merge')}
+                      className="w-full min-h-[52px] flex items-center gap-3 px-4 rounded-xl border border-border hover:border-accent transition-colors text-left"
+                    >
+                      <GitMerge size={18} className="text-accent shrink-0" />
+                      <span className="text-sm font-bold text-primary">Unisci conto con…</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Move / Merge dialog */}
+      {relocateMode && relocateSourceTableId && onTransferTable && onMergeTable && (
+        <TableMoveMergeDialog
+          open
+          mode={relocateMode}
+          sourceTableId={relocateSourceTableId}
+          data={data}
+          onClose={() => {
+            setRelocateMode(null);
+            setRelocateSourceTableId('');
+          }}
+          onTransfer={onTransferTable}
+          onMerge={onMergeTable}
+        />
+      )}
 
       {/* Self-Order QR Info */}
       {selfOrderQr && (

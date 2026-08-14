@@ -118,6 +118,7 @@ import {
   paySelectedItemsRequestSchema,
   markShareAsPaidRequestSchema,
   transferTableRequestSchema,
+  mergeTableRequestSchema,
   loyaltyRedeemRequestSchema,
   loyaltyEarnRequestSchema,
   couponCreateRequestSchema,
@@ -232,6 +233,7 @@ import {
   type PaySelectedItemsRequest,
   type MarkShareAsPaidRequest,
   type TransferTableRequest,
+  type MergeTableRequest,
   updateOrderItemQuantityRequestSchema,
   type UpdateOrderItemQuantityRequest,
   type UpdateOrderRequest,
@@ -2354,6 +2356,48 @@ export class AppController {
       details: {
         targetTableId: result.targetTableId,
         movedOrders: result.movedOrders,
+      },
+    });
+    return result;
+  }
+
+  @Post("tables/:id/merge")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async mergeTable(@Param("id") id: string, @Body() payload: MergeTableRequest) {
+    const mergePayload = mergeTableRequestSchema.parse(payload);
+
+    let result;
+    try {
+      result = await this.tablesRepo.mergeTable(id, mergePayload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Merge failed");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Source or target table not found");
+    }
+
+    // Eventi targeted: stato tavoli + ordini unificati. Stesso degrado del transfer.
+    const tables = await this.listTablesForRealtime();
+    if (tables) {
+      await this.realtimeGateway.emit(socketEvents.tablesUpdate, tables);
+      const sourceTable = tables.find((t) => t.id === id);
+      const targetTable = tables.find((t) => t.id === result.targetTableId);
+      if (sourceTable && targetTable) {
+        await this.realtimeGateway.emit(socketEvents.ordersUpdate, {
+          action: "merge",
+          fromTableNumber: sourceTable.number,
+          toTableNumber: targetTable.number,
+        });
+      }
+    }
+    this.auditLogService.log("table.merge", {
+      targetId: id,
+      details: {
+        targetTableId: result.targetTableId,
+        mergedOrders: result.mergedOrders,
+        mergedPayments: result.mergedPayments,
       },
     });
     return result;

@@ -23,10 +23,14 @@ export function TablesRoute() {
   const currentUser = useAppStore((s) => s.currentUser);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const rotateSelfOrderQrForTable = useAppStore((s) => s.rotateSelfOrderQrForTable);
+  const transferTable = useAppStore((s) => s.transferTable);
+  const mergeTable = useAppStore((s) => s.mergeTable);
   const { setSelectedTable } = useBackofficeContext();
   const navigate = useNavigate();
   if (!data || !currentUser) return null;
   const canRotateSelfOrderQr = currentUser.role === 'admin' && enabledModules.includes('self_order_qr');
+  const canRelocateTables = enabledModules.includes('kitchen') &&
+    (currentUser.role === 'admin' || currentUser.role === 'waiter');
   return (
     <TablesView
       data={data}
@@ -35,6 +39,12 @@ export function TablesRoute() {
         navigate('/app/pos');
       }}
       onRotateSelfOrderQr={canRotateSelfOrderQr ? rotateSelfOrderQrForTable : undefined}
+      onTransferTable={canRelocateTables
+        ? async (sourceId, targetId) => { await transferTable(sourceId, { targetTableId: targetId }); }
+        : undefined}
+      onMergeTable={canRelocateTables
+        ? async (sourceId, targetId) => { await mergeTable(sourceId, { targetTableId: targetId }); }
+        : undefined}
     />
   );
 }
@@ -52,13 +62,16 @@ export function PosRoute() {
   const _splitBill = useAppStore((s) => s.splitBill);
   const _paySelectedItems = useAppStore((s) => s.paySelectedItems);
   const _getTablePaymentStatus = useAppStore((s) => s.getTablePaymentStatus);
-  const _transferTable = useAppStore((s) => s.transferTable);
+  const transferTable = useAppStore((s) => s.transferTable);
+  const mergeTable = useAppStore((s) => s.mergeTable);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const { selectedTable, setSelectedTable } = useBackofficeContext();
   const navigate = useNavigate();
   if (!data || !currentUser) return null;
   const canCloseTable = enabledModules.includes('kitchen') &&
     (currentUser.role === 'admin' || currentUser.role === 'waiter' || currentUser.permissions?.includes('tables:pay'));
+  const canRelocateTables = enabledModules.includes('kitchen') &&
+    (currentUser.role === 'admin' || currentUser.role === 'waiter');
   return (
     <POSView
       data={data}
@@ -78,6 +91,12 @@ export function PosRoute() {
         navigate('/app/tables');
       }}
       canCloseTable={canCloseTable}
+      onTransferTable={canRelocateTables
+        ? async (sourceId, targetId) => { await transferTable(sourceId, { targetTableId: targetId }); }
+        : undefined}
+      onMergeTable={canRelocateTables
+        ? async (sourceId, targetId) => { await mergeTable(sourceId, { targetTableId: targetId }); }
+        : undefined}
     />
   );
 }

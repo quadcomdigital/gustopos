@@ -127,6 +127,8 @@ import {
   markShareAsPaidResponseSchema,
   transferTableRequestSchema,
   transferTableResponseSchema,
+  mergeTableRequestSchema,
+  mergeTableResponseSchema,
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   uiSettingsSchema,
@@ -275,6 +277,8 @@ import {
   type StaffUpdateRequest,
   type TransferTableRequest,
   type TransferTableResponse,
+  type MergeTableRequest,
+  type MergeTableResponse,
   type VoidOrderRequest,
   type VoidOrderResponse,
   type UiSettings,
@@ -1390,6 +1394,22 @@ export async function transferTable(
   });
 
   return readJson(response, transferTableResponseSchema);
+}
+
+export async function mergeTable(
+  sourceTableId: string,
+  payload: MergeTableRequest,
+): Promise<MergeTableResponse> {
+  const request = mergeTableRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/tables/${sourceTableId}/merge`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  return readJson(response, mergeTableResponseSchema);
 }
 
 export async function fetchBomItems(): Promise<BomItem[]> {
