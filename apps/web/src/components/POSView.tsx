@@ -433,6 +433,15 @@ export default function POSView({
   }, [data.menu, categoryModifierPools]);
 
   const selectedTable = data.tables.find((t) => t.number === posTableNumber);
+  const canRelocateCurrentTable =
+    orderMode === 'dine_in' &&
+    selectedTable?.status === 'occupied' &&
+    Boolean(onTransferTable && onMergeTable);
+  const openRelocate = (mode: TableRelocateMode) => {
+    if (!selectedTable) return;
+    setRelocateSourceTableId(selectedTable.id);
+    setRelocateMode(mode);
+  };
 
   const filteredCustomers = customers
     .filter((customer) =>
@@ -685,6 +694,28 @@ export default function POSView({
               {orderMode === 'dine_in' ? `Tavolo ${posTableNumber}` : orderMode === 'takeaway' ? 'Asporto' : 'Delivery'}
             </h2>
             <div className="flex items-center gap-2 shrink-0">
+              {canRelocateCurrentTable && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => openRelocate('move')}
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-accent hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent transition-colors"
+                    aria-label="Sposta su altro tavolo"
+                    title="Sposta su altro tavolo"
+                  >
+                    <MoveRight size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openRelocate('merge')}
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-accent hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent transition-colors"
+                    aria-label="Unisci conto con un altro tavolo"
+                    title="Unisci conto con un altro tavolo"
+                  >
+                    <GitMerge size={16} />
+                  </button>
+                </>
+              )}
               {roundsActive && posCart.length > 0 && (
                 <button
                   type="button"
@@ -996,32 +1027,6 @@ export default function POSView({
                         : 'Libero'}
                   </p>
                 </div>
-                {selectedTable?.status === 'occupied' && onTransferTable && onMergeTable && (
-                  <div className="space-y-2">
-                    <button
-                      onClick={() => {
-                        setRelocateSourceTableId(selectedTable.id);
-                        setRelocateMode('move');
-                        setShowTableActions(false);
-                      }}
-                      className="w-full flex items-center justify-center gap-2 py-3 bg-white text-primary border border-border rounded-xl hover:border-accent transition-all font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
-                    >
-                      <MoveRight size={16} />
-                      Sposta su altro tavolo
-                    </button>
-                    <button
-                      onClick={() => {
-                        setRelocateSourceTableId(selectedTable.id);
-                        setRelocateMode('merge');
-                        setShowTableActions(false);
-                      }}
-                      className="w-full flex items-center justify-center gap-2 py-3 bg-white text-primary border border-border rounded-xl hover:border-accent transition-all font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
-                    >
-                      <GitMerge size={16} />
-                      Unisci conto con…
-                    </button>
-                  </div>
-                )}
                 <button
                   onClick={() => {
                     setShowTableActions(false);

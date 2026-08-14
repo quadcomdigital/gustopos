@@ -4,24 +4,19 @@ import {
   SelfOrderSessionRotateResponse,
 } from '@gustopos/shared';
 import { cn } from '../lib/utils';
-import { X, QrCode, Link as LinkIcon, ArrowRight, MoveRight, GitMerge } from 'lucide-react';
+import { X, QrCode, Link as LinkIcon, ArrowRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import TableMoveMergeDialog, { type TableRelocateMode } from './TableMoveMergeDialog';
 
 interface TablesViewProps {
   data: AppData;
   onSelectTable: (tableNumber: string) => void;
   onRotateSelfOrderQr?: (tableId: string) => Promise<SelfOrderSessionRotateResponse>;
-  onTransferTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
-  onMergeTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
 }
 
 export default function TablesView({
   data,
   onSelectTable,
   onRotateSelfOrderQr,
-  onTransferTable,
-  onMergeTable,
 }: TablesViewProps) {
   const [showQrSheet, setShowQrSheet] = useState(false);
   const [qrSelectedTableId, setQrSelectedTableId] = useState('');
@@ -29,8 +24,6 @@ export default function TablesView({
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionSheetTableId, setActionSheetTableId] = useState('');
-  const [relocateSourceTableId, setRelocateSourceTableId] = useState('');
-  const [relocateMode, setRelocateMode] = useState<TableRelocateMode | null>(null);
 
   const orderedTables = useMemo(() => {
     return [...data.tables].sort((a, b) => {
@@ -44,7 +37,6 @@ export default function TablesView({
   }, [data.tables]);
 
   const actionSheetTable = data.tables.find((t) => t.id === actionSheetTableId) ?? null;
-  const canRelocate = actionSheetTable?.status === 'occupied' && Boolean(onTransferTable && onMergeTable);
 
   const handleRotateSelfOrderQr = async (tableId: string) => {
     if (!onRotateSelfOrderQr) return;
@@ -58,12 +50,6 @@ export default function TablesView({
     } finally {
       setActionBusy(false);
     }
-  };
-
-  const openRelocate = (mode: TableRelocateMode) => {
-    setRelocateSourceTableId(actionSheetTableId);
-    setRelocateMode(mode);
-    setActionSheetTableId('');
   };
 
   return (
@@ -150,45 +136,11 @@ export default function TablesView({
                   <span className="text-sm font-bold text-primary">Apri POS</span>
                 </button>
 
-                {canRelocate && (
-                  <>
-                    <button
-                      onClick={() => openRelocate('move')}
-                      className="w-full min-h-[52px] flex items-center gap-3 px-4 rounded-xl border border-border hover:border-accent transition-colors text-left"
-                    >
-                      <MoveRight size={18} className="text-accent shrink-0" />
-                      <span className="text-sm font-bold text-primary">Sposta su altro tavolo</span>
-                    </button>
-                    <button
-                      onClick={() => openRelocate('merge')}
-                      className="w-full min-h-[52px] flex items-center gap-3 px-4 rounded-xl border border-border hover:border-accent transition-colors text-left"
-                    >
-                      <GitMerge size={18} className="text-accent shrink-0" />
-                      <span className="text-sm font-bold text-primary">Unisci conto con…</span>
-                    </button>
-                  </>
-                )}
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Move / Merge dialog */}
-      {relocateMode && relocateSourceTableId && onTransferTable && onMergeTable && (
-        <TableMoveMergeDialog
-          open
-          mode={relocateMode}
-          sourceTableId={relocateSourceTableId}
-          data={data}
-          onClose={() => {
-            setRelocateMode(null);
-            setRelocateSourceTableId('');
-          }}
-          onTransfer={onTransferTable}
-          onMerge={onMergeTable}
-        />
-      )}
 
       {/* Self-Order QR Info */}
       {selfOrderQr && (
