@@ -329,6 +329,9 @@ func (a *Agent) Run(ctx context.Context) (err error) {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-hb.C:
+			// Liveness is the loop itself, not server reachability: mark the
+			// attempt so a network/server outage never triggers the watchdog.
+			a.lastHeartbeatUnix.Store(time.Now().Unix())
 			a.discoverPrinters()
 			if response, err := a.api.Heartbeat(a.cfg, a.printerCapabilities()); err != nil {
 				if IsDetached(err) {
