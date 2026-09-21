@@ -115,11 +115,12 @@ manifest advertises a newer semver, the agent:
 4. replaces the running binary and restarts itself.
 
 Only the configured, trusted API origin is contacted and every artifact is
-checksum-verified. On Windows a detached `cmd` waits for the process to exit,
-moves the new binary into place (verifying the move) and relaunches it (no
-console window); the single-instance mutex is released before the new process
-starts. An admin can also force it from **Settings → Stampa** → *Aggiorna
-agente* (one-shot `update` command delivered in the heartbeat response).
+checksum-verified. The swap is done in-process with no external shell: the
+running binary is renamed aside, the new one is moved into place and started
+with a short `-startup-delay` so the old process exits and releases the
+single-instance lock first. On Windows this never opens a console window. An
+admin can also force it from **Settings → Stampa** → *Aggiorna agente*
+(one-shot `update` command delivered in the heartbeat response).
 
 ### Lifecycle & robustness
 

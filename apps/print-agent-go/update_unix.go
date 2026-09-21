@@ -3,17 +3,16 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 )
 
-// launchUpdater installs the verified binary. Under systemd the unit is
-// restarted by the service manager after we exit, so the binary is swapped
-// immediately. Otherwise a detached shell waits for this process to exit (so
-// the single-instance lock is free), then swaps and re-execs the new binary.
+// launchUpdater installs the staged binary. On Unix the running executable can
+// be replaced atomically by renaming over it. Under systemd the unit restarts
+// automatically after we exit; otherwise the new binary is started with a short
+// -startup-delay so the single-instance lock is free.
 func launchUpdater(updatedPath string) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -22,15 +21,16 @@ func launchUpdater(updatedPath string) error {
 	if err := os.Chmod(updatedPath, 0o755); err != nil {
 		return err
 	}
+	if err := os.Rename(updatedPath, exe); err != nil {
+		return err
+	}
 	if os.Getenv("INVOCATION_ID") != "" {
 		// systemd Restart=always will relaunch the unit after we exit.
-		return os.Rename(updatedPath, exe)
+		return nil
 	}
-	script := fmt.Sprintf(
-		"i=0; while kill -0 %d 2>/dev/null; do i=$((i+1)); [ $i -ge 60 ] && break; sleep 1; done; mv %q %q; exec %q",
-		os.Getpid(), updatedPath, exe, exe,
-	)
-	cmd := exec.Command("/bin/sh", "-c", script)
+	args := append([]string{}, os.Args[1:]...)
+	args = append(args, "-startup-delay=2")
+	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
 }

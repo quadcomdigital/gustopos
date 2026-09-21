@@ -41,6 +41,7 @@ func main() {
 		versionFlag      = flag.Bool("version", false, "print version and exit")
 		uninstallStartup = flag.Bool("uninstall-startup", false, "remove automatic startup registration and exit")
 		background       = flag.Bool("background", envBool("GUSTOPOS_AGENT_BACKGROUND"), "run unattended (never show blocking dialogs)")
+		startupDelay     = flag.Int("startup-delay", 0, "seconds to wait before starting (set by the self-updater so the old process can exit)")
 	)
 	flag.Parse()
 	backgroundMode = *background
@@ -57,6 +58,12 @@ func main() {
 		fmt.Println("automatic startup removed")
 		notifyUser("GustoPOS Print Agent", "Autostart rimosso.")
 		return
+	}
+
+	// The self-updater launches the new binary while the old one is still
+	// shutting down; waiting here guarantees the single-instance lock is free.
+	if *startupDelay > 0 {
+		time.Sleep(time.Duration(*startupDelay) * time.Second)
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -309,16 +316,13 @@ func main() {
 				restart = true
 				break
 			}
-			log.Printf("update %s handed to the updater; shutting down for restart", staged.Version)
+			log.Printf("update %s handed to the updater; exiting now for restart", staged.Version)
 			writeExitRecord("update:" + staged.Version)
-			// Guarantee termination even if a cleanup hangs.
-			time.AfterFunc(shutdownWait+3*time.Second, func() { os.Exit(0) })
-			cancelAgent()
-			waitCh(errCh, shutdownWait)
-			stopDashboard()
-			trayCleanup()
-			// Exit without running the deferred release: the OS releases the
-			// mutex exactly when the updater is allowed to start the new exe.
+			// Exit IMMEDIATELY. The updater waits for this PID to disappear
+			// before swapping and relaunching, so the OS releases the
+			// single-instance mutex exactly when the new process may start.
+			// Nothing else runs here on purpose: dashboard/tray teardown or
+			// any other cleanup could hang and leave the agent stuck.
 			os.Exit(0)
 		case runErr := <-errCh:
 			cancelAgent()
