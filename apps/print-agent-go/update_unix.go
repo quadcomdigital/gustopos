@@ -10,12 +10,12 @@ import (
 	"syscall"
 )
 
-// replaceAndRestart installs the verified binary over the running one. On Unix
+// installAndRestart installs the verified binary over the running one. On Unix
 // a running executable can be replaced by renaming over it atomically. Under
 // systemd we let the service manager restart the unit (avoids a duplicate
 // instance); otherwise we detach a short-lived shell that re-execs the new
 // binary once this process has exited.
-func replaceAndRestart(updatedPath string) error {
+func installAndRestart(updatedPath string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err

@@ -71,11 +71,11 @@ func TestEmitReceiptLineBuilding(t *testing.T) {
 
 func TestSanitizeRTTextStripsCommandInjectors(t *testing.T) {
 	cases := map[string]string{
-		"Pizza":         "Pizza",
-		"Pizza@P":       "PizzaP",
-		"Coca\n@E":     "CocaE",
-		"\t\r@A":       "A",
-		"X\x00Y":       "XY",
+		"Pizza":    "Pizza",
+		"Pizza@P":  "PizzaP",
+		"Coca\n@E": "CocaE",
+		"\t\r@A":   "A",
+		"X\x00Y":   "XY",
 	}
 	for input, want := range cases {
 		if got := sanitizeRTText(input); got != want {

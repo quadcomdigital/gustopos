@@ -113,10 +113,30 @@ manifest advertises a newer semver, the agent:
 
 Only the configured, trusted API origin is contacted and every artifact is
 checksum-verified. On Windows a detached `cmd` waits for the process to exit,
-moves the new binary into place and relaunches it (no console window); the
-named-mutex single-instance guard then succeeds for the new process. An admin
-can also force it from **Settings → Stampa** → *Aggiorna agente* (one-shot
-`update` command delivered in the heartbeat response).
+moves the new binary into place (verifying the move) and relaunches it (no
+console window); the single-instance mutex is released before the new process
+starts. An admin can also force it from **Settings → Stampa** → *Aggiorna
+agente* (one-shot `update` command delivered in the heartbeat response).
+
+### Lifecycle & robustness
+
+- **Supervised restart**: a transient failure (network, QZ, API 5xx) restarts
+  the agent with exponential backoff (1s → 60s) instead of killing the process.
+  Only an explicit shutdown, a failed pairing or a self-update end it.
+- **Graceful shutdown**: SIGTERM/SIGINT and the tray *Esci* cancel the agent,
+  close QZ Tray, stop the dashboard and release the single-instance lock; a
+  bounded wait (5s) guarantees it exits even if a poll is in flight.
+- **No blocking dialogs in background**: the Windows logon task runs the exe
+  with `-background`, so an error is written to the log instead of opening a
+  modal dialog that would hang an unattended run.
+- **Persistent log**: `agent.log` (rotating, 2 MiB × 3) lives next to
+  `config.json` — `%LOCALAPPDATA%\GustoPOS\PrintAgent\` on Windows,
+  `/etc/gustopos-print-agent/` on Linux.
+- **Anti-loop updates**: repeated failed swaps of the same version back off for
+  an hour (`.update-attempt.json`) instead of retrying forever.
+- **Quiet fiscal poll**: the "not the cashier bridge" notice is logged only when
+  the claimed areas change.
+
 
 ## Local diagnostics dashboard
 

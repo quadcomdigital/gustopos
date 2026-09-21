@@ -36,9 +36,9 @@ import (
 // All amounts are integer cents, zero-padded to 9 digits.
 
 const (
-	rchSTX = 0x02
-	rchETX = 0x03
-	rchACK = 0x06
+	rchSTX  = 0x02
+	rchETX  = 0x03
+	rchACK  = 0x06
 	rchNACK = 0x15
 )
 

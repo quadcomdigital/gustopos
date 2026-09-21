@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 // var (not const) so the Makefile's -X linker flag can override it at build time.
@@ -23,16 +26,28 @@ var version = "0.1.0"
 // `-ldflags "-X main.defaultAPIBase=https://pos.example.com"`.
 var defaultAPIBase = "https://test.franksbar.it"
 
+// backgroundMode suppresses modal dialogs. Set by the -background flag (the
+// Windows logon task passes it) so an unattended run never blocks on a dialog.
+var backgroundMode bool
+
+const (
+	maxBackoff   = 60 * time.Second
+	shutdownWait = 5 * time.Second
+)
+
 func main() {
 	var (
 		apiBase          = flag.String("api", envOr("GUSTOPOS_API_URL", defaultAPIBase), "GustoPOS API base URL (https://...) — pre-filled in the pairing page")
 		versionFlag      = flag.Bool("version", false, "print version and exit")
 		uninstallStartup = flag.Bool("uninstall-startup", false, "remove automatic startup registration and exit")
+		background       = flag.Bool("background", envBool("GUSTOPOS_AGENT_BACKGROUND"), "run unattended (never show blocking dialogs)")
 	)
 	flag.Parse()
+	backgroundMode = *background
 
 	if *versionFlag {
 		fmt.Println("gustopos-print-agent", version)
+		notifyUser("GustoPOS Print Agent", "Versione "+version)
 		return
 	}
 	if *uninstallStartup {
@@ -40,6 +55,7 @@ func main() {
 			fatalExit(fmt.Sprintf("cannot remove automatic startup: %v", err))
 		}
 		fmt.Println("automatic startup removed")
+		notifyUser("GustoPOS Print Agent", "Autostart rimosso.")
 		return
 	}
 
@@ -49,9 +65,17 @@ func main() {
 	// Shared diagnostic state: captures every log line (ring buffer) and powers
 	// both the local dashboard (127.0.0.1) and the log shipping to the API.
 	runtimeState := newAgentRuntime()
-	log.SetOutput(io.MultiWriter(os.Stderr, runtimeState.Logs))
+	writers := []io.Writer{os.Stderr, runtimeState.Logs}
+	if logWriter, err := newRotatingLogWriter(logFilePath()); err == nil {
+		writers = append(writers, logWriter)
+		defer logWriter.Close()
+	} else {
+		fmt.Fprintf(os.Stderr, "could not open log file: %v\n", err)
+	}
+	log.SetOutput(io.MultiWriter(writers...))
+	log.Printf("gustopos-print-agent %s starting (os=%s arch=%s background=%v)", version, runtime.GOOS, runtime.GOARCH, backgroundMode)
 
-	releaseInstance, alreadyRunning, err := acquireSingleInstance()
+	instanceRelease, alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
 		fatalExit(fmt.Sprintf("cannot acquire single-instance lock: %v", err))
 	}
@@ -59,6 +83,8 @@ func main() {
 		log.Println("another print agent instance is already running")
 		return
 	}
+	var releaseOnce sync.Once
+	releaseInstance := func() { releaseOnce.Do(instanceRelease) }
 	defer releaseInstance()
 
 	// Drop a partial download left by an interrupted self-update.
@@ -70,12 +96,11 @@ func main() {
 	}
 
 	// First run (or detached): show the pairing UI. The pairing page carries a
-	// pre-filled server URL (default: the origin the agent was built/shipped
-	// for), so the user only ever types the 6-digit code.
+	// pre-filled server URL, so the user only ever types the 6-digit code.
 	if cfg == nil || !cfg.IsPaired() {
 		cfg = pairOnce(*apiBase, nil)
 		if cfg == nil {
-			os.Exit(1)
+			return
 		}
 	}
 	if err := ensureStartup(); err != nil {
@@ -86,24 +111,33 @@ func main() {
 		log.Println("automatic startup registered for the current Windows user")
 	}
 
-	// The tray is an optional UI layer: it shares the main signal channel so
-	// "Esci" follows the same shutdown path as SIGTERM/SIGINT.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sig)
-	var agentRunning atomic.Bool
-	pairingRequests := make(chan struct{}, 1)
-	var currentAgent *Agent
+	// One signal channel drives everything: SIGTERM/SIGINT and the tray "Esci".
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	defer baseCancel()
+	go func() {
+		select {
+		case <-sigCh:
+			baseCancel()
+		case <-baseCtx.Done():
+		}
+	}()
 
-	dashboardURL := ""
+	var agentRunning atomic.Bool
+	var currentAgent atomic.Pointer[Agent]
+	pairingRequests := make(chan struct{}, 1)
+	updateReady := make(chan stagedUpdate, 1)
+
 	dashboard, dashErr := StartDashboard(runtimeState, dashboardCallbacks{
 		ReconnectQZ: func() {
-			if a := currentAgent; a != nil {
+			if a := currentAgent.Load(); a != nil {
 				a.ReconnectQZ()
 			}
 		},
 		TestPrint: func(area string) error {
-			if a := currentAgent; a != nil {
+			if a := currentAgent.Load(); a != nil {
 				return a.TestPrint(area)
 			}
 			return fmt.Errorf("agent non ancora attivo")
@@ -115,13 +149,19 @@ func main() {
 			}
 		},
 	}, cfg.DashboardPort)
+	dashboardURL := ""
 	if dashErr != nil {
 		log.Printf("could not start local diagnostics dashboard: %v", dashErr)
 	} else {
 		dashboardURL = dashboard.URL()
 		log.Printf("diagnostics dashboard: %s", dashboardURL)
-		defer dashboard.Stop()
 	}
+	stopDashboard := func() {
+		if dashboard != nil {
+			dashboard.Stop()
+		}
+	}
+	defer stopDashboard()
 
 	trayCleanup, trayUpdateBridge := StartTray(cfg.BridgeID,
 		func() string {
@@ -143,51 +183,75 @@ func main() {
 		},
 		func() {
 			select {
-			case sig <- syscall.SIGTERM:
+			case sigCh <- syscall.SIGTERM:
 			default:
 			}
 		},
 	)
 	defer trayCleanup()
 
-	// Re-pair loop: if the admin detaches the bridge in Settings, the API
-	// answers 401, we wipe the credential and show the pairing page again so
-	// the machine can attach to the same or another tenant.
+	// Supervisor loop. Transient failures restart the agent with exponential
+	// backoff instead of killing the process; only an explicit shutdown, a
+	// self-update hand-off or a failed pairing end it.
+	backoff := time.Second
 	for {
-		agent, err := NewAgent(cfg, runtimeState)
+		agent, err := NewAgent(cfg, runtimeState, updateReady)
 		if err != nil {
-			fatalExit(fmt.Sprintf("agent init failed: %v", err))
+			log.Printf("agent init failed: %v — retrying in %s", err, backoff)
+			if !sleepCtx(baseCtx, backoff) {
+				break
+			}
+			backoff = nextBackoff(backoff)
+			continue
 		}
-		currentAgent = agent
-		runCtx, cancelAgent := context.WithCancel(context.Background())
+		currentAgent.Store(agent)
+
+		runCtx, cancelAgent := context.WithCancel(baseCtx)
 		errCh := make(chan error, 1)
 		agentRunning.Store(true)
-
 		go func() {
 			defer agentRunning.Store(false)
 			errCh <- agent.Run(runCtx)
 		}()
 
+		restart := false
 		select {
-		case s := <-sig:
-			log.Printf("received %s, shutting down", s)
+		case <-baseCtx.Done():
+			log.Println("shutdown requested")
 			cancelAgent()
-			<-errCh
-			return
+			waitCh(errCh, shutdownWait)
+			restart = false
 		case <-pairingRequests:
-			log.Println("pairing requested from tray")
 			cancelAgent()
-			<-errCh
+			waitCh(errCh, shutdownWait)
+			log.Println("pairing requested from tray")
 			_ = os.Remove(configPath())
 			cfg = pairOnce(*apiBase, cfg)
 			if cfg == nil {
-				return
+				restart = false
+				break
 			}
 			trayUpdateBridge(cfg.BridgeID)
-			if err := ensureStartup(); err != nil {
-				log.Printf("could not refresh automatic startup: %v", err)
+			refreshStartup()
+			backoff = time.Second
+			restart = true
+		case staged := <-updateReady:
+			cancelAgent()
+			waitCh(errCh, shutdownWait)
+			log.Printf("applying update %s", staged.Version)
+			// Release everything BEFORE the new process starts so it can grab
+			// the single-instance lock and the dashboard port.
+			stopDashboard()
+			trayCleanup()
+			releaseInstance()
+			if err := installAndRestart(staged.Path); err != nil {
+				log.Printf("update install failed: %v — continuing on %s", err, version)
+				backoff = time.Second
+				restart = true
+				break
 			}
-			continue
+			log.Printf("update %s handed to the updater; exiting for restart", staged.Version)
+			return
 		case runErr := <-errCh:
 			cancelAgent()
 			if runErr == errDetachedSentinel {
@@ -196,25 +260,34 @@ func main() {
 				if *apiBase == "" {
 					*apiBase = cfg.APIBase
 				}
-				// Carry over the QZ Tray + area settings from the previous
-				// pairing so a re-pair doesn't wipe the printer config.
 				cfg = pairOnce(*apiBase, cfg)
 				if cfg == nil {
-					os.Exit(1)
+					restart = false
+					break
 				}
 				trayUpdateBridge(cfg.BridgeID)
-				if err := ensureStartup(); err != nil {
-					log.Printf("could not refresh automatic startup: %v", err)
-				}
-				continue
+				refreshStartup()
+				backoff = time.Second
+				restart = true
+				break
 			}
-			if runErr != nil {
-				log.Printf("agent stopped with error: %v", runErr)
-				os.Exit(1)
+			if baseCtx.Err() != nil {
+				restart = false
+				break
 			}
-			return
+			log.Printf("agent stopped: %v — restarting in %s", runErr, backoff)
+			if !sleepCtx(baseCtx, backoff) {
+				restart = false
+				break
+			}
+			backoff = nextBackoff(backoff)
+			restart = true
+		}
+		if !restart {
+			break
 		}
 	}
+	log.Printf("agent stopped")
 }
 
 // pairOnce starts the pairing page, opens the browser, and blocks until the
@@ -228,12 +301,16 @@ func pairOnce(apiBase string, prev *Config) *Config {
 	defer ps.Stop()
 	log.Printf("pairing page: %s", ps.URL())
 	openBrowser(ps.URL())
-	select {
-	case cfg := <-ps.Done():
-		if cfg != nil {
-			log.Printf("paired as bridge %s — starting agent", cfg.BridgeID)
-		}
-		return cfg
+	cfg := <-ps.Done()
+	if cfg != nil {
+		log.Printf("paired as bridge %s — starting agent", cfg.BridgeID)
+	}
+	return cfg
+}
+
+func refreshStartup() {
+	if err := ensureStartup(); err != nil {
+		log.Printf("could not refresh automatic startup: %v", err)
 	}
 }
 
@@ -244,12 +321,54 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// fatalExit logs the error, shows a native Windows dialog when running on
-// Windows (so a double-click launch doesn't close invisibly), then exits.
-func fatalExit(msg string) {
-	log.Print(msg)
-	if runtime.GOOS == "windows" {
-		winMessageBox("GustoPOS Print Agent — Errore", msg)
+func envBool(key string) bool {
+	value, err := strconv.ParseBool(os.Getenv(key))
+	return err == nil && value
+}
+
+// sleepCtx waits for d or until ctx is cancelled. Returns false when cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
+}
+
+func nextBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > maxBackoff {
+		next = maxBackoff
+	}
+	return next
+}
+
+// waitCh waits for the agent goroutine to finish, bounded by timeout so a hung
+// poll can never block shutdown forever.
+func waitCh(errCh <-chan error, timeout time.Duration) {
+	select {
+	case <-errCh:
+	case <-time.After(timeout):
+	}
+}
+
+// notifyUser logs always and, only when interactive, shows a native dialog.
+// In background mode (Windows logon task) a modal dialog would hang forever, so
+// it is never shown there.
+func notifyUser(title, message string) {
+	if backgroundMode {
+		return
+	}
+	winMessageBox(title, message)
+}
+
+// fatalExit is used only for pre-loop startup failures. It logs to the file,
+// shows a dialog only when interactive, then exits.
+func fatalExit(msg string) {
+	log.Printf("FATAL: %s", msg)
+	notifyUser("GustoPOS Print Agent — Errore", msg)
 	os.Exit(1)
 }

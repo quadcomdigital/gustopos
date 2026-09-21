@@ -18,15 +18,24 @@ import (
 
 // ─── Self-update ──────────────────────────────────────────────────────────
 // The agent checks the deploy origin's public /downloads/version.json (written
-// by `make publish-downloads`) and, when a newer release exists, downloads the
-// artifact matching this OS/arch, verifies its SHA-256, replaces the running
-// binary and restarts itself. Only the configured, trusted API origin is
+// by `make publish-downloads`) and, when a newer release exists, stages the
+// artifact matching this OS/arch, verifying its SHA-256. The swap/restart is
+// performed by main (see installAndRestart) so the process shuts down cleanly
+// and only one instance ever runs. Only the configured, trusted API origin is
 // contacted and every artifact is checksum-verified against that same origin.
 
 const (
-	updateCheckEvery  = 6 * time.Hour
-	updateHTTPTimeout = 30 * time.Second
+	defaultUpdateCheckHours = 6
+	updateHTTPTimeout       = 30 * time.Second
+	updateAttemptsPerWindow = 2
+	updateAttemptWindow     = time.Hour
 )
+
+// stagedUpdate is a downloaded, checksum-verified binary ready to be swapped.
+type stagedUpdate struct {
+	Path    string
+	Version string
+}
 
 // UpdateManifest mirrors apps/web/public/downloads/version.json.
 type UpdateManifest struct {
@@ -160,14 +169,64 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// ─── Anti-loop guard ──────────────────────────────────────────────────────
+// If an update is staged but the swap keeps failing, the running binary stays
+// old and would re-stage the same version forever. Record attempts and back
+// off for a window once the threshold is reached.
+
+type updateAttempt struct {
+	Version string    `json:"version"`
+	Count   int       `json:"count"`
+	At      time.Time `json:"at"`
+}
+
+func updateAttemptPath() string {
+	return filepath.Join(filepath.Dir(configPath()), ".update-attempt.json")
+}
+
+func loadUpdateAttempt() updateAttempt {
+	var attempt updateAttempt
+	raw, err := os.ReadFile(updateAttemptPath())
+	if err != nil {
+		return attempt
+	}
+	_ = json.Unmarshal(raw, &attempt)
+	return attempt
+}
+
+func recordUpdateAttempt(version string) {
+	attempt := loadUpdateAttempt()
+	if attempt.Version == version {
+		attempt.Count++
+	} else {
+		attempt = updateAttempt{Version: version, Count: 1}
+	}
+	attempt.At = time.Now().UTC()
+	if raw, err := json.Marshal(attempt); err == nil {
+		_ = os.WriteFile(updateAttemptPath(), raw, 0o600)
+	}
+}
+
+func shouldSkipUpdateAttempt(version string) bool {
+	attempt := loadUpdateAttempt()
+	return attempt.Version == version &&
+		attempt.Count >= updateAttemptsPerWindow &&
+		time.Since(attempt.At) < updateAttemptWindow
+}
+
+// ─── Agent integration ────────────────────────────────────────────────────
+
 // updateInProgress guards against overlapping checks (ticker + manual command).
 var updateInProgress = make(chan struct{}, 1)
 
-// checkForUpdate runs one update cycle. It returns nil when already current or
-// when auto-update is disabled; on a successful apply it restarts the process
-// (and therefore does not normally return).
+// checkForUpdate stages a newer release, if any, and hands it to main through
+// a.updateReady. It never swaps the binary or exits: main owns the restart so
+// shutdown stays clean and the single-instance lock is released first.
 func (a *Agent) checkForUpdate() error {
 	if !a.cfg.autoUpdateEnabled() {
+		return nil
+	}
+	if a.updateStaged.Load() {
 		return nil
 	}
 	select {
@@ -177,52 +236,67 @@ func (a *Agent) checkForUpdate() error {
 		return nil // a check is already running
 	}
 
-	manifest, err := fetchUpdateManifest(a.api.SignBase)
+	staged, err := stageUpdateIfAvailable(a.api.SignBase)
 	if err != nil {
 		return err
 	}
-	if !isNewerVersion(manifest.Version, version) {
+	if staged == nil {
 		return nil
+	}
+	a.updateStaged.Store(true)
+	log.Printf("update %s staged at %s; requesting restart", staged.Version, staged.Path)
+	select {
+	case a.updateReady <- *staged:
+	default:
+	}
+	return nil
+}
+
+// stageUpdateIfAvailable downloads and verifies a newer release and returns it
+// ready to install. Returns nil,nil when already current or when no matching
+// artifact exists.
+func stageUpdateIfAvailable(base string) (*stagedUpdate, error) {
+	manifest, err := fetchUpdateManifest(base)
+	if err != nil {
+		return nil, err
+	}
+	if !isNewerVersion(manifest.Version, version) {
+		return nil, nil
+	}
+	if shouldSkipUpdateAttempt(manifest.Version) {
+		log.Printf("update %s failed to apply before; skipping attempts for %s", manifest.Version, updateAttemptWindow)
+		return nil, nil
 	}
 	artifact, ok := findArtifact(manifest, artifactName())
 	if !ok {
 		log.Printf("update %s available but no artifact for %s/%s", manifest.Version, runtime.GOOS, runtime.GOARCH)
-		return nil
+		return nil, nil
 	}
 	// Never let a manifest field escape the downloads directory.
 	file := filepath.Base(artifact.File)
 	if file != artifact.File || file == "." || file == ".." {
-		return fmt.Errorf("update manifest has an unsafe artifact name %q", artifact.File)
+		return nil, fmt.Errorf("update manifest has an unsafe artifact name %q", artifact.File)
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("resolve executable: %w", err)
+		return nil, fmt.Errorf("resolve executable: %w", err)
 	}
 	dest := filepath.Join(filepath.Dir(exe), ".gustopos-print-agent.update")
 	log.Printf("update available: %s -> %s (%s)", version, manifest.Version, file)
 
-	if err := downloadToFile(a.api.SignBase+"/downloads/bin/"+file, dest); err != nil {
-		return err
+	if err := downloadToFile(base+"/downloads/bin/"+file, dest); err != nil {
+		return nil, err
 	}
 	sum, err := fileSHA256(dest)
 	if err != nil {
 		os.Remove(dest)
-		return fmt.Errorf("hash update: %w", err)
+		return nil, fmt.Errorf("hash update: %w", err)
 	}
 	if !strings.EqualFold(sum, artifact.SHA256) {
 		os.Remove(dest)
-		return fmt.Errorf("update checksum mismatch (got %s, want %s)", sum, artifact.SHA256)
+		return nil, fmt.Errorf("update checksum mismatch (got %s, want %s)", sum, artifact.SHA256)
 	}
-
-	if a.runtime != nil {
-		a.runtime.Status.SetConfig(a.cfg)
-	}
-	log.Printf("update verified, installing %s and restarting", manifest.Version)
-	if err := replaceAndRestart(dest); err != nil {
-		os.Remove(dest)
-		return fmt.Errorf("install update: %w", err)
-	}
-	os.Exit(0)
-	return nil
+	recordUpdateAttempt(manifest.Version)
+	return &stagedUpdate{Path: dest, Version: manifest.Version}, nil
 }

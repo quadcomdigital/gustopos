@@ -8,8 +8,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// stagedUpdate channel is created by main; the agent only sends on it.
+// (type stagedUpdate is defined in updater.go)
 
 // Agent runs the print-bridge lifecycle on the POS machine. It talks
 // directly to the API (no browser, no JWT): the 6-digit pairing code is the
@@ -32,11 +36,16 @@ type Agent struct {
 	netDevices []DiscoveredDevice
 	// lastCommandID dedupes one-shot commands delivered again after a lost ack.
 	lastCommandID string
+	// Throttles the "fiscal claim skipped" log to state changes only.
+	lastFiscalSkipAreas string
 	// Cursor of the last log entry shipped to the API (diagnostics).
 	lastShippedSeq int64
+	// updateReady receives a staged update for main to install and restart.
+	updateReady  chan<- stagedUpdate
+	updateStaged atomic.Bool
 }
 
-func NewAgent(cfg *Config, runtime *AgentRuntime) (*Agent, error) {
+func NewAgent(cfg *Config, runtime *AgentRuntime, updateReady chan<- stagedUpdate) (*Agent, error) {
 	api := NewAPI(cfg.APIBase, "", cfg.Code, cfg.InstanceID)
 	// Persist the canonical origin on the next config save so legacy
 	// installations no longer reintroduce /api and the certificate 404.
@@ -55,6 +64,7 @@ func NewAgent(cfg *Config, runtime *AgentRuntime) (*Agent, error) {
 		claimBatch:         10,
 		printTimeout:       30 * time.Second,
 		discoveredPrinters: cachedPrinters,
+		updateReady:        updateReady,
 	}, nil
 }
 
@@ -290,7 +300,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer cl.Stop()
 	fc := time.NewTicker(a.fiscalClaimEvery)
 	defer fc.Stop()
-	upd := time.NewTicker(updateCheckEvery)
+	upd := time.NewTicker(a.cfg.updateCheckInterval())
 	defer upd.Stop()
 
 	for {

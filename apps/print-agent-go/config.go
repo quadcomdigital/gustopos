@@ -35,6 +35,8 @@ type Config struct {
 	// AutoUpdate enables the self-updater (default true when absent). It checks
 	// the deploy origin's /downloads/version.json and applies a newer release.
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
+	// UpdateCheckHours overrides the self-update poll interval (default 6h).
+	UpdateCheckHours int `json:"updateCheckHours,omitempty"`
 	// DashboardPort is the loopback port of the local diagnostics dashboard.
 	// Default 8183; never bound on a public interface.
 	DashboardPort int `json:"dashboardPort,omitempty"`
@@ -167,4 +169,13 @@ func (c *Config) IsPaired() bool {
 // autoUpdateEnabled reports whether the self-updater may run. Absent means on.
 func (c *Config) autoUpdateEnabled() bool {
 	return c != nil && (c.AutoUpdate == nil || *c.AutoUpdate)
+}
+
+// updateCheckInterval returns the configured self-update poll interval.
+func (c *Config) updateCheckInterval() time.Duration {
+	hours := defaultUpdateCheckHours
+	if c != nil && c.UpdateCheckHours > 0 {
+		hours = c.UpdateCheckHours
+	}
+	return time.Duration(hours) * time.Hour
 }

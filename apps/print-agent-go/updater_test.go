@@ -4,7 +4,35 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestNextBackoff(t *testing.T) {
+	if got := nextBackoff(time.Second); got != 2*time.Second {
+		t.Fatalf("nextBackoff(1s) = %s", got)
+	}
+	if got := nextBackoff(45 * time.Second); got != maxBackoff {
+		t.Fatalf("nextBackoff(45s) = %s, want %s", got, maxBackoff)
+	}
+}
+
+func TestUpdateAttemptGuard(t *testing.T) {
+	t.Setenv("GUSTOPOS_AGENT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	if shouldSkipUpdateAttempt("9.9.9") {
+		t.Fatal("no attempt recorded yet, should not skip")
+	}
+	recordUpdateAttempt("9.9.9")
+	if shouldSkipUpdateAttempt("9.9.9") {
+		t.Fatal("one attempt should not skip")
+	}
+	recordUpdateAttempt("9.9.9")
+	if !shouldSkipUpdateAttempt("9.9.9") {
+		t.Fatal("two attempts within the window should skip")
+	}
+	if shouldSkipUpdateAttempt("9.9.10") {
+		t.Fatal("a different version must not be skipped")
+	}
+}
 
 func TestIsNewerVersion(t *testing.T) {
 	cases := []struct {

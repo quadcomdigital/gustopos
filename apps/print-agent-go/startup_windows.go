@@ -37,8 +37,10 @@ func ensureStartup() error {
 	}
 
 	// /TR receives one command-line string. Keep the executable quoted so an
-	// install path such as "C:\Program Files\GustoPOS" remains valid.
-	runCommand := fmt.Sprintf(`"%s"`, executable)
+	// install path such as "C:\Program Files\GustoPOS" remains valid. The
+	// -background flag suppresses modal dialogs so an unattended logon run can
+	// never hang on an error box.
+	runCommand := fmt.Sprintf(`"%s" -background`, executable)
 	cmd := exec.Command("schtasks", "/Create",
 		"/TN", startupTaskName,
 		"/SC", "ONLOGON",

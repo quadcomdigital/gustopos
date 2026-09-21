@@ -22,8 +22,8 @@ type dashboardCallbacks struct {
 // dashboardServer is a loopback-only HTTP server exposing local diagnostics for
 // the POS machine (association, status, live logs, job history, export).
 type dashboardServer struct {
-	server *http.Server
-	listen net.Listener
+	server  *http.Server
+	listen  net.Listener
 	runtime *AgentRuntime
 }
 

@@ -19,10 +19,10 @@ import (
 // FiscalCommandSet and can be tuned per model once the vendor docs arrive.
 
 type FiscalPrinter struct {
-	Enabled bool   `json:"enabled"`
-	Model   string `json:"model"`   // generic-rt | epson-tm-s1000 | custom-vkp80iii
-	Host    string `json:"host"`    // printer local IP
-	Port    int    `json:"port"`    // default 4001
+	Enabled bool          `json:"enabled"`
+	Model   string        `json:"model"` // generic-rt | epson-tm-s1000 | custom-vkp80iii
+	Host    string        `json:"host"`  // printer local IP
+	Port    int           `json:"port"`  // default 4001
 	Timeout time.Duration `json:"-"`
 }
 
@@ -37,14 +37,14 @@ func (f *FiscalPrinter) address() string {
 // uses the widely-shared @-command family; per-model adapters override the
 // fields that differ on their hardware.
 type FiscalCommandSet struct {
-	OpenReceipt   string   // start a fiscal receipt (apertura scontrino)
-	Line          string   // line template: {qty}|{price}|{desc}
-	Subtotal      string   // subtotal
-	Payment       string   // payment template: {method}|{amount}
-	CloseReceipt  string   // close + emit (chiusura scontrino)
-	Chiusura      string   // end-of-day fiscal close (chiusura di giornata)
-	Status        string   // read device status / progressive
-	TestReceipt   []string // lines used for the self-test receipt
+	OpenReceipt  string   // start a fiscal receipt (apertura scontrino)
+	Line         string   // line template: {qty}|{price}|{desc}
+	Subtotal     string   // subtotal
+	Payment      string   // payment template: {method}|{amount}
+	CloseReceipt string   // close + emit (chiusura scontrino)
+	Chiusura     string   // end-of-day fiscal close (chiusura di giornata)
+	Status       string   // read device status / progressive
+	TestReceipt  []string // lines used for the self-test receipt
 }
 
 func commandsForModel(model string) FiscalCommandSet {
@@ -79,11 +79,11 @@ func commandsForModel(model string) FiscalCommandSet {
 // FiscalClient talks to an RT printer over TCP and reads back responses so
 // the emitted receipt's progressive (document number) can be captured.
 type FiscalClient struct {
-	addr  string
-	cmd   FiscalCommandSet
-	conn  net.Conn
-	rd    *bufio.Reader
-	mu    chan struct{} // serializes commands on the single device socket
+	addr string
+	cmd  FiscalCommandSet
+	conn net.Conn
+	rd   *bufio.Reader
+	mu   chan struct{} // serializes commands on the single device socket
 }
 
 // FiscalPrinterClient is the common surface used by the job processor. The
@@ -271,6 +271,21 @@ func hasArea(areas []string, area string) bool {
 	return false
 }
 
+// logFiscalSkip logs the "not the cashier bridge" notice only when the claimed
+// areas actually change, so the 5s fiscal poll does not flood the logs.
+func (a *Agent) logFiscalSkip(areas []string) {
+	key := strings.Join(areas, ",")
+	a.mu.Lock()
+	changed := a.lastFiscalSkipAreas != key
+	if changed {
+		a.lastFiscalSkipAreas = key
+	}
+	a.mu.Unlock()
+	if changed {
+		log.Printf("fiscal claim skipped: bridge not assigned to the cashier area (areas=%v)", areas)
+	}
+}
+
 func (a *Agent) claimFiscalOnce() error {
 	// Only agents with a configured fiscal printer may claim fiscal jobs. A
 	// kitchen-only agent polling the same tenant must not pull a cashier
@@ -284,7 +299,7 @@ func (a *Agent) claimFiscalOnce() error {
 	// agents claim certified fiscal jobs. claimedAreas arrive via the
 	// heartbeat response and are authoritative for Go agents.
 	if !hasArea(a.cfg.Areas, "cashier") {
-		log.Printf("fiscal claim skipped: bridge not assigned to the cashier area (areas=%v)", a.cfg.Areas)
+		a.logFiscalSkip(a.cfg.Areas)
 		return nil
 	}
 	jobs, err := a.api.ClaimFiscal(a.cfg.BridgeID, 5)
