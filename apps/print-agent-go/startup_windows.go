@@ -4,9 +4,11 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -14,6 +16,9 @@ import (
 const (
 	startupTaskName    = "GustoPOS Print Agent"
 	errorAlreadyExists = syscall.Errno(183) // ERROR_ALREADY_EXISTS
+	// Fallback autostart location that does not require elevation.
+	runKeyPath   = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+	runValueName = "GustoPOS Print Agent"
 )
 
 var (
@@ -23,9 +28,14 @@ var (
 	procCloseHandle  = kernel32.NewProc("CloseHandle")
 )
 
-// ensureStartup registers the current executable as a user-session logon task.
+// ensureStartup registers the current executable to start at logon.
 // QZ Tray runs in the interactive user's session, so this intentionally uses
 // the current user rather than a Windows service/SYSTEM task.
+//
+// It first tries a scheduled ONLOGON task; when that is denied (for example a
+// pre-existing task owned by another account, or a locked-down policy) it
+// falls back to the HKCU Run key, which needs no elevation. The named-mutex
+// single-instance guard keeps the two from ever running twice.
 func ensureStartup() error {
 	executable, err := os.Executable()
 	if err != nil {
@@ -41,23 +51,33 @@ func ensureStartup() error {
 	// -background flag suppresses modal dialogs so an unattended logon run can
 	// never hang on an error box.
 	runCommand := fmt.Sprintf(`"%s" -background`, executable)
-	cmd := exec.Command("schtasks", "/Create",
+	taskCmd := exec.Command("schtasks", "/Create",
 		"/TN", startupTaskName,
 		"/SC", "ONLOGON",
 		"/TR", runCommand,
 		"/RL", "LIMITED",
 		"/F",
 	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("register logon task: %w (%s)", err, string(output))
+	if output, taskErr := taskCmd.CombinedOutput(); taskErr == nil {
+		return nil
+	} else {
+		log.Printf("scheduled task registration failed (%v: %s); trying HKCU Run key", taskErr, strings.TrimSpace(string(output)))
 	}
+
+	if output, regErr := exec.Command("reg", "add", runKeyPath,
+		"/v", runValueName, "/t", "REG_SZ", "/d", runCommand, "/f",
+	).CombinedOutput(); regErr != nil {
+		return fmt.Errorf("register autostart: HKCU Run key failed: %w (%s)", regErr, string(output))
+	}
+	log.Printf("automatic startup registered via HKCU Run key")
 	return nil
 }
 
 func removeStartup() error {
-	output, err := exec.Command("schtasks", "/Delete", "/TN", startupTaskName, "/F").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("remove logon task: %w (%s)", err, string(output))
+	taskErr := exec.Command("schtasks", "/Delete", "/TN", startupTaskName, "/F").Run()
+	regErr := exec.Command("reg", "delete", runKeyPath, "/v", runValueName, "/f").Run()
+	if taskErr != nil && regErr != nil {
+		return fmt.Errorf("remove autostart: task: %v; HKCU Run key: %v", taskErr, regErr)
 	}
 	return nil
 }

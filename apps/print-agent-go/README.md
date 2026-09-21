@@ -96,8 +96,11 @@ arbitrary IP before it is mapped.
 
 On first run `ensureStartup` registers a per-user logon task
 (`schtasks /SC ONLOGON`, name "GustoPOS Print Agent") running the agent in the
-interactive session — required because QZ Tray also runs there. On Linux/macOS
-the systemd/launchd unit provides autostart instead.
+interactive session — required because QZ Tray also runs there. If the task
+cannot be created (a pre-existing task owned by another account, or a
+locked-down policy that denies `schtasks`), it falls back to the
+`HKCU\...\Run` key, which needs no elevation. On Linux/macOS the
+systemd/launchd unit provides autostart instead.
 
 ### Self-update
 
