@@ -3,21 +3,22 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
 )
 
-// relaunchSelf starts a detached replacement after this process exits, so the
-// single-instance mutex is free when it starts.
+// relaunchSelf starts a detached replacement of this same binary with a short
+// startup delay so the old process exits and releases the single-instance
+// mutex first. No cmd/console: the replacement inherits the original flags.
 func relaunchSelf() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	command := fmt.Sprintf(`ping -n 4 127.0.0.1 >nul & start "" "%s"`, exe)
-	cmd := exec.Command("cmd", "/c", command)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008} // DETACHED_PROCESS
+	args := append([]string{}, os.Args[1:]...)
+	args = append(args, "-startup-delay=2")
+	cmd := exec.Command(exe, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	return cmd.Start()
 }
