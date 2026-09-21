@@ -1,5 +1,5 @@
 BINARY := gustopos-print-agent
-VERSION ?= 0.13.2
+VERSION ?= 0.13.3
 # Default server origin baked into the binary (pre-filled in the pairing page).
 # Override per deployment, e.g. make linux API_BASE=https://pos.franksbar.it
 API_BASE ?= https://test.franksbar.it

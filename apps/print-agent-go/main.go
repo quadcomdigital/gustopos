@@ -152,6 +152,10 @@ func main() {
 			default:
 			}
 		},
+		Restart: func() {
+			log.Println("restart requested from dashboard")
+			relaunchAndExit()
+		},
 	}, cfg.DashboardPort)
 	dashboardURL := ""
 	if dashErr != nil {
@@ -193,6 +197,33 @@ func main() {
 		},
 	)
 	defer trayCleanup()
+
+	// Heartbeat watchdog: if the agent stops heartbeating (hang/deadlock), a
+	// fresh instance is launched and this one exits, so the POS keeps printing
+	// without a manual restart. A guard prevents a crash loop.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-baseCtx.Done():
+				return
+			case <-ticker.C:
+			}
+			agent := currentAgent.Load()
+			if agent == nil {
+				continue
+			}
+			last := agent.LastHeartbeatUnix()
+			if last == 0 {
+				continue
+			}
+			if stalled := time.Since(time.Unix(last, 0)); stalled > 2*agent.heartbeatEvery+30*time.Second {
+				log.Printf("watchdog: no heartbeat for %s — relaunching agent", stalled.Round(time.Second))
+				relaunchAndExit()
+			}
+		}
+	}()
 
 	// Supervisor loop. Transient failures restart the agent with exponential
 	// backoff instead of killing the process; only an explicit shutdown, a

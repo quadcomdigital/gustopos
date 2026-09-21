@@ -41,6 +41,8 @@ type Agent struct {
 	lastFiscalSkipAreas string
 	// Cursor of the last log entry shipped to the API (diagnostics).
 	lastShippedSeq int64
+	// lastHeartbeatUnix lets an external watchdog detect a stalled agent.
+	lastHeartbeatUnix atomic.Int64
 	// updateReady receives a staged update for main to install and restart.
 	updateReady  chan<- stagedUpdate
 	updateStaged atomic.Bool
@@ -55,7 +57,7 @@ func NewAgent(cfg *Config, runtime *AgentRuntime, updateReady chan<- stagedUpdat
 		log.Printf("could not persist canonical API origin: %v", err)
 	}
 	cachedPrinters := append([]string(nil), cfg.DiscoveredPrinters...)
-	return &Agent{
+	agent := &Agent{
 		cfg:                cfg,
 		api:                api,
 		runtime:            runtime,
@@ -66,7 +68,14 @@ func NewAgent(cfg *Config, runtime *AgentRuntime, updateReady chan<- stagedUpdat
 		printTimeout:       30 * time.Second,
 		discoveredPrinters: cachedPrinters,
 		updateReady:        updateReady,
-	}, nil
+	}
+	agent.lastHeartbeatUnix.Store(time.Now().Unix())
+	return agent, nil
+}
+
+// LastHeartbeatUnix returns when the last successful heartbeat happened.
+func (a *Agent) LastHeartbeatUnix() int64 {
+	return a.lastHeartbeatUnix.Load()
 }
 
 // printerCapabilities merges the QZ-installed printers with the network
@@ -399,6 +408,7 @@ func (a *Agent) discoverPrinters() {
 // markHeartbeat refreshes the dashboard snapshot after an authoritative
 // server config was applied (canonical bridge id, areas, mappings).
 func (a *Agent) markHeartbeat() {
+	a.lastHeartbeatUnix.Store(time.Now().Unix())
 	if a.runtime == nil {
 		return
 	}

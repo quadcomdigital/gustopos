@@ -17,6 +17,7 @@ type dashboardCallbacks struct {
 	RequestPair func()
 	TestPrint   func(area string) error
 	Config      func() *Config
+	Restart     func()
 }
 
 // dashboardServer is a loopback-only HTTP server exposing local diagnostics for
@@ -58,6 +59,14 @@ func StartDashboard(rt *AgentRuntime, cb dashboardCallbacks, preferredPort int) 
 			cb.RequestPair()
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
+	}))
+	mux.HandleFunc("/api/restart", ds.guardPost(func(w http.ResponseWriter, _ *http.Request) {
+		if cb.Restart != nil {
+			cb.Restart()
+			writeJSON(w, 200, map[string]any{"ok": true, "restarting": true})
+			return
+		}
+		writeJSON(w, 501, map[string]any{"ok": false, "error": "restart not available"})
 	}))
 	mux.HandleFunc("/api/test-print", ds.guardPost(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -248,6 +257,7 @@ const dashboardHTML = `<!doctype html>
       <button class="secondary" onclick="post('/api/qz/reconnect')">Riconnetti QZ</button>
       <button class="secondary" onclick="post('/api/test-print')">Stampa di prova</button>
       <button class="secondary" onclick="post('/api/pair')">Riconfigura associazione</button>
+      <button class="secondary" onclick="if(confirm('Riavviare l agente?')) post('/api/restart')">Riavvia agente</button>
       <a href="/api/diagnostics/download"><button class="secondary">Scarica diagnostica</button></a>
     </div>
     <p class="muted" style="margin:10px 0 0">Associazione: usa "Riconfigura associazione" per reinserire il codice a 6 cifre da Settings → Configurazioni Stampa.</p>
