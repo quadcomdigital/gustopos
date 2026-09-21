@@ -65,22 +65,26 @@ func main() {
 	// Shared diagnostic state: captures every log line (ring buffer) and powers
 	// both the local dashboard (127.0.0.1) and the log shipping to the API.
 	runtimeState := newAgentRuntime()
-	writers := []io.Writer{os.Stderr, runtimeState.Logs}
+	writers := []io.Writer{runtimeState.Logs, os.Stderr}
 	if logWriter, err := newRotatingLogWriter(logFilePath()); err == nil {
 		writers = append(writers, logWriter)
 		defer logWriter.Close()
 	} else {
 		fmt.Fprintf(os.Stderr, "could not open log file: %v\n", err)
 	}
-	log.SetOutput(io.MultiWriter(writers...))
+	// bestEffortWriter keeps the ring/file even when os.Stderr is an invalid
+	// handle (console-less Windows build).
+	log.SetOutput(bestEffortWriter{writers: writers})
 	log.Printf("gustopos-print-agent %s starting (os=%s arch=%s background=%v)", version, runtime.GOOS, runtime.GOARCH, backgroundMode)
+	logPreviousExit()
 
 	instanceRelease, alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
 		fatalExit(fmt.Sprintf("cannot acquire single-instance lock: %v", err))
 	}
 	if alreadyRunning {
-		log.Println("another print agent instance is already running")
+		log.Println("another print agent instance is already running; opening its dashboard")
+		openRunningDashboard()
 		return
 	}
 	var releaseOnce sync.Once
@@ -218,6 +222,7 @@ func main() {
 		select {
 		case <-baseCtx.Done():
 			log.Println("shutdown requested")
+			writeExitRecord("shutdown")
 			cancelAgent()
 			waitCh(errCh, shutdownWait)
 			restart = false
@@ -236,22 +241,29 @@ func main() {
 			backoff = time.Second
 			restart = true
 		case staged := <-updateReady:
-			cancelAgent()
-			waitCh(errCh, shutdownWait)
-			log.Printf("applying update %s", staged.Version)
-			// Release everything BEFORE the new process starts so it can grab
-			// the single-instance lock and the dashboard port.
-			stopDashboard()
-			trayCleanup()
-			releaseInstance()
-			if err := installAndRestart(staged.Path); err != nil {
-				log.Printf("update install failed: %v — continuing on %s", err, version)
+			// Launch the updater FIRST. It waits for this process to exit
+			// before swapping, so the single-instance lock is free and a
+			// failure leaves the running agent untouched.
+			if err := launchUpdater(staged.Path); err != nil {
+				log.Printf("update launch failed: %v — keeping %s", err, version)
+				if current := currentAgent.Load(); current != nil {
+					current.updateStaged.Store(false)
+				}
 				backoff = time.Second
 				restart = true
 				break
 			}
-			log.Printf("update %s handed to the updater; exiting for restart", staged.Version)
-			return
+			log.Printf("update %s handed to the updater; shutting down for restart", staged.Version)
+			writeExitRecord("update:" + staged.Version)
+			// Guarantee termination even if a cleanup hangs.
+			time.AfterFunc(shutdownWait+3*time.Second, func() { os.Exit(0) })
+			cancelAgent()
+			waitCh(errCh, shutdownWait)
+			stopDashboard()
+			trayCleanup()
+			// Exit without running the deferred release: the OS releases the
+			// mutex exactly when the updater is allowed to start the new exe.
+			os.Exit(0)
 		case runErr := <-errCh:
 			cancelAgent()
 			if runErr == errDetachedSentinel {
@@ -287,6 +299,7 @@ func main() {
 			break
 		}
 	}
+	writeExitRecord("stop")
 	log.Printf("agent stopped")
 }
 
@@ -369,6 +382,7 @@ func notifyUser(title, message string) {
 // shows a dialog only when interactive, then exits.
 func fatalExit(msg string) {
 	log.Printf("FATAL: %s", msg)
+	writeExitRecord("fatal: " + msg)
 	notifyUser("GustoPOS Print Agent — Errore", msg)
 	os.Exit(1)
 }

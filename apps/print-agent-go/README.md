@@ -126,12 +126,25 @@ agente* (one-shot `update` command delivered in the heartbeat response).
 - **Graceful shutdown**: SIGTERM/SIGINT and the tray *Esci* cancel the agent,
   close QZ Tray, stop the dashboard and release the single-instance lock; a
   bounded wait (5s) guarantees it exits even if a poll is in flight.
+- **Single instance, all platforms**: a named Windows mutex or a Unix `flock`.
+  A second launch does not run a duplicate: it opens the dashboard of the
+  instance that is already running (and logs the URL when no browser is
+  available).
+- **Safe updates**: the updater is launched before anything is torn down and
+  waits for the current process to exit, then swaps the binary only if the move
+  succeeds, and only then starts the new one. A failed launch keeps the running
+  version untouched; a watchdog forces exit if a cleanup hangs.
 - **No blocking dialogs in background**: the Windows logon task runs the exe
   with `-background`, so an error is written to the log instead of opening a
   modal dialog that would hang an unattended run.
 - **Persistent log**: `agent.log` (rotating, 2 MiB × 3) lives next to
   `config.json` — `%LOCALAPPDATA%\GustoPOS\PrintAgent\` on Windows,
-  `/etc/gustopos-print-agent/` on Linux.
+  `/etc/gustopos-print-agent/` on Linux. The writer is error-tolerant, so the
+  ring buffer and file are always written even when stderr is unavailable.
+- **Panic recovery**: a panic in the agent loop or any goroutine is logged with
+  its stack and does not take the process down.
+- **`.last-exit.json`** records why the previous run stopped (shutdown, update,
+  path) and is logged on the next start.
 - **Anti-loop updates**: repeated failed swaps of the same version back off for
   an hour (`.update-attempt.json`) instead of retrying forever.
 - **Quiet fiscal poll**: the "not the cashier bridge" notice is logged only when

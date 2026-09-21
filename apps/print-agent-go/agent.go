@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -108,6 +109,7 @@ func (a *Agent) setNetDevices(devices []DiscoveredDevice) {
 // goroutine so a slow scan never delays printing; the cached result is then
 // included in every subsequent heartbeat.
 func (a *Agent) runDiscovery(ctx context.Context) {
+	defer recoverPanic("discovery")
 	devices := DiscoverNetworkDevices(ctx)
 	a.setNetDevices(devices)
 	if err := a.api.ReportDiscoveredDevices(a.cfg.BridgeID, devices); err != nil {
@@ -132,6 +134,7 @@ func (a *Agent) maybeExecuteCommand(ctx context.Context, command *BridgeCommand)
 	a.mu.Unlock()
 
 	go func() {
+		defer recoverPanic("command")
 		a.executeCommand(ctx, command)
 		if err := a.api.AckCommand(a.cfg.BridgeID, command.ID); err != nil {
 			log.Printf("command %s (%s) ack failed: %v", command.ID, command.Type, err)
@@ -257,11 +260,19 @@ func escposTestTicket(area string) string {
 // detached the bridge in Settings) so the caller can re-trigger pairing.
 var errDetachedSentinel = fmt.Errorf("bridge detached")
 
-func (a *Agent) Run(ctx context.Context) error {
+func (a *Agent) Run(ctx context.Context) (err error) {
 	defer func() {
 		if a.qz != nil {
 			a.qz.Close()
 			a.qz = nil
+		}
+	}()
+	// A panic must not kill the process: log the stack and let the supervisor
+	// restart the agent with backoff.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic in agent run: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("agent panic: %v", r)
 		}
 	}()
 	// QZ discovery is best-effort: the API heartbeat must still run when QZ
@@ -289,6 +300,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.shipDiagnostics()
 	// Best-effort startup update check (never blocks printing).
 	go func() {
+		defer recoverPanic("update-check")
 		if err := a.checkForUpdate(); err != nil {
 			log.Printf("update check failed: %v", err)
 		}

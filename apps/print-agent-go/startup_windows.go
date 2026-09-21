@@ -65,12 +65,14 @@ func removeStartup() error {
 // acquireSingleInstance uses a named Windows mutex. The second process exits
 // before reading or writing config.json, preventing duplicate bridge rows and
 // competing claims when the user manually starts the exe while the task runs.
+// The mutex is owned by the first process and released on exit.
 func acquireSingleInstance() (release func(), alreadyRunning bool, err error) {
 	name, err := syscall.UTF16PtrFromString(`Global\GustoPOSPrintAgent`)
 	if err != nil {
 		return nil, false, err
 	}
-	handle, _, callErr := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
+	// bInitialOwner = 1: the creator owns the mutex and must release it.
+	handle, _, callErr := procCreateMutexW.Call(0, 1, uintptr(unsafe.Pointer(name)))
 	if handle == 0 {
 		return nil, false, callErr
 	}

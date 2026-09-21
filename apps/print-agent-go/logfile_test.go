@@ -1,10 +1,28 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("boom") }
+
+func TestBestEffortWriterKeepsWritingPastFailure(t *testing.T) {
+	var buffer strings.Builder
+	writer := bestEffortWriter{writers: []io.Writer{failingWriter{}, &buffer}}
+	n, err := writer.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("bestEffortWriter returned error: %v", err)
+	}
+	if n != len("hello") || buffer.String() != "hello" {
+		t.Fatalf("later writer not reached: n=%d buffer=%q", n, buffer.String())
+	}
+}
 
 func TestRotatingLogWriterRotates(t *testing.T) {
 	dir := t.TempDir()

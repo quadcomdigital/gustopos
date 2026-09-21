@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -210,7 +211,12 @@ func (t *windowsTray) close() {
 	}
 	t.closeOnce.Do(func() {
 		trayPostMessage.Call(uintptr(t.hWnd), uintptr(wmDestroy), 0, 0)
-		<-t.closed
+		// Never block shutdown forever if the tray message loop is stuck.
+		select {
+		case <-t.closed:
+		case <-time.After(3 * time.Second):
+			log.Printf("tray did not stop within timeout")
+		}
 	})
 }
 

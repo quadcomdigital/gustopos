@@ -3,18 +3,20 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
-// installAndRestart swaps in the freshly verified binary. A running Windows
-// executable cannot be overwritten, so a detached cmd waits for this process
-// to exit, moves the new binary into place (checking the result) and starts it
-// again. main releases the single-instance mutex before calling this.
-func installAndRestart(updatedPath string) error {
+// launchUpdater starts a detached updater that waits for THIS process to exit
+// (so the single-instance mutex is free), replaces the binary only if the move
+// succeeds, and then starts the new agent. It never touches the running
+// installation until the PID is gone, so a failure cannot leave a half-updated
+// or hung state.
+func launchUpdater(updatedPath string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -22,18 +24,40 @@ func installAndRestart(updatedPath string) error {
 	dir := filepath.Dir(exe)
 	scriptPath := filepath.Join(dir, ".gustopos-update.cmd")
 	logPath := filepath.Join(dir, "update.log")
-	script := fmt.Sprintf(
-		"@echo off\r\n"+
-			"ping -n 3 127.0.0.1 >nul\r\n"+
-			"move /y \"%s\" \"%s\" >nul\r\n"+
-			"if errorlevel 1 (echo %%date%% %%time%% move failed >> \"%s\") else (echo %%date%% %%time%% applied >> \"%s\")\r\n"+
-			"start \"\" \"%s\"\r\n",
-		updatedPath, exe, logPath, logPath, exe,
-	)
+
+	script := strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		`set "PID=%~1"`,
+		`set "NEW=%~2"`,
+		`set "TARGET=%~3"`,
+		`set "LOG=%~4"`,
+		"set /a tries=0",
+		":wait",
+		`tasklist /FI "PID eq %PID%" /NH 2>NUL | find "%PID%" >NUL`,
+		"if errorlevel 1 goto gone",
+		"set /a tries+=1",
+		"if %tries% GEQ 30 (",
+		`  echo %date% %time% timeout waiting for PID %PID% >> "%LOG%"`,
+		"  exit /b 1",
+		")",
+		"timeout /t 1 /nobreak >NUL",
+		"goto wait",
+		":gone",
+		`move /y "%NEW%" "%TARGET%" >NUL`,
+		"if errorlevel 1 (",
+		`  echo %date% %time% move failed >> "%LOG%"`,
+		"  exit /b 1",
+		")",
+		`echo %date% %time% applied >> "%LOG%"`,
+		`start "" "%TARGET%"`,
+		"",
+	}, "\r\n")
+
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
 		return err
 	}
-	cmd := exec.Command("cmd", "/c", scriptPath)
+	cmd := exec.Command("cmd", "/c", scriptPath, strconv.Itoa(os.Getpid()), updatedPath, exe, logPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008} // DETACHED_PROCESS
 	return cmd.Start()
 }

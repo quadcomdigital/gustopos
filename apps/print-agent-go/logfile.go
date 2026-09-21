@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -86,4 +87,31 @@ func (w *rotatingLogWriter) Close() error {
 	err := w.file.Close()
 	w.file = nil
 	return err
+}
+
+// bestEffortWriter writes to every target even if an earlier one fails. On the
+// console-less Windows build os.Stderr can be an invalid handle; the standard
+// io.MultiWriter stops at the first error, which would leave the ring buffer and
+// the log file empty (and diagnostics would ship zero logs).
+type bestEffortWriter struct {
+	writers []io.Writer
+}
+
+func (w bestEffortWriter) Write(p []byte) (int, error) {
+	var lastErr error
+	written := 0
+	for _, target := range w.writers {
+		n, err := target.Write(p)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if n > written {
+			written = n
+		}
+	}
+	if written == 0 && lastErr != nil {
+		return 0, lastErr
+	}
+	return written, nil
 }
