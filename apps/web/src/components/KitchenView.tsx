@@ -1,5 +1,5 @@
 import React from 'react';
-import { Order, PrintArea, UpdateOrderRequest } from '@gustopos/shared';
+import { Order, UpdateOrderRequest } from '@gustopos/shared';
 import { CheckCircle2, PlayCircle, UtensilsCrossed, Layers3, X, Clock, Timer, ArrowLeft } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { it } from 'date-fns/locale';
@@ -8,6 +8,7 @@ import { trackUxMetric } from '../shared/ux/metrics';
 import SegmentedChips from '../shared/ui/atoms/SegmentedChips';
 import StatusPill from '../shared/ui/atoms/StatusPill';
 import ContextToolbar from '../shared/ui/molecules/ContextToolbar';
+import { usePrintStations } from './inventory/usePrintStations';
 import ConfirmDialog from './ConfirmDialog';
 import { useAppStore } from '../store/app-store';
 
@@ -17,7 +18,7 @@ interface KitchenViewProps {
 }
 
 type KitchenStatusFilter = 'all' | 'pending' | 'preparing' | 'ready';
-type KitchenZoneFilter = 'all' | 'kitchen' | 'bar';
+type KitchenZoneFilter = 'all' | string;
 
 const PREP_BUFFER_MINUTES = 20;
 
@@ -129,10 +130,11 @@ interface OrderCardProps {
   updatingOrderId: string | null;
   inventoryById: ReadonlyMap<string, { id: string; name: string }>;
   modifierOptionNameById: ReadonlyMap<string, string>;
-  menuItemAreasById: ReadonlyMap<string, PrintArea[]>;
+  menuItemStationIdById: ReadonlyMap<string, string | null>;
   onToggleSelection: (orderId: string) => void;
   onUpdateStatus: (order: Order) => void;
   onRevertStatus: (order: Order) => void;
+  onResend: (order: Order) => void;
 }
 
 // Each card owns its countdown/age tick, so a 30s timer only re-renders that
@@ -146,10 +148,11 @@ const OrderCard = React.memo(function OrderCard({
   updatingOrderId,
   inventoryById,
   modifierOptionNameById,
-  menuItemAreasById,
+  menuItemStationIdById,
   onToggleSelection,
   onUpdateStatus,
   onRevertStatus,
+  onResend,
 }: OrderCardProps) {
   const now = useNow(30_000);
   const meta = getStatusMeta(order.status);
@@ -158,15 +161,12 @@ const OrderCard = React.memo(function OrderCard({
   const ageMins = getOrderAgeMinutes(order.timestamp, now);
   const label = getOrderLabel(order);
 
-  // Option B: when a zone filter is active, show only the rows belonging to
-  // that zone (mixed tables show just their kitchen/bar lines respectively).
+  // Option B: when a zone filter is active, show only the rows assigned to
+  // that station (mixed tables show just their matching lines).
   const visibleItems =
     zoneFilter === 'all'
       ? order.items
-      : order.items.filter((item) => {
-          const areas = menuItemAreasById.get(item.id) ?? ['kitchen'];
-          return areas.includes(zoneFilter);
-        });
+      : order.items.filter((item) => menuItemStationIdById.get(item.id) === zoneFilter);
   const hiddenItemsCount = order.items.length - visibleItems.length;
 
   return (
@@ -309,6 +309,14 @@ const OrderCard = React.memo(function OrderCard({
               {updatingOrderId === order.id ? 'Aggiorno...' : meta.actionLabel}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => onResend(order)}
+            title="Reinvia ticket alle stazioni"
+            className="px-3 py-2.5 rounded-lg border border-border text-text-muted hover:bg-bg text-[11px] sm:text-xs font-bold uppercase tracking-wider transition-all shadow-sm min-h-11 active:scale-[0.97]"
+          >
+            Stampa
+          </button>
         </div>
       )}
     </div>
@@ -340,43 +348,45 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
     return map;
   }, [data?.menu]);
 
-  // Resolve which print areas (kitchen/bar) each menu item belongs to. Order
-  // items expose their menuItemId as `id`, so we can classify every order row.
-  const menuItemAreasById = React.useMemo(() => {
-    const map = new Map<string, PrintArea[]>();
+  // Resolve the station id of each menu item. Order items expose their
+  // menuItemId as `id`, so we can classify every order row. Assignment is
+  // explicit (product/category) — no name/regex inference.
+  const { stations } = usePrintStations();
+  const zoneStations = React.useMemo(
+    () => stations.filter((s) => s.isActive && s.kind !== 'cashier'),
+    [stations],
+  );
+  const menuItemStationIdById = React.useMemo(() => {
+    const map = new Map<string, string | null>();
     for (const mi of data?.menu ?? []) {
-      map.set(mi.id, mi.printAreas?.length ? mi.printAreas : ['kitchen']);
+      map.set(mi.id, mi.stationId ?? null);
     }
     return map;
   }, [data?.menu]);
 
-  // Per-order zone membership: an order is shown under a zone if at least one
-  // of its items belongs to it (mixed tables appear in both Cucina and Bar).
-  // Unmatched items fall back to kitchen, matching the print dispatch default.
+  // Per-order station membership: an order is shown under a station if at
+  // least one of its items is assigned to it (mixed tables appear in several).
   const orderZoneInfo = React.useMemo(() => {
-    const info = new Map<string, { kitchen: boolean; bar: boolean }>();
+    const info = new Map<string, Set<string>>();
     for (const order of orders) {
-      let kitchen = false;
-      let bar = false;
+      const zones = new Set<string>();
       for (const item of order.items) {
-        const areas = menuItemAreasById.get(item.id) ?? ['kitchen'];
-        if (areas.includes('kitchen')) kitchen = true;
-        if (areas.includes('bar')) bar = true;
+        const stationId = menuItemStationIdById.get(item.id);
+        if (stationId) zones.add(stationId);
       }
-      info.set(order.id, { kitchen, bar });
+      info.set(order.id, zones);
     }
     return info;
-  }, [orders, menuItemAreasById]);
+  }, [orders, menuItemStationIdById]);
 
   const zoneCounts = React.useMemo(() => {
-    let kitchen = 0;
-    let bar = 0;
+    const counts = new Map<string, number>();
     for (const order of pendingOrders) {
       const zones = orderZoneInfo.get(order.id);
-      if (zones?.kitchen) kitchen += 1;
-      if (zones?.bar) bar += 1;
+      if (!zones) continue;
+      for (const zone of zones) counts.set(zone, (counts.get(zone) ?? 0) + 1);
     }
-    return { kitchen, bar };
+    return counts;
   }, [pendingOrders, orderZoneInfo]);
 
   // Scheduled orders move to the active board when their prep window opens;
@@ -391,13 +401,18 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
     return () => clearInterval(id);
   }, [hasScheduledOrders]);
 
+  const resendOrderPrintJobs = useAppStore((s) => s.resendOrderPrintJobs);
+  const handleResend = (order: Order) => {
+    void resendOrderPrintJobs(order.id).catch(() => {
+      // store surfaces the error
+    });
+  };
+
   const filteredOrders = pendingOrders
     .filter((order) => (statusFilter === 'all' ? true : order.status === statusFilter))
     .filter((order) => {
       if (zoneFilter === 'all') return true;
-      const zones = orderZoneInfo.get(order.id);
-      if (zoneFilter === 'kitchen') return zones?.kitchen ?? true;
-      return zones?.bar ?? false;
+      return orderZoneInfo.get(order.id)?.has(zoneFilter) ?? false;
     });
 
   const activeOrders = filteredOrders.filter((o) => !isScheduled(o)).sort(sortOrders);
@@ -503,10 +518,11 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
       updatingOrderId={updatingOrderId}
       inventoryById={inventoryById}
       modifierOptionNameById={modifierOptionNameById}
-      menuItemAreasById={menuItemAreasById}
+      menuItemStationIdById={menuItemStationIdById}
       onToggleSelection={toggleOrderSelection}
       onUpdateStatus={updateSingleOrderStatus}
       onRevertStatus={revertOrderStatus}
+      onResend={handleResend}
     />
   );
 
@@ -551,8 +567,7 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
           onChange={(value) => { setZoneFilter(value); trackUxMetric('kitchen.zone.change'); }}
           options={[
             { value: 'all', label: 'Tutte', badge: pendingOrders.length },
-            { value: 'kitchen', label: 'Cucina', badge: zoneCounts.kitchen },
-            { value: 'bar', label: 'Bar', badge: zoneCounts.bar },
+            ...zoneStations.map((s) => ({ value: s.id, label: s.name, badge: zoneCounts.get(s.id) ?? 0 })),
           ]}
         />
 

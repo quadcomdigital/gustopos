@@ -51,4 +51,19 @@ export default defineConfig({
       },
     },
   },
+  // Production static server (used by PM2 `npm run preview`). Serves the built
+  // `dist/` and proxies same-origin `/api` + `/socket.io` to the API, so the
+  // direct :11900 path behaves exactly like the nginx-fronted deployment.
+  preview: {
+    host: '0.0.0.0',
+    port: webPort,
+    strictPort: true,
+    proxy: {
+      '/api': apiTarget,
+      '/socket.io': {
+        target: apiTarget,
+        ws: true,
+      },
+    },
+  },
 });

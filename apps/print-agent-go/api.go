@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -113,17 +114,30 @@ func (a *API) do(method, path string, body any, out any) error {
 // ─── Heartbeat ─────────────────────────────────────────────────────────
 
 type HeartbeatRequest struct {
-	BridgeID string           `json:"bridgeId"`
-	Name     string           `json:"name,omitempty"`
-	Host     string           `json:"host,omitempty"`
-	Version  string           `json:"version,omitempty"`
-	Areas    []string         `json:"areas"`
-	Printers []map[string]any `json:"printers"`
+	BridgeID string                    `json:"bridgeId"`
+	Name     string                    `json:"name,omitempty"`
+	Host     string                    `json:"host,omitempty"`
+	Version  string                    `json:"version,omitempty"`
+	Areas    []string                  `json:"areas"`
+	Printers []BridgePrinterCapability `json:"printers"`
+}
+
+// BridgePrinterCapability is a printer the agent can see: a QZ-installed
+// printer (source "qz") or a raw network printer discovered on the LAN
+// (source "net", with ip/port). The server persists these for the admin UI.
+type BridgePrinterCapability struct {
+	Name   string `json:"name"`
+	IP     string `json:"ip,omitempty"`
+	Port   int    `json:"port,omitempty"`
+	Source string `json:"source,omitempty"`
+	Vendor string `json:"vendor,omitempty"`
 }
 
 type BridgePrinterMapping struct {
 	Area string `json:"area"`
 	Name string `json:"name"`
+	IP   string `json:"ip"`
+	Port int    `json:"port"`
 }
 
 type HeartbeatResponse struct {
@@ -136,27 +150,34 @@ type HeartbeatResponse struct {
 		Mappings     []BridgePrinterMapping `json:"mappings"`
 	} `json:"bridge"`
 	ServerTime string `json:"serverTime"`
+	// Command is a one-shot admin request (network scan / direct test print).
+	// The agent executes it, acks it, and the server clears it.
+	Command *BridgeCommand `json:"command,omitempty"`
 	// Certified fiscal (Path B): the tenant's RT printer config when the admin
 	// configured a device in the web UI. Applied over the local config on
 	// receipt so the server remains the source of truth for host/port/model.
 	FiscalPrinter *FiscalPrinter `json:"fiscalPrinter,omitempty"`
 }
 
+// BridgeCommand is a one-shot instruction pushed by the API in the heartbeat
+// response. type "scan" asks the agent to scan the LAN; "test-print" asks it
+// to print an identification ticket straight to ip:port.
+type BridgeCommand struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	IP    string `json:"ip,omitempty"`
+	Port  int    `json:"port,omitempty"`
+	Label string `json:"label,omitempty"`
+}
+
 // Heartbeat registers this bridge under the tenant resolved from the code.
 // The first call binds the code to this bridgeId (permanent until revoked).
-func (a *API) Heartbeat(cfg *Config, discovered ...[]string) (*HeartbeatResponse, error) {
+func (a *API) Heartbeat(cfg *Config, printers []BridgePrinterCapability) (*HeartbeatResponse, error) {
 	host, _ := os.Hostname()
-	// Report the printer names discovered by QZ Tray. Administrative area
-	// mappings are returned separately by the API and must not be sent back as
-	// capabilities: the server owns those mappings.
-	printers := make([]map[string]any, 0)
-	if len(discovered) > 0 {
-		for _, name := range discovered[0] {
-			name = strings.TrimSpace(name)
-			if name != "" {
-				printers = append(printers, map[string]any{"name": name})
-			}
-		}
+	// Administrative area mappings are returned separately by the API and must
+	// not be sent back as capabilities: the server owns those mappings.
+	if printers == nil {
+		printers = []BridgePrinterCapability{}
 	}
 	req := HeartbeatRequest{
 		BridgeID: cfg.BridgeID,
@@ -171,6 +192,20 @@ func (a *API) Heartbeat(cfg *Config, discovered ...[]string) (*HeartbeatResponse
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ReportDiscoveredDevices ships the network-scan result to the API. The server
+// merges it into the bridge's printer list and clears the discovery flag.
+func (a *API) ReportDiscoveredDevices(bridgeID string, devices []DiscoveredDevice) error {
+	return a.do(http.MethodPost, "/api/print-bridge/discovered-printers",
+		map[string]any{"bridgeId": bridgeID, "devices": devices}, nil)
+}
+
+// AckCommand tells the API a one-shot command has been executed so it can be
+// cleared and not delivered again.
+func (a *API) AckCommand(bridgeID, commandID string) error {
+	return a.do(http.MethodPost, "/api/print-bridge/command-ack",
+		map[string]any{"bridgeId": bridgeID, "commandId": commandID}, nil)
 }
 
 // ─── Claim / complete / fail ───────────────────────────────────────────
@@ -233,8 +268,40 @@ func (a *API) FailFiscal(bridgeID, jobID, errMsg string) error {
 		map[string]any{"bridgeId": bridgeID, "error": errMsg}, nil)
 }
 
-// ─── QZ Tray signing ───────────────────────────────────────────────────
+// ─── Diagnostics (agent logs + health) ─────────────────────────────────
 
+type DiagnosticsLogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Component string `json:"component,omitempty"`
+	Message   string `json:"message"`
+}
+
+type DiagnosticsRequest struct {
+	BridgeID   string                `json:"bridgeId"`
+	InstanceID string                `json:"instanceId,omitempty"`
+	Version    string                `json:"version,omitempty"`
+	OS         string                `json:"os,omitempty"`
+	LastError  string                `json:"lastError,omitempty"`
+	Logs       []DiagnosticsLogEntry `json:"logs"`
+}
+
+// PushDiagnostics ships a compact log/health batch to the API so admins can
+// inspect a remote POS agent from Settings. Best-effort: the caller logs but
+// does not fail the agent on error.
+func (a *API) PushDiagnostics(cfg *Config, logs []DiagnosticsLogEntry, lastError string) error {
+	req := DiagnosticsRequest{
+		BridgeID:   cfg.BridgeID,
+		InstanceID: cfg.InstanceID,
+		Version:    "go-" + version,
+		OS:         runtime.GOOS,
+		LastError:  lastError,
+		Logs:       logs,
+	}
+	return a.do(http.MethodPost, "/api/print-bridge/diagnostics", req, nil)
+}
+
+// ─── QZ Tray signing ───────────────────────────────────────────────────
 // SignQzMessage returns the base64 RSA-SHA512 signature over the SHA-256 hex
 // digest of the JSON payload — exactly the QZ Tray verification protocol
 // (SHA-256(json) → hex → SHA512withRSA). The server signs on our behalf; no

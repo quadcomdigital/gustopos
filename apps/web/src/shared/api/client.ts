@@ -55,6 +55,8 @@ import {
   printJobSchema,
   printJobsListResponseSchema,
   printJobsQuerySchema,
+  printBridgeDiagnosticsResponseSchema,
+  type PrintBridgeLogRecord,
   dispatchPrintJobRequestSchema,
   reservationSchema,
   reservationListResponseSchema,
@@ -133,6 +135,14 @@ import {
   voidOrderResponseSchema,
   uiSettingsSchema,
   courseRoundsConfigSchema,
+  printStationSchema,
+  printStationsListResponseSchema,
+  printStationCreateRequestSchema,
+  printStationUpdateRequestSchema,
+  productionReferenceSchema,
+  productionReferencesListResponseSchema,
+  productionReferenceCreateRequestSchema,
+  productionReferenceUpdateRequestSchema,
   printLogoUploadResponseSchema,
   prepItemSchema,
   prepItemCreateRequestSchema,
@@ -283,6 +293,12 @@ import {
   type VoidOrderResponse,
   type UiSettings,
   type CourseRoundsConfig,
+  type PrintStation,
+  type PrintStationCreateRequest,
+  type PrintStationUpdateRequest,
+  type ProductionReference,
+  type ProductionReferenceCreateRequest,
+  type ProductionReferenceUpdateRequest,
   type PrintLogoUploadResponse,
   type FiscalPrinterConfig,
   type FiscalPrinterConfigUpdateRequest,
@@ -1065,6 +1081,98 @@ export async function fetchCourseRoundsConfig(): Promise<CourseRoundsConfigRespo
   return readJson(response, courseRoundsConfigResponseSchema);
 }
 
+export async function updateCourseRoundsConfig(config: CourseRoundsConfig): Promise<CourseRoundsConfigResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/course-rounds/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(courseRoundsConfigSchema.parse(config)),
+  });
+  return readJson(response, courseRoundsConfigResponseSchema);
+}
+
+// ─── Print stations ────────────────────────────────────────────────────
+
+export async function fetchPrintStations(): Promise<PrintStation[]> {
+  const response = await authorizedFetch(`${API_URL}/api/print-stations`);
+  return readJson(response, printStationsListResponseSchema);
+}
+
+export async function createPrintStation(payload: PrintStationCreateRequest): Promise<PrintStation> {
+  const response = await authorizedFetch(`${API_URL}/api/print-stations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(printStationCreateRequestSchema.parse(payload)),
+  });
+  return readJson(response, printStationSchema);
+}
+
+export async function updatePrintStation(id: string, payload: PrintStationUpdateRequest): Promise<PrintStation> {
+  const response = await authorizedFetch(`${API_URL}/api/print-stations/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(printStationUpdateRequestSchema.parse(payload)),
+  });
+  return readJson(response, printStationSchema);
+}
+
+export async function deletePrintStation(id: string): Promise<{ success: boolean; id: string }> {
+  const response = await authorizedFetch(`${API_URL}/api/print-stations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  return response.json() as Promise<{ success: boolean; id: string }>;
+}
+
+// ─── Production references (container/base counting) ───────────────────
+
+export async function fetchProductionReferences(): Promise<ProductionReference[]> {
+  const response = await authorizedFetch(`${API_URL}/api/production-references`);
+  return readJson(response, productionReferencesListResponseSchema);
+}
+
+export async function createProductionReference(payload: ProductionReferenceCreateRequest): Promise<ProductionReference> {
+  const response = await authorizedFetch(`${API_URL}/api/production-references`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(productionReferenceCreateRequestSchema.parse(payload)),
+  });
+  return readJson(response, productionReferenceSchema);
+}
+
+export async function updateProductionReference(id: string, payload: ProductionReferenceUpdateRequest): Promise<ProductionReference> {
+  const response = await authorizedFetch(`${API_URL}/api/production-references/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(productionReferenceUpdateRequestSchema.parse(payload)),
+  });
+  return readJson(response, productionReferenceSchema);
+}
+
+export async function deleteProductionReference(id: string): Promise<{ success: boolean; id: string }> {
+  const response = await authorizedFetch(`${API_URL}/api/production-references/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  return response.json() as Promise<{ success: boolean; id: string }>;
+}
+
+export async function resendOrderPrintJobs(orderId: string): Promise<{ dispatched: boolean }> {
+  const response = await authorizedFetch(`${API_URL}/api/orders/${encodeURIComponent(orderId)}/resend`, {
+    method: 'POST',
+  });
+  return response.json() as Promise<{ dispatched: boolean }>;
+}
+
+export async function updateOrderItemRound(orderId: string, orderItemId: number, round: number | null): Promise<Order> {
+  const response = await authorizedFetch(
+    `${API_URL}/api/orders/${encodeURIComponent(orderId)}/items/${orderItemId}/round`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ round }),
+    },
+  );
+  return readJson(response, orderSchema);
+}
+
 export async function updateUiSettings(payload: UpdateUiSettingsRequest): Promise<UiSettings> {
   const request = updateUiSettingsRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/settings`, {
@@ -1548,6 +1656,31 @@ export async function completePrintJob(id: string): Promise<PrintJob> {
     },
   });
   return readJson(response, printJobSchema);
+}
+
+export async function retryPrintJob(id: string): Promise<PrintJob> {
+  const response = await authorizedFetch(`${API_URL}/api/print-jobs/${id}/retry`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+  return readJson(response, printJobSchema);
+}
+
+export async function fetchBridgeLogs(
+  bridgeId: string,
+  options: { level?: 'info' | 'warn' | 'error'; limit?: number } = {},
+): Promise<PrintBridgeLogRecord[]> {
+  const query = new URLSearchParams();
+  if (options.level) query.set('level', options.level);
+  if (options.limit) query.set('limit', String(options.limit));
+  const suffix = query.toString().length > 0 ? `?${query.toString()}` : '';
+  const response = await authorizedFetch(
+    `${API_URL}/api/print-bridge/${encodeURIComponent(bridgeId)}/logs${suffix}`,
+  );
+  const parsed = await readJson(response, printBridgeDiagnosticsResponseSchema);
+  return parsed.logs;
 }
 
 export async function fetchReservations(queryPayload: ReservationsQuery = {}): Promise<Reservation[]> {
@@ -2566,11 +2699,35 @@ export async function updateBridgeClaimedAreas(
 
 export async function triggerBridgeTestPrintRequest(
   bridgeId: string,
-  area: PrintAreaType,
+  area: string,
 ): Promise<PrintBridgeTestPrintResponse> {
   return authedJson<PrintBridgeTestPrintResponse>(
     `/api/print-bridge/${encodeURIComponent(bridgeId)}/test-print`,
     { method: 'POST', json: { area } },
+  );
+}
+
+export async function requestBridgeDiscoveryRequest(bridgeId: string): Promise<{ command: unknown }> {
+  return authedJson<{ command: unknown }>(
+    `/api/print-bridge/${encodeURIComponent(bridgeId)}/discover`,
+    { method: 'POST' },
+  );
+}
+
+export async function testBridgePrinterRequest(
+  bridgeId: string,
+  payload: { ip: string; port?: number; label?: string },
+): Promise<{ command: unknown }> {
+  return authedJson<{ command: unknown }>(
+    `/api/print-bridge/${encodeURIComponent(bridgeId)}/test-printer`,
+    { method: 'POST', json: payload },
+  );
+}
+
+export async function requestBridgeUpdateRequest(bridgeId: string): Promise<{ command: unknown }> {
+  return authedJson<{ command: unknown }>(
+    `/api/print-bridge/${encodeURIComponent(bridgeId)}/update`,
+    { method: 'POST' },
   );
 }
 
@@ -2704,6 +2861,9 @@ export type {
 export {
   listPrintBridgesRequest as listPrintBridges,
   triggerBridgeTestPrintRequest as triggerBridgeTestPrint,
+  requestBridgeDiscoveryRequest as requestBridgeDiscovery,
+  testBridgePrinterRequest as testBridgePrinter,
+  requestBridgeUpdateRequest as requestBridgeUpdate,
   listOnboardingSecretsRequest as listOnboardingSecrets,
   createOnboardingSecretRequest as createOnboardingSecret,
   revokeOnboardingSecretRequest as revokeOnboardingSecret,

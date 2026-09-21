@@ -1,7 +1,8 @@
 import { useId, useRef, useState } from 'react';
 import type { PrintJob, UiSettings } from '@gustopos/shared';
 import { useAppStore } from '../../store/app-store';
-import { uploadPrintLogo, type QzTrayConfig } from '../../shared/api/client';
+import { uploadPrintLogo, retryPrintJob, type QzTrayConfig } from '../../shared/api/client';
+import PrintDiagnosticsPanel from './PrintDiagnosticsPanel';
 
 interface PrintSettingsSectionProps {
   draft: UiSettings;
@@ -59,7 +60,20 @@ export default function PrintSettingsSection({
   const [logoError, setLogoError] = useState('');
   const [logoPreview, setLogoPreview] = useState('');
   const [logoMeta, setLogoMeta] = useState('');
+  const [retryingJobId, setRetryingJobId] = useState('');
   const logoFileInput = useRef<HTMLInputElement>(null);
+
+  const handleRetryJob = async (id: string) => {
+    setRetryingJobId(id);
+    try {
+      await retryPrintJob(id);
+      await onRefreshPrintJobs();
+    } catch {
+      // The queue refresh will surface the persisted error again.
+    } finally {
+      setRetryingJobId('');
+    }
+  };
 
   const clearLogo = () => {
     setPrinting({ logoMode: 'none', logoBitmap: undefined });
@@ -475,6 +489,9 @@ export default function PrintSettingsSection({
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-secondary">{job.area ? job.area.toUpperCase() : '—'} • {job.status.toUpperCase()}</p>
                   <p className="text-text-muted">{new Date(job.createdAt).toLocaleString()}</p>
+                  {job.error && (
+                    <p className="text-danger break-words" title={job.error}>{job.error}</p>
+                  )}
                 </div>
                 <span
                   title={handlerLabel}
@@ -484,15 +501,25 @@ export default function PrintSettingsSection({
                 >
                   {bridge ? `↳ ${bridge.name}` : '↳ browser'}
                 </span>
-                <button
-                  onClick={() =>
-                    void onDispatchPrintJob(job.id, bridgeEndpointOverride ? { endpoint: bridgeEndpointOverride } : undefined)
-                  }
-                  disabled={job.status !== 'pending'}
-                  className="px-3 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider disabled:opacity-50"
-                >
-                  Dispatch
-                </button>
+                {job.status === 'failed' ? (
+                  <button
+                    onClick={() => void handleRetryJob(job.id)}
+                    disabled={retryingJobId === job.id}
+                    className="px-3 py-1 rounded border border-danger text-danger text-[10px] font-bold uppercase tracking-wider disabled:opacity-50"
+                  >
+                    {retryingJobId === job.id ? '…' : 'Riprova'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() =>
+                      void onDispatchPrintJob(job.id, bridgeEndpointOverride ? { endpoint: bridgeEndpointOverride } : undefined)
+                    }
+                    disabled={job.status !== 'pending'}
+                    className="px-3 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider disabled:opacity-50"
+                  >
+                    Dispatch
+                  </button>
+                )}
               </div>
             );
           })}
@@ -509,6 +536,9 @@ export default function PrintSettingsSection({
           />
         </div>
       </div>
+
+      {/* ── Diagnostica bridge ────────────────────────────────────────── */}
+      <PrintDiagnosticsPanel printBridges={printBridges} />
     </section>
   );
 }

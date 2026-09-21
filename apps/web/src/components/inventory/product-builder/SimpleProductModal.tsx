@@ -1,13 +1,13 @@
 import { useState, useMemo, useEffect } from 'react';
-import type { Category, Ingredient, PrepItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
+import type { Category, Ingredient, PrepItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
 import Modal from '../../../shared/ui/molecules/Modal';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import InlineCategoryPicker from '../InlineCategoryPicker';
 import ModifierGroupsEditor from '../ModifierGroupsEditor';
 import FormField from '../../../shared/ui/molecules/FormField';
+import { usePrintStations } from '../usePrintStations';
+import { useProductionReferences } from '../useProductionReferences';
 import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
-
-const PRINT_AREA_LABELS: Record<string, string> = { kitchen: 'Cucina', bar: 'Bar', cashier: 'Cassa' };
 
 interface SimpleProductModalProps {
   open: boolean;
@@ -33,12 +33,16 @@ export default function SimpleProductModal({
   const [categoryId, setCategoryId] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [price, setPrice] = useState('');
-  const [printAreas, setPrintAreas] = useState<PrintArea[]>(['kitchen']);
+  const [stationId, setStationId] = useState('');
+  const [referenceId, setReferenceId] = useState('');
   const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [error, setError] = useState('');
 
+  const { stations } = usePrintStations();
+  const { references } = useProductionReferences();
+  const activeReferences = references.filter((r) => r.isActive);
   const menuCategories = useMemo(() => categories.filter((c) => !c.scope || c.scope === 'menu'), [categories]);
 
   useEffect(() => {
@@ -48,14 +52,15 @@ export default function SimpleProductModal({
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
       setPrice(String(editItem.price));
-      setPrintAreas(editItem.printAreas?.length ? editItem.printAreas : ['kitchen']);
+      setStationId(editItem.stationId ?? '');
+      setReferenceId(editItem.referenceId ?? '');
       setModifierGroups(editItem.modifierGroups ?? []);
     } else if (!open) {
       setName('');
       setCategoryId('');
       setCategoryName('');
       setPrice('');
-      setPrintAreas(['kitchen']);
+      setStationId(''); setReferenceId('');
       setModifierGroups([]);
       setErrors({});
       setError('');
@@ -63,15 +68,16 @@ export default function SimpleProductModal({
   }, [editItem, open]);
 
   const dirty = useMemo(() => {
-    if (!isEdit || !editItem) return name !== '' || price !== '' || categoryId !== '' || printAreas.length !== 1;
+    if (!isEdit || !editItem) return name !== '' || price !== '' || categoryId !== '' || stationId !== '';
     return (
       name !== editItem.name
       || categoryId !== (editItem.categoryId ?? '')
       || price !== String(editItem.price)
-      || JSON.stringify(printAreas) !== JSON.stringify(editItem.printAreas)
+      || stationId !== (editItem.stationId ?? '')
+      || referenceId !== (editItem.referenceId ?? '')
       || JSON.stringify(modifierGroups) !== JSON.stringify(editItem.modifierGroups)
     );
-  }, [isEdit, editItem, name, categoryId, price, printAreas, modifierGroups]);
+  }, [isEdit, editItem, name, categoryId, price, stationId, referenceId, modifierGroups]);
 
   const handleSave = async () => {
     const errs: ValidationErrors = {};
@@ -90,7 +96,9 @@ export default function SimpleProductModal({
           category: catName,
           categoryId: categoryId || undefined,
           price: priceNum,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           modifierGroups,
         });
       } else if (onCreateMenuProduct) {
@@ -102,7 +110,9 @@ export default function SimpleProductModal({
           price: priceNum,
           category: catName.trim(),
           categoryId: categoryId || undefined,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           components: [],
           inlineIngredients: [],
           inlinePreps: [],
@@ -113,7 +123,9 @@ export default function SimpleProductModal({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           price: priceNum,
           recipe: [],
           modifiers: [],
@@ -167,17 +179,28 @@ export default function SimpleProductModal({
           </FormField>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
-            <button
-              key={area}
-              type="button"
-              onClick={() => setPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
-              className={`min-h-[44px] px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'}`}
-            >
-              stampa {PRINT_AREA_LABELS[area]}
-            </button>
-          ))}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Stazione di stampa</label>
+          <select
+            value={stationId}
+            onChange={(e) => setStationId(e.target.value)}
+            className="px-3 py-2 rounded border border-border text-sm w-full min-h-[44px] bg-white"
+          >
+            <option value="">Stazione predefinita (dalla categoria)</option>
+            {stations.filter((s) => s.isActive && s.kind !== 'cashier').map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}{s.isDefault ? ' (predefinita)' : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-text-muted">Un prodotto stampa su una sola stazione. Se non impostata, vale la categoria o la stazione predefinita.</p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Referenza conteggio (contenitore)</label>
+          <select value={referenceId} onChange={(e) => setReferenceId(e.target.value)} className="px-3 py-2 rounded border border-border text-sm w-full min-h-[44px] bg-white">
+            <option value="">Nessuna (eredita dalla categoria)</option>
+            {activeReferences.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+          </select>
         </div>
 
         <div className="border-t border-border pt-3">

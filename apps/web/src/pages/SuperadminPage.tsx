@@ -18,6 +18,7 @@ const SUPERADMIN_REFRESH_KEY = 'gustopos:superadmin:refresh';
 
 const MODULES: Array<{ key: ModuleKey; label: string; description: string; critical?: boolean; requires?: ModuleKey[] }> = [
   { key: 'kitchen', label: 'Kitchen', description: 'Ordini cucina e flusso preparazione' },
+  { key: 'course_rounds', label: 'Course Rounds', description: 'Portate/turni di servizio (richiede Kitchen)', requires: ['kitchen'] },
   { key: 'inventory', label: 'Inventory', description: 'Magazzino, ingredienti e disponibilita', critical: true },
   { key: 'simple_catalog', label: 'Simple Catalog', description: 'Catalogo item semplificato senza ingredienti/BoM' },
   { key: 'customers', label: 'Customers', description: 'Anagrafica clienti e storico acquisti' },

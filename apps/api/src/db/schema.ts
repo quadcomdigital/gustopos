@@ -63,6 +63,23 @@ export const inventory = pgTable(
   ],
 );
 
+// Per-tenant catalog of production containers/bases (BUN, Piadina, Panino,
+// A piatto, …). Categories/products carry a default reference; a "main"
+// modifier option can override it. Used by the RIEPILOGO block on station
+// tickets to count containers for kitchen prep/assembly.
+export const productionReferences = pgTable("production_references", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  name: text("name").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: integer("is_active").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("production_references_tenant_idx").on(table.tenantId),
+  uniqueIndex("production_references_tenant_name_idx").on(table.tenantId, table.name),
+]);
+
 export const menuItems = pgTable(
   "menu_items",
   {
@@ -72,6 +89,12 @@ export const menuItems = pgTable(
     price: numeric("price", { precision: 14, scale: 2 }).notNull(),
     category: text("category").notNull(),
     categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
+    // Explicit print-station assignment (one station per product). Null falls
+    // back to the category station, then the tenant default station.
+    stationId: text("station_id").references(() => printStations.id, { onDelete: "set null" }),
+    // Default production container/base for counting (product override).
+    referenceId: text("reference_id").references(() => productionReferences.id, { onDelete: "set null" }),
+    // Deprecated: superseded by station_id. Kept for one release (rollback).
     printAreas: text("print_areas").notNull().default('["kitchen"]'),
     isActive: integer("is_active").notNull().default(1),
     isJolly: integer("is_jolly").notNull().default(0),
@@ -81,6 +104,7 @@ export const menuItems = pgTable(
   (t) => [
     uniqueIndex("menu_items_tenant_name_idx").on(t.tenantId, t.name),
     index("menu_items_tenant_idx").on(t.tenantId),
+    index("menu_items_tenant_station_idx").on(t.tenantId, t.stationId),
   ],
 );
 
@@ -110,6 +134,9 @@ export const menuModifierOptions = pgTable("menu_item_modifier_options", {
     .references(() => menuModifierGroups.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   inventoryItemId: text("inventory_item_id").references(() => inventory.id, { onDelete: "set null" }),
+  // Main-container modifier: when set, this option overrides the item's
+  // production reference on the order line.
+  referenceId: text("reference_id").references(() => productionReferences.id, { onDelete: "set null" }),
   componentType: text("component_type").notNull().default("ingredient"),
   componentId: text("component_id"),
   priceDelta: numeric("price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
@@ -150,6 +177,7 @@ export const categoryModifierPoolOptions = pgTable("category_modifier_pool_optio
   name: text("name"),
   inventoryItemId: text("inventory_item_id")
     .references(() => inventory.id, { onDelete: "set null" }),
+  referenceId: text("reference_id").references(() => productionReferences.id, { onDelete: "set null" }),
   componentType: text("component_type").notNull().default("ingredient"),
   componentId: text("component_id"),
   quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull().default("1"),
@@ -414,6 +442,25 @@ export const appSettings = pgTable(
   }),
 );
 
+// Per-tenant, named print stations. `id` is the routing key stored in
+// `print_jobs.area` and in bridge claimed areas/mappings. `kind` distinguishes
+// production stations (kitchen/bar/pizzeria…) from the reserved `cashier`
+// station (receipts). Exactly one station per tenant has is_default = 1.
+export const printStations = pgTable("print_stations", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("production"),
+  isDefault: integer("is_default").notNull().default(0),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: integer("is_active").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("print_stations_tenant_idx").on(table.tenantId),
+  uniqueIndex("print_stations_tenant_name_idx").on(table.tenantId, table.name),
+]);
+
 export const printJobs = pgTable("print_jobs", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
@@ -452,6 +499,13 @@ export const printBridges = pgTable(
     mappings: text("mappings").notNull().default("[]"),
     claimedAreas: text("claimed_areas").notNull().default("[]"),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull().defaultNow(),
+    // Last error reported by the agent diagnostics push, and when the agent
+    // last sent a diagnostics snapshot (logs/health).
+    lastError: text("last_error"),
+    diagnosticsAt: timestamp("diagnostics_at", { withTimezone: true }),
+    // One-shot command pushed to the agent through the heartbeat response
+    // (network scan / direct test print). JSON, null when idle.
+    command: text("command"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -461,6 +515,25 @@ export const printBridges = pgTable(
     uniqueIndex("print_bridges_tenant_instance_idx")
       .on(table.tenantId, table.instanceId)
       .where(sql`${table.instanceId} IS NOT NULL`),
+  ],
+);
+
+export const printBridgeLogs = pgTable(
+  "print_bridge_logs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    bridgeId: text("bridge_id").references(() => printBridges.id, { onDelete: "set null" }),
+    instanceId: text("instance_id"),
+    level: text("level").notNull(),
+    component: text("component"),
+    message: text("message").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Admin diagnostics reads the latest logs for a bridge; retention prunes
+    // per (tenant, bridge) by age.
+    index("print_bridge_logs_tenant_bridge_created_idx").on(table.tenantId, table.bridgeId, table.createdAt),
   ],
 );
 
@@ -491,6 +564,11 @@ export const categories = pgTable("categories", {
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
   name: text("name").notNull(),
   scope: text("scope").notNull(),
+  // Explicit print-station assignment (one station per category).
+  stationId: text("station_id").references(() => printStations.id, { onDelete: "set null" }),
+  // Default production container/base for counting (category default).
+  referenceId: text("reference_id").references(() => productionReferences.id, { onDelete: "set null" }),
+  // Deprecated: superseded by station_id. Kept for one release (rollback).
   printAreas: text("print_areas").notNull().default('["kitchen"]'),
   isActive: integer("is_active").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

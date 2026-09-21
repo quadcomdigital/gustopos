@@ -21,6 +21,8 @@ import { CustomerRepository } from "./repository/customer.repository";
 import { PaymentsRepository } from "./repository/payments.repository";
 import { PrintJobsRepository } from "./repository/print-jobs.repository";
 import { PrintBridgeRepository } from "./repository/print-bridge.repository";
+import { PrintStationsRepository } from "./repository/print-stations.repository";
+import { ProductionReferencesRepository } from "./repository/production-references.repository";
 import { FiscalBridgeRepository } from "./repository/fiscal-bridge.repository";
 import { RealtimePubSubService } from "./realtime/pubsub.service";
 import { RealtimeGateway } from "./realtime.gateway";
@@ -80,6 +82,8 @@ import { PublicMenuController } from "./public/public-menu.controller";
     PaymentsRepository,
     PrintJobsRepository,
     PrintBridgeRepository,
+    PrintStationsRepository,
+    ProductionReferencesRepository,
     FiscalBridgeRepository,
     DbInitService,
     DbShutdownService,

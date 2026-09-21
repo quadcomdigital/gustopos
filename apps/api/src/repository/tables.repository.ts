@@ -8,6 +8,7 @@ import {  tables, orders, orderItems, payments, paymentItems,
 import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull, type SQL } from "drizzle-orm";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight, buildCashierReceiptPayload } from "./utils/escpos-builder";
+import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { deliveryTransitions } from "./utils/state-machines";
 import { collectCurrentSessionPaymentIds } from "./utils/merge-payments";
 import crypto from "node:crypto";
@@ -26,7 +27,7 @@ import {
   deliveryOrderSchema, deliveryStatusUpdateRequestSchema, deliveryStatusSchema,
   deliveryOrdersListResponseSchema, deliveryOrdersQuerySchema, deliveryUpsertRequestSchema,
   operationalSummaryQuerySchema, reservationsSummarySchema, deliverySummarySchema,
-  uiSettingsSchema, printAreaSchema,
+  uiSettingsSchema,
   type PrintArea, type UiSettings, type ReservationStatus, type DeliveryStatus,
   type PaymentStatus, type Order, defaultUiSettings,
   type Table, type TableCreateRequest, type TableUpdateRequest, type TableBulkCreateRequest,
@@ -43,7 +44,7 @@ import {
   type OperationalSummaryQuery,
 } from "@gustopos/shared";
 
-function parsePrintAreas(raw: string|null|undefined): PrintArea[] { if(!raw) return ["kitchen"]; try { const p=JSON.parse(raw); if(!Array.isArray(p)) return ["kitchen"]; const v=p.map((e:unknown)=>{try{return printAreaSchema.parse(e)}catch{return null}}).filter((e):e is PrintArea=>e!==null); return v.length>0?v:["kitchen"]; } catch { return ["kitchen"]; } }
+function parsePrintAreas(raw: string|null|undefined): PrintArea[] { return parsePrintAreasUtil(raw); }
 
 const reservationTransitions: Record<ReservationStatus, ReservationStatus[]> = {
   pending: ["confirmed", "cancelled", "no_show", "seated"],

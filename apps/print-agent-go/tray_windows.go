@@ -44,6 +44,7 @@ const (
 	trayMenuStatus    = 1002
 	trayMenuUninstall = 1003
 	trayMenuExit      = 1004
+	trayMenuDashboard = 1005
 	trayTimerID       = 1
 )
 
@@ -120,27 +121,29 @@ type trayMessage struct {
 }
 
 type windowsTray struct {
-	hWnd        syscall.Handle
-	hIcon       syscall.Handle
-	status      func() string
-	openPairing func()
-	requestExit func()
-	bridgeID    string
-	mu          sync.RWMutex
-	closed      chan struct{}
-	closeOnce   sync.Once
+	hWnd          syscall.Handle
+	hIcon         syscall.Handle
+	status        func() string
+	openPairing   func()
+	openDashboard func()
+	requestExit   func()
+	bridgeID      string
+	mu            sync.RWMutex
+	closed        chan struct{}
+	closeOnce     sync.Once
 }
 
 // StartTray starts the notification icon on a locked OS thread so the
 // agent's polling and printing goroutines are never blocked.
 // The returned function removes the icon and stops the message pump.
-func StartTray(bridgeID string, status func() string, openPairing func(), requestExit func()) (func(), func(string)) {
+func StartTray(bridgeID string, status func() string, openPairing func(), openDashboard func(), requestExit func()) (func(), func(string)) {
 	tray := &windowsTray{
-		status:      status,
-		openPairing: openPairing,
-		requestExit: requestExit,
-		bridgeID:    bridgeID,
-		closed:      make(chan struct{}),
+		status:        status,
+		openPairing:   openPairing,
+		openDashboard: openDashboard,
+		requestExit:   requestExit,
+		bridgeID:      bridgeID,
+		closed:        make(chan struct{}),
 	}
 	ready := make(chan struct{})
 	go tray.run(bridgeID, ready)
@@ -238,6 +241,10 @@ func (t *windowsTray) windowProc(hwnd uintptr, msg uint32, wParam, lParam uintpt
 			if t.openPairing != nil {
 				t.openPairing()
 			}
+		case trayMenuDashboard:
+			if t.openDashboard != nil {
+				t.openDashboard()
+			}
 		case trayMenuUninstall:
 			if err := removeStartup(); err != nil {
 				log.Printf("could not remove automatic startup: %v", err)
@@ -298,6 +305,7 @@ func (t *windowsTray) showMenu() {
 		trayAppendMenu.Call(menu, flags, id, uintptr(unsafe.Pointer(label)))
 	}
 	appendItem(mfString, trayMenuPairing, "Apri pairing / Inserisci codice")
+	appendItem(mfString, trayMenuDashboard, "Apri pannello diagnostica")
 	status := "Stato: Disconnesso"
 	if t.status != nil {
 		status = "Stato: " + t.status()

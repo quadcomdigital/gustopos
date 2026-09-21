@@ -2,6 +2,7 @@ import type { ModifierGroup, Ingredient, CategoryModifierPool, ModifierOption, B
 import { Plus, Trash2, Lock } from 'lucide-react';
 import { generateId } from '../../lib/id';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
+import { useProductionReferences } from './useProductionReferences';
 import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
@@ -45,6 +46,8 @@ function createOption(): ModifierOption {
 }
 
 export default function ModifierGroupsEditor({ value, onChange, inventory, prepItems = [], bomItems = [], categoryPools = [] }: ModifierGroupsEditorProps) {
+  const { references } = useProductionReferences();
+  const activeReferences = references.filter((r) => r.isActive);
   const inventoryById = new Map(inventory.map((i) => [i.id, i]));
   const prepById = new Map(prepItems.map((p) => [p.id, p]));
   const bomById = new Map(bomItems.map((b) => [b.id, b]));
@@ -288,6 +291,14 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
                       Rimuovi
                     </button>
                   </div>
+                  <select
+                    value={option.referenceId ?? ''}
+                    onChange={(e) => updateOption(group.id, option.id, { referenceId: e.target.value || null })}
+                    className="w-full px-3 py-2 rounded border border-border text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <option value="">Referenza conteggio: nessuna</option>
+                    {activeReferences.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+                  </select>
                 </div>
               );
             })}

@@ -14,9 +14,9 @@ import {
   orderHistoryListResponseSchema,
   orderTypeSchema,
   categoryScopeSchema,
-  printAreaSchema,
   printBridgePrinterMappingSchema,
   type PrintBridgePrinterMapping,
+  type PrintStation,
   printJobSchema,
   printJobsListResponseSchema,
   printJobsQuerySchema,
@@ -107,6 +107,7 @@ import crypto from "node:crypto";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { assertOrderStatusTransition } from "../orders/order-status-policy";
+import { isStockTrackingEnabled } from "../orders/stock-tracking";
 import {
   bomComponents,
   bomItems,
@@ -158,7 +159,11 @@ import { ConsumerRepository } from "./consumer.repository";
 import { CustomerRepository } from "./customer.repository";
 import { PaymentsRepository } from "./payments.repository";
 import { PrintJobsRepository } from "./print-jobs.repository";
+import { PrintStationsRepository } from "./print-stations.repository";
+import { ProductionReferencesRepository } from "./production-references.repository";
+import { buildReferenceTally, resolveItemReference } from "../orders/production-references";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight } from "./utils/escpos-builder";
+import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 
 
 type InventoryRow = typeof inventory.$inferSelect;
@@ -201,29 +206,7 @@ function contrastRatio(fgHex: string, bgHex: string): number {
 
 
 export function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
-  if (!raw) {
-    return ["kitchen"];
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return ["kitchen"];
-    }
-    const valid = parsed
-      .map((entry) => {
-        try {
-          return printAreaSchema.parse(entry);
-        } catch {
-          return null;
-        }
-      })
-      .filter((entry): entry is PrintArea => entry !== null);
-
-    return valid.length > 0 ? valid : ["kitchen"];
-  } catch {
-    return ["kitchen"];
-  }
+  return parsePrintAreasUtil(raw);
 }
 
 export function parseSelectedModifiers(raw: string | null | undefined): Array<{ groupId: string; optionId: string }> {
@@ -316,6 +299,22 @@ export class AppRepository {
     for (const item of items) {
       if (item.round !== undefined && item.round !== null && item.round >= config.labels.length) {
         throw new Error(`Invalid course round ${item.round}; expected a value from 0 to ${config.labels.length - 1}`);
+      }
+    }
+
+    if (hasRound) {
+      // Rounds must be contiguous and start at 0 (no gaps: 0,1,2…).
+      const used = [...new Set(items
+        .map((item) => item.round)
+        .filter((round): round is number => round !== undefined && round !== null))]
+        .sort((a, b) => a - b);
+      if (used[0] !== 0) {
+        throw new Error("Course rounds must start from the first course");
+      }
+      for (let i = 0; i < used.length; i++) {
+        if (used[i] !== i) {
+          throw new Error("Course rounds must be contiguous (no gaps between courses)");
+        }
       }
     }
 
@@ -538,7 +537,12 @@ export class AppRepository {
     return staffId;
   }
 
-  private async resolvePrintAreasForMenuIds(menuIds: string[]): Promise<Map<string, PrintArea[]>> {
+  /**
+   * Explicit station resolution for menu items: item.station_id, else the
+   * category station, else the tenant default station. There is intentionally
+   * no name/regex inference — the assignment is decided in Inventory.
+   */
+  private async resolveStationForMenuIds(menuIds: string[]): Promise<Map<string, string | null>> {
     if (menuIds.length === 0) {
       return new Map();
     }
@@ -546,7 +550,7 @@ export class AppRepository {
     const tenantId = this.currentTenantId();
 
     const menuRows = await db
-      .select({ id: menuItems.id, printAreas: menuItems.printAreas, categoryId: menuItems.categoryId })
+      .select({ id: menuItems.id, stationId: menuItems.stationId, categoryId: menuItems.categoryId })
       .from(menuItems)
       .where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuIds)));
 
@@ -554,42 +558,62 @@ export class AppRepository {
     const categoryRows =
       categoryIds.length > 0
           ? await db
-              .select({ id: categories.id, printAreas: categories.printAreas })
+              .select({ id: categories.id, stationId: categories.stationId })
               .from(categories)
               .where(and(eq(categories.tenantId, tenantId), inArray(categories.id, categoryIds)))
         : [];
-    const categoryMap = new Map(categoryRows.map((row) => [row.id, parsePrintAreas(row.printAreas)]));
+    const categoryStationById = new Map(categoryRows.map((row) => [row.id, row.stationId]));
 
-    const result = new Map<string, PrintArea[]>();
+    const defaultStation = await this.printStationsRepo.getDefaultStation();
+    const defaultStationId = defaultStation?.id ?? null;
+
+    const result = new Map<string, string | null>();
     for (const row of menuRows) {
-      const menuAreas = parsePrintAreas(row.printAreas);
-      const fallback = row.categoryId ? categoryMap.get(row.categoryId) : undefined;
-      result.set(row.id, menuAreas.length > 0 ? menuAreas : fallback ?? ["kitchen"]);
+      const categoryStationId = row.categoryId ? categoryStationById.get(row.categoryId) : null;
+      result.set(row.id, row.stationId ?? categoryStationId ?? defaultStationId);
     }
 
     return result;
   }
 
-  private buildEscPosPayload(params: {
+  private async resolveWaiterName(tenantId: string, staffId: string): Promise<string | null> {
+    if (!staffId) return null;
+    const rows = await db
+      .select({ name: staff.name })
+      .from(staff)
+      .where(and(eq(staff.tenantId, tenantId), eq(staff.id, staffId)))
+      .limit(1);
+    return rows[0]?.name ?? null;
+  }
+
+  /**
+   * Combined station ticket. One job per receiving station prints the WHOLE
+   * order: the receiving station's own items are 2xl, items belonging to the
+   * other stations print at normal size. Header carries time, waiter and
+   * order number; a summary block closes the ticket.
+   */
+  private buildStationTicketPayload(params: {
     order: Order;
-    area: PrintArea;
-    items: Array<{ name: string; quantity: number; price: number; notes: string; modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; round?: number | null }>;
-    kitchenSummary: Record<string, number> | null;
+    waiterName: string | null;
+    station: PrintStation;
+    items: Array<{ name: string; quantity: number; price: number; notes: string; modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; stationId: string | null; round?: number | null }>;
+    summary: Array<{ name: string; count: number }>;
+    totalItems: number;
     settings: UiSettings;
     priceDeltaByOptionId: Map<string, number>;
     roundLabels?: string[];
   }): string {
-    const { order, area, items, kitchenSummary, settings, priceDeltaByOptionId, roundLabels = [] } = params;
-    const showPrice = area === "cashier";
+    const { order, waiterName, station, items, summary, totalItems, settings, priceDeltaByOptionId, roundLabels = [] } = params;
+    const showPrice = station.kind === "cashier";
     const ep = new EscPosBuilder();
 
     ep.init();
 
-    // The logo is intentionally NOT printed on kitchen/bar/cashier tickets:
-    // it renders only on the cashier scontrino (buildCashierReceiptPayload).
+    // The logo is intentionally NOT printed on station tickets: it renders
+    // only on the cashier scontrino (buildCashierReceiptPayload).
 
     ep.align("center").doubleSize(true).bold(true);
-    ep.line(area.toUpperCase());
+    ep.line(station.name.toUpperCase());
     ep.doubleSize(false).bold(false);
     ep.align("left").line();
 
@@ -597,13 +621,22 @@ export class AppRepository {
     const ref = order.orderType === "dine_in"
       ? `Tavolo: ${order.table ?? "-"}`
       : `Cliente: ${order.customerName ?? "-"}`;
+    const orderTime = (() => {
+      try {
+        return new Date(order.timestamp).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+      } catch {
+        return "--:--";
+      }
+    })();
     ep.line(`Ordine: ${order.id.slice(0, 8)} | ${orderTypeLabel}`);
     ep.line(ref);
+    ep.line(`Orario: ${orderTime}`);
+    if (waiterName) {
+      ep.line(`Cameriere: ${waiterName}`);
+    }
+    ep.line(`Comanda: ${order.ticketNumber ?? order.id.slice(0, 8)}`);
     if (order.customerPhone) {
       ep.line(`Telefono: ${order.customerPhone}`);
-    }
-    if (order.ticketNumber) {
-      ep.line(`Ticket: ${order.ticketNumber}`);
     }
     if (order.scheduledFor) {
       const scheduledDate = new Date(order.scheduledFor);
@@ -612,24 +645,12 @@ export class AppRepository {
     }
     ep.line();
 
-    const hasRoundPresentation = area !== "cashier" && items.some((item) => item.round !== undefined && item.round !== null);
+    const hasRoundPresentation = !showPrice && items.some((item) => item.round !== undefined && item.round !== null);
     const printItems = hasRoundPresentation
       ? [...items].sort((left, right) => (left.round ?? Number.MAX_SAFE_INTEGER) - (right.round ?? Number.MAX_SAFE_INTEGER))
       : items;
 
     let printedRound: number | null | undefined = undefined;
-    if (kitchenSummary && area === "kitchen" && Object.keys(kitchenSummary).length > 0) {
-      const sep = "-".repeat(RECEIPT_WIDTH);
-      ep.bold(true).line(sep);
-      ep.align("center").line("*** REF ***");
-      ep.align("left").bold(false);
-      for (const [name, count] of Object.entries(kitchenSummary)) {
-        ep.line(`${padRight(name.toUpperCase(), 24)} ${String(count).padStart(4)}`);
-      }
-      ep.bold(true).line(sep);
-      ep.bold(false).line();
-    }
-
     for (const item of printItems) {
       if (hasRoundPresentation && item.round !== printedRound) {
         printedRound = item.round ?? null;
@@ -643,11 +664,12 @@ export class AppRepository {
         const priceStr = `EUR ${(item.price * item.quantity).toFixed(2)}`;
         const pad = RECEIPT_WIDTH - label.length - priceStr.length;
         ep.line(`${label}${" ".repeat(Math.max(1, pad))}${priceStr}`);
+      } else if (item.stationId === station.id) {
+        // Receiving station items are printed 2xl (double width + height).
+        ep.doubleSize(true).line(label).doubleSize(false);
       } else {
-        // BAR and kitchen use the unified large-item layout. Modifiers,
-        // overrides and notes intentionally inherit this width until the
-        // item is complete, matching the established print-station format.
-        ep.doubleWidth(true).line(label);
+        // Items belonging to the other stations print at normal size.
+        ep.line(label);
       }
 
       for (let i = 0; i < item.modifiers.length; i++) {
@@ -666,10 +688,18 @@ export class AppRepository {
       if (item.notes) {
         ep.line(`  * ${item.notes}`);
       }
-      if (!showPrice) {
-        ep.doubleWidth(false);
-      }
       ep.line();
+    }
+
+    if (!showPrice && summary.length > 0) {
+      const sep = "-".repeat(RECEIPT_WIDTH);
+      ep.line(sep);
+      ep.align("center").bold(true).line("RIEPILOGO").bold(false).align("left");
+      for (const row of summary) {
+        ep.line(`${padRight(row.name.toUpperCase(), 28)} ${String(row.count).padStart(4)}`);
+      }
+      ep.line(`${padRight("TOTALE", 28)} ${String(totalItems).padStart(4)}`);
+      ep.line(sep);
     }
 
     if (showPrice) {
@@ -695,11 +725,6 @@ export class AppRepository {
     const tenantId = this.currentTenantId();
     const settings = await this.getUiSettings();
     if (settings.printing.protocol !== "escpos") {
-      return;
-    }
-
-    const activeAreas = settings.printing.activeAreas;
-    if (activeAreas.length === 0) {
       return;
     }
 
@@ -791,14 +816,60 @@ export class AppRepository {
       && roundsConfig.enabled
       && order.items.some((item) => item.round !== undefined && item.round !== null);
 
-    const areaByMenuId = await this.resolvePrintAreasForMenuIds(menuIds);
-    const itemsByArea = new Map<PrintArea, Array<{
+    const stationByMenuId = await this.resolveStationForMenuIds(menuIds);
+    const activeStations = await this.printStationsRepo.listActiveStations();
+    const activeStationIds = new Set(activeStations.map((station) => station.id));
+    const allowedFilter = settings.printing.activeStationIds;
+    const isAllowed = (id: string) => activeStationIds.has(id) && (allowedFilter.length === 0 || allowedFilter.includes(id));
+
+    // Production reference ("contenitore") resolution for the RIEPILOGO tally.
+    // Precedence: main modifier (lowest sort_order) > product > category.
+    const activeReferences = await this.productionReferencesRepo.listActiveReferences();
+    const refMenuRows = menuIds.length > 0
+      ? await db
+          .select({ id: menuItems.id, referenceId: menuItems.referenceId, categoryId: menuItems.categoryId })
+          .from(menuItems)
+          .where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuIds)))
+      : [];
+    const refMenuById = new Map(refMenuRows.map((row) => [row.id, row]));
+    const refCategoryIds = [...new Set(refMenuRows.map((row) => row.categoryId).filter((value): value is string => Boolean(value)))];
+    const refCategoryRows = refCategoryIds.length > 0
+      ? await db
+          .select({ id: categories.id, referenceId: categories.referenceId })
+          .from(categories)
+          .where(and(eq(categories.tenantId, tenantId), inArray(categories.id, refCategoryIds)))
+      : [];
+    const refCategoryById = new Map(refCategoryRows.map((row) => [row.id, row.referenceId]));
+
+    const selectedOptionIds = [...new Set(order.items.flatMap((item) => (item.selectedModifiers ?? []).map((mod) => mod.optionId)))];
+    const optionRefById = new Map<string, { referenceId: string; sortOrder: number }>();
+    if (selectedOptionIds.length > 0) {
+      const modOptionRefs = await db
+        .select({ id: menuModifierOptions.id, referenceId: menuModifierOptions.referenceId, sortOrder: menuModifierOptions.sortOrder })
+        .from(menuModifierOptions)
+        .where(and(eq(menuModifierOptions.tenantId, tenantId), inArray(menuModifierOptions.id, selectedOptionIds)));
+      for (const row of modOptionRefs) {
+        if (row.referenceId) optionRefById.set(row.id, { referenceId: row.referenceId, sortOrder: row.sortOrder ?? 0 });
+      }
+      const poolOptionRefs = await db
+        .select({ id: categoryModifierPoolOptions.id, referenceId: categoryModifierPoolOptions.referenceId, sortOrder: categoryModifierPoolOptions.sortOrder })
+        .from(categoryModifierPoolOptions)
+        .where(and(eq(categoryModifierPoolOptions.tenantId, tenantId), inArray(categoryModifierPoolOptions.id, selectedOptionIds)));
+      for (const row of poolOptionRefs) {
+        if (row.referenceId && !optionRefById.has(row.id)) optionRefById.set(row.id, { referenceId: row.referenceId, sortOrder: row.sortOrder ?? 0 });
+      }
+    }
+    const referenceRows: Array<{ referenceId: string | null; quantity: number }> = [];
+
+    const richItems: Array<{
       name: string; quantity: number; price: number; notes: string;
-      modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; round?: number | null;
-    }>>();
+      modifiers: string[]; modifierOptionIds: string[]; overrides: string[];
+      stationId: string | null; round?: number | null;
+    }> = [];
+    const involvedStationIds = new Set<string>();
 
     for (const item of order.items) {
-      const areas = areaByMenuId.get(item.id) ?? ["kitchen"];
+      const stationId = stationByMenuId.get(item.id) ?? null;
 
       const modStrings: string[] = [];
       const modOptionIds: string[] = [];
@@ -814,7 +885,19 @@ export class AppRepository {
         ovrStrings.push(entry.action === "remove" ? `- ${ingName}` : `+ ${ingName}`);
       }
 
-      const richItem = {
+      const menuRef = refMenuById.get(item.id);
+      const categoryRef = menuRef?.categoryId ? refCategoryById.get(menuRef.categoryId) : null;
+      const modifierRefs = (item.selectedModifiers ?? [])
+        .map((mod) => optionRefById.get(mod.optionId))
+        .filter((candidate): candidate is { referenceId: string; sortOrder: number } => Boolean(candidate));
+      const resolvedReferenceId = resolveItemReference({
+        modifierRefs,
+        itemRef: menuRef?.referenceId ?? null,
+        categoryRef: categoryRef ?? null,
+      });
+      referenceRows.push({ referenceId: resolvedReferenceId, quantity: item.quantity });
+
+      richItems.push({
         name: item.name,
         quantity: item.quantity,
         price: item.price,
@@ -822,45 +905,54 @@ export class AppRepository {
         modifiers: modStrings,
         modifierOptionIds: modOptionIds,
         overrides: ovrStrings,
+        stationId,
         ...(roundsPresentationEnabled ? { round: item.round ?? null } : {}),
-      };
+      });
 
-      for (const area of areas) {
-        if (!activeAreas.includes(area)) continue;
-        const existing = itemsByArea.get(area) ?? [];
-        existing.push(richItem);
-        itemsByArea.set(area, existing);
+      if (stationId && isAllowed(stationId)) {
+        involvedStationIds.add(stationId);
       }
     }
 
-    if (itemsByArea.size === 0) {
+    // One combined ticket per involved, active station: the whole order, with
+    // the recipient station's own items emphasized (2xl).
+    const recipientStations = activeStations.filter((station) => involvedStationIds.has(station.id));
+    if (recipientStations.length === 0) {
       return;
     }
 
-    const jobs = [...itemsByArea.entries()].map(([area, items]) => {
-      const now = new Date();
-      return {
-        id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        tenantId,
-        orderId: order.id,
-        area,
-        protocol: settings.printing.protocol,
-        status: "pending" as const,
-        payload: this.buildEscPosPayload({
-          order,
-          area,
-          items,
-          kitchenSummary: null,
-          settings,
-          priceDeltaByOptionId,
-          roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
-        }),
-        error: null,
-        createdAt: now,
-        updatedAt: now,
-        dispatchedAt: null,
-      };
-    });
+    const tally = buildReferenceTally(referenceRows);
+    const referenceSummary = activeReferences
+      .filter((reference) => tally.has(reference.id))
+      .map((reference) => ({ name: reference.name, count: tally.get(reference.id) ?? 0 }));
+    const totalItems = referenceSummary.reduce((sum, row) => sum + row.count, 0);
+
+    const waiterName = await this.resolveWaiterName(tenantId, order.staffId);
+
+    const now = new Date();
+    const jobs = recipientStations.map((station) => ({
+      id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      tenantId,
+      orderId: order.id,
+      area: station.id,
+      protocol: settings.printing.protocol,
+      status: "pending" as const,
+      payload: this.buildStationTicketPayload({
+        order,
+        waiterName,
+        station,
+        items: richItems,
+        summary: referenceSummary,
+        totalItems,
+        settings,
+        priceDeltaByOptionId,
+        roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
+      }),
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      dispatchedAt: null,
+    }));
 
     await withTenantTx(async (tx) => {
       await tx.insert(printJobs).values(jobs);
@@ -1183,6 +1275,8 @@ export class AppRepository {
       name: row.name,
       scope: categoryScopeSchema.parse(row.scope),
       isActive: row.isActive === 1,
+      stationId: row.stationId,
+      referenceId: row.referenceId,
       printAreas: parsePrintAreas(row.printAreas),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -1406,6 +1500,8 @@ export class AppRepository {
           price: Number(row.price),
           category: row.category,
           categoryId: row.categoryId ?? undefined,
+          stationId: row.stationId,
+          referenceId: row.referenceId,
           printAreas: parsePrintAreas(row.printAreas),
           isJolly: row.isJolly === 1,
           ingredients: ingredientsByMenuId.get(row.id) ?? [],
@@ -1610,6 +1706,8 @@ export class AppRepository {
         category: row.category,
         ingredients: ingredientsByMenuId.get(row.id) ?? [],
         bomIds: bomByMenuId.get(row.id) ?? [],
+        stationId: row.stationId,
+        referenceId: row.referenceId,
         printAreas: parsePrintAreas(row.printAreas),
         isFeatured: featuredItems.has(row.id),
         isSoldOut: soldOutItems.has(row.id),
@@ -1642,6 +1740,8 @@ export class AppRepository {
       categories: visibleCategories.map((row) => ({
         id: row.id,
         name: row.name,
+        stationId: row.stationId,
+        referenceId: row.referenceId,
         printAreas: parsePrintAreas(row.printAreas),
       })),
       items: publicItems,
@@ -2665,7 +2765,11 @@ export class AppRepository {
       }
 
       const enabledModules = await this.getEnabledModulesRows(tenantId);
-      const enforceRecipe = enabledModules.includes("inventory") && !enabledModules.includes("simple_catalog");
+      // Stock tracking (recipe/BoM explosion, shortage checks, deductions and
+      // stock movements) is active only for the complex "inventory" module.
+      // In "simple_catalog" mode orders are recorded without touching stock, so
+      // a tenant can operate without maintaining ingredients/BoM.
+      const stockTrackingEnabled = isStockTrackingEnabled(enabledModules);
 
       const modifierBomIds = [
         ...[...modifierOptionsByOptionId.values()].filter((option) => option.componentType === "bom").map((option) => option.componentId),
@@ -2928,7 +3032,7 @@ export class AppRepository {
       }
 
       const ingredientIds = [...consumptionByIngredient.keys()];
-      if (ingredientIds.length > 0) {
+      if (stockTrackingEnabled && ingredientIds.length > 0) {
         const inventoryRows = await tx
           .select()
           .from(inventory)
@@ -3019,12 +3123,12 @@ export class AppRepository {
         }));
       }).filter((impact) => Number(impact.quantity) > 0 && impact.unit.length > 0
         && !(impact.componentType === "ingredient" && untrackedIngredientIds.has(impact.componentId)));
-      if (canonicalImpactRows.length > 0) {
+      if (stockTrackingEnabled && canonicalImpactRows.length > 0) {
         await tx.insert(orderStockImpacts).values(canonicalImpactRows);
       }
 
       const prepIds = [...consumptionByPrep.keys()];
-      if (prepIds.length > 0) {
+      if (stockTrackingEnabled && prepIds.length > 0) {
         const prepRows = await tx
           .select()
           .from(prepItems)
@@ -3142,10 +3246,9 @@ export class AppRepository {
         ))
         .for("update");
 
-      if (impacts.length === 0) {
-        throw new Error("Quantity editing is available only for menu items with persisted canonical stock impacts");
-      }
-
+      // Items in simple_catalog mode (or without recipe components) have no
+      // persisted stock impacts: quantity editing must still work, it simply
+      // does not adjust any stock. The delta blocks below no-op on empty input.
       const deltaByComponent = new Map<string, { componentType: string; componentId: string; delta: number; unit: string }>();
       for (const impact of impacts) {
         const oldQuantity = Number(impact.quantity);
@@ -3591,6 +3694,59 @@ export class AppRepository {
     });
   }
 
+  /** Re-emit print jobs for an existing order ("reinvia in cucina"). */
+  async resendPrintJobs(orderId: string): Promise<{ dispatched: boolean }> {
+    const order = await this.getOrderById(orderId);
+    if (!order) {
+      return { dispatched: false };
+    }
+    await this.createPrintJobsForOrder(order);
+    return { dispatched: true };
+  }
+
+  /**
+   * Change the course round of a single order line after the order was sent.
+   * Dine-in only, validated against the configured labels (no gaps).
+   */
+  async updateOrderItemRound(orderId: string, orderItemId: number, round: number | null): Promise<Order | null> {
+    const tenantId = getTenantIdOrDefault();
+
+    const orderRow = await db
+      .select({ id: orders.id, orderType: orders.orderType, status: orders.status })
+      .from(orders)
+      .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+      .limit(1);
+    const order = orderRow[0];
+    if (!order) {
+      return null;
+    }
+    if (order.status === "paid" || order.status === "cancelled") {
+      throw new Error(`Cannot change course for a ${order.status} order`);
+    }
+    if (order.orderType !== "dine_in") {
+      throw new Error("Course rounds are only valid for dine-in orders");
+    }
+
+    if (round !== null) {
+      const configRows = await db
+        .select({ config: tenantModuleConfigs.config })
+        .from(tenantModuleConfigs)
+        .where(and(eq(tenantModuleConfigs.tenantId, tenantId), eq(tenantModuleConfigs.moduleKey, "course_rounds")))
+        .limit(1);
+      const config = courseRoundsConfigSchema.parse(configRows[0] ? JSON.parse(configRows[0].config) : {});
+      if (round < 0 || round >= config.labels.length) {
+        throw new Error(`Invalid course round ${round}; expected a value from 0 to ${config.labels.length - 1}`);
+      }
+    }
+
+    await db
+      .update(orderItems)
+      .set({ round })
+      .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId), eq(orderItems.id, orderItemId)));
+
+    return this.getOrderById(orderId);
+  }
+
   async getReorderSuggestions(): Promise<Array<{
     ingredientId: string;
     name: string;
@@ -3703,5 +3859,7 @@ export class AppRepository {
     @Inject(CustomerRepository) private readonly customerRepo: CustomerRepository,
     @Inject(PaymentsRepository) private readonly paymentsRepo: PaymentsRepository,
     @Inject(PrintJobsRepository) private readonly printJobsRepo: PrintJobsRepository,
+    @Inject(PrintStationsRepository) private readonly printStationsRepo: PrintStationsRepository,
+    @Inject(ProductionReferencesRepository) private readonly productionReferencesRepo: ProductionReferencesRepository,
   ) {}
 }

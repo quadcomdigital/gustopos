@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { LocalBridgeConfig, PrintArea, PrintBridge, PrintBridgePrinterMapping } from "@gustopos/shared";
+import type { LocalBridgeConfig, PrintBridge, PrintBridgePrinterMapping } from "@gustopos/shared";
 import { useAppStore } from "../../store/app-store";
 import BridgeCard from "./BridgeCard";
 import BindBridgeMappingModal from "./BindBridgeMappingModal";
@@ -21,6 +21,9 @@ export default function PrintBridgesPanel() {
   const updateMappings = useAppStore((s) => s.updateBridgeMappings);
   const updateClaimedAreas = useAppStore((s) => s.updateBridgeClaimedAreas);
   const triggerTestPrint = useAppStore((s) => s.triggerBridgeTestPrint);
+  const requestBridgeDiscovery = useAppStore((s) => s.requestBridgeDiscovery);
+  const testBridgePrinter = useAppStore((s) => s.testBridgePrinter);
+  const requestBridgeUpdate = useAppStore((s) => s.requestBridgeUpdate);
   const deleteBridge = useAppStore((s) => s.deleteBridge);
   const lastFetchedAt = useAppStore((s) => s.printBridgesLastFetchedAt);
 
@@ -88,7 +91,7 @@ export default function PrintBridgesPanel() {
   const fetchedLabel = lastFetchedAt ? new Date(lastFetchedAt).toLocaleTimeString("it-IT") : "mai";
 
   const handleTestPrint = useCallback(
-    async (bridgeId: string, area: PrintArea) => {
+    async (bridgeId: string, area: string) => {
       const key = `${bridgeId}|${area}`;
       const exp = cooldownExpiryByKey[key];
       if (exp && exp > Date.now()) return;
@@ -184,7 +187,7 @@ export default function PrintBridgesPanel() {
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {sorted.map((bridge) => {
-                const cooldownFor = (area: PrintArea): boolean => {
+                const cooldownFor = (area: string): boolean => {
                   const exp = cooldownExpiryByKey[`${bridge.id}|${area}`];
                   return Boolean(exp && exp > Date.now());
                 };
@@ -197,9 +200,19 @@ export default function PrintBridgesPanel() {
                     onEditClaimedAreas={setEditingClaimedAreas}
                     onDelete={setDeletingBridge}
                     onTestPrint={handleTestPrint}
+                    onScanNetwork={async (bridgeId) => {
+                      await requestBridgeDiscovery(bridgeId);
+                      window.setTimeout(() => void refreshPrintBridges(), 2500);
+                    }}
+                    onTestDevice={async (bridgeId, device) => {
+                      await testBridgePrinter(bridgeId, device);
+                    }}
+                    onUpdateAgent={async (bridgeId) => {
+                      await requestBridgeUpdate(bridgeId);
+                    }}
                     testingArea={
                       testingByKey?.startsWith(`${bridge.id}|`)
-                        ? (testingByKey.split("|")[1] as PrintArea)
+                        ? testingByKey.split("|")[1]
                         : null
                     }
                     isAreaCoolingDown={cooldownFor}
@@ -291,6 +304,9 @@ export default function PrintBridgesPanel() {
           }}
           onTestPrint={async (area) => {
             await handleTestPrint(editingMappings.id, area);
+          }}
+          onTestDevice={async (device) => {
+            await testBridgePrinter(editingMappings.id, device);
           }}
         />
       )}

@@ -11,6 +11,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   Res,
@@ -51,9 +52,14 @@ import {
   printBridgeJobFailRequestSchema,
   printBridgeOnboardingSecretCreateRequestSchema,
   printBridgeOnboardingSecretCreateCode6DigitResponseSchema,
+  printBridgeDiagnosticsRequestSchema,
   printBridgeUpdateMappingsRequestSchema,
   printBridgeUpdateClaimedAreasRequestSchema,
   printBridgeTestPrintRequestSchema,
+  printBridgeCommandSchema,
+  printBridgeDiscoveredPrintersRequestSchema,
+  printBridgeCommandAckRequestSchema,
+  printBridgeTestPrinterRequestSchema,
   type PrintBridgeOnboardingSecret,
   type PrintBridgeOnboardingSecretCreateRequest,
   type PrintBridgeOnboardingSecretCreateCode6DigitResponse,
@@ -62,6 +68,20 @@ import {
   type PrintBridgeUpdateClaimedAreasRequest,
   type PrintBridgeTestPrintRequest,
   type PrintBridgeTestPrintResponse,
+  type PrintBridgeCommand,
+  type PrintBridgeLogRecord,
+  type PrintStation,
+  type PrintStationsListResponse,
+  type PrintStationCreateRequest,
+  type PrintStationUpdateRequest,
+  printStationCreateRequestSchema,
+  printStationUpdateRequestSchema,
+  type ProductionReference,
+  type ProductionReferencesListResponse,
+  type ProductionReferenceCreateRequest,
+  type ProductionReferenceUpdateRequest,
+  productionReferenceCreateRequestSchema,
+  productionReferenceUpdateRequestSchema,
   publicFunnelEventRequestSchema,
   publicFunnelEventResponseSchema,
   publicTakeawayCreateRequestSchema,
@@ -194,7 +214,6 @@ import {
   type FiscalExport,
   type FiscalExportCreateRequest,
   type FiscalExportsQuery,
-  type PrintArea,
   type PrintJob,
   type PrintJobsQuery,
   type PrintBridge,
@@ -259,6 +278,8 @@ import { CustomerRepository } from "./repository/customer.repository";
 import { PaymentsRepository } from "./repository/payments.repository";
 import { PrintJobsRepository } from "./repository/print-jobs.repository";
 import { PrintBridgeRepository } from "./repository/print-bridge.repository";
+import { PrintStationsRepository } from "./repository/print-stations.repository";
+import { ProductionReferencesRepository } from "./repository/production-references.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
 import { RequiresPermissions } from "./auth/permissions.decorator";
@@ -299,6 +320,8 @@ export class AppController {
     @Inject(PaymentsRepository) private readonly paymentsRepo: PaymentsRepository,
     @Inject(PrintJobsRepository) private readonly printJobsRepo: PrintJobsRepository,
     @Inject(PrintBridgeRepository) private readonly printBridgeRepo: PrintBridgeRepository,
+    @Inject(PrintStationsRepository) private readonly printStationsRepo: PrintStationsRepository,
+    @Inject(ProductionReferencesRepository) private readonly productionReferencesRepo: ProductionReferencesRepository,
     @Inject(FiscalBridgeRepository) private readonly fiscalBridgeRepo: FiscalBridgeRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
     @Inject(TenantService) private readonly tenantService: TenantService,
@@ -442,6 +465,7 @@ export class AppController {
 
   @Get("course-rounds/config")
   @Roles("admin", "waiter")
+  @RequiresModule("course_rounds")
   async getCourseRoundsConfig(@Req() request: AuthenticatedRequest): Promise<{ config: CourseRoundsConfig; moduleEnabled: boolean }> {
     const tenantId = request.user?.tenantId;
     if (!tenantId) {
@@ -450,6 +474,22 @@ export class AppController {
     const config = courseRoundsConfigSchema.parse(await this.tenantService.getCourseRoundsConfig(tenantId));
     const enabledModules = await this.tenantService.getEnabledModulesForTenant(tenantId);
     return { config, moduleEnabled: enabledModules.includes("course_rounds") };
+  }
+
+  @Put("course-rounds/config")
+  @Roles("admin")
+  @RequiresModule("course_rounds")
+  async updateCourseRoundsConfig(
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: CourseRoundsConfig,
+  ): Promise<{ config: CourseRoundsConfig }> {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+    const parsed = courseRoundsConfigSchema.parse(payload);
+    await this.tenantService.upsertTenantModuleConfig(tenantId, { moduleKey: "course_rounds", config: parsed });
+    return { config: parsed };
   }
 
   @Get("orders/history")
@@ -1483,7 +1523,7 @@ export class AppController {
     const areas = areasParam
       .split(",")
       .map((a) => a.trim())
-      .filter((a) => ["kitchen", "bar", "cashier"].includes(a)) as PrintArea[];
+      .filter((a) => a.length > 0);
     if (areas.length === 0) {
       throw new BadRequestException("No valid areas provided");
     }
@@ -2069,6 +2109,38 @@ export class AppController {
       throw new BadRequestException(error instanceof Error ? error.message : "Order item update failed");
     }
     if (!updated) throw new NotFoundException("Order not found");
+    await this.realtimeGateway.emit(socketEvents.orderUpdate, updated);
+    return updated;
+  }
+
+  @Post("orders/:id/resend")
+  @Roles("admin", "chef", "waiter")
+  @RequiresModule("printing")
+  async resendOrderPrintJobs(@Param("id") id: string): Promise<{ dispatched: boolean }> {
+    const result = await this.appRepository.resendPrintJobs(id);
+    if (!result.dispatched) {
+      throw new NotFoundException("Order not found");
+    }
+    return result;
+  }
+
+  @Patch("orders/:id/items/:orderItemId/round")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("orders:update")
+  @RequiresModule("course_rounds")
+  async updateOrderItemRound(
+    @Param("id") id: string,
+    @Param("orderItemId") orderItemId: string,
+    @Body() payload: { round?: number | null },
+  ): Promise<Order> {
+    const round = payload.round === null || payload.round === undefined ? null : Number(payload.round);
+    let updated: Order | null;
+    try {
+      updated = await this.appRepository.updateOrderItemRound(id, Number(orderItemId), round);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Order item update failed");
+    }
+    if (!updated) throw new NotFoundException("Order or item not found");
     await this.realtimeGateway.emit(socketEvents.orderUpdate, updated);
     return updated;
   }
@@ -3126,7 +3198,7 @@ export class AppController {
   // throttle is an abuse backstop, not a functional cap (a busy restaurant
   // can run several bridges behind one NAT/IP).
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
-  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string; fiscalPrinter?: FiscalPrinterConfig }> {
+  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string; command?: PrintBridgeCommand; fiscalPrinter?: FiscalPrinterConfig }> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
     return this.withBridgeTenantContext(auth.tenantId, async () => {
       const heartbeatInput = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -3198,9 +3270,12 @@ export class AppController {
       // effect without touching the agent's local file. Omitted when the
       // tenant never configured a device, so the agent keeps its local config.
       const fiscalPrinter = await this.fiscalBridgeRepo.getFiscalPrinterConfig();
+      // One-shot admin command (LAN scan / direct test print), if any.
+      const command = await this.printBridgeRepo.getBridgeCommand(bridge.id, auth.tenantId);
       return {
         bridge,
         serverTime: new Date().toISOString(),
+        ...(command ? { command } : {}),
         ...(fiscalPrinter.host ? { fiscalPrinter } : {}),
       };
     });
@@ -3263,6 +3338,73 @@ export class AppController {
       }
       void this.realtimeGateway.emit(socketEvents.jobFailed, job, auth.tenantId).catch((err) => console.warn('[realtime] job:failed emit failed:', err));
       return { job };
+    });
+  }
+
+  @Post("print-bridge/diagnostics")
+  @Public()
+  // Agent log/health shipping. Same bridge auth as heartbeat/claim; throttled
+  // as an abuse backstop (agents push a small incremental batch periodically).
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
+  async bridgeDiagnostics(@Body() raw: unknown, @Req() req: any): Promise<{ stored: number }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeDiagnosticsRequestSchema.parse(raw);
+      const instanceId =
+        (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || payload.instanceId || undefined;
+      const exists = await this.printBridgeRepo.bridgeExistsForTenant(auth.tenantId, payload.bridgeId);
+      if (!exists) {
+        // Unknown bridge (e.g. stale config): drop silently, never 500 the agent.
+        return { stored: 0 };
+      }
+      const stored = await this.printBridgeRepo.appendBridgeDiagnostics({
+        tenantId: auth.tenantId,
+        bridgeId: payload.bridgeId,
+        ...(instanceId ? { instanceId } : {}),
+        lastError: payload.lastError ?? null,
+        logs: payload.logs,
+        retentionDays: 7,
+      });
+      return { stored };
+    });
+  }
+
+  @Post("print-bridge/discovered-printers")
+  @Public()
+  // Network-scan result pushed by the agent after an admin-requested scan.
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  async bridgeDiscoveredPrinters(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeDiscoveredPrintersRequestSchema.parse(raw);
+      const bridge = await this.printBridgeRepo.mergeDiscoveredPrinters(
+        payload.bridgeId,
+        payload.devices.map((device) => ({
+          ip: device.ip,
+          port: device.port,
+          ...(device.mac ? { mac: device.mac } : {}),
+          ...(device.vendor ? { vendor: device.vendor } : {}),
+        })),
+        auth.tenantId,
+      );
+      if (!bridge) throw new NotFoundException("Print bridge not found");
+      void this.realtimeGateway
+        .emit(socketEvents.bridgeStatus, bridge, auth.tenantId)
+        .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
+      return { bridge };
+    });
+  }
+
+  @Post("print-bridge/command-ack")
+  @Public()
+  // The agent acknowledges a one-shot command so it is not delivered again.
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  async bridgeCommandAck(@Body() raw: unknown, @Req() req: any): Promise<{ cleared: boolean }> {
+    const auth = await this.verifyBridgeOrOnboardingSecret(req);
+    return this.withBridgeTenantContext(auth.tenantId, async () => {
+      const payload = printBridgeCommandAckRequestSchema.parse(raw);
+      const cleared = await this.printBridgeRepo.clearBridgeCommand(payload.bridgeId, payload.commandId, auth.tenantId);
+      return { cleared };
     });
   }
 
@@ -3343,6 +3485,112 @@ export class AppController {
     return this.printBridgeRepo.listPrintBridges();
   }
 
+  // ─── Print stations (dynamic, per-tenant) ─────────────────────────────
+  // Assignment is explicit and decided in Inventory (product/target station).
+  // These endpoints manage the registry; printer binding stays in Settings.
+
+  @Get("print-stations")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("printing")
+  async listPrintStations(): Promise<PrintStationsListResponse> {
+    return this.printStationsRepo.listStations();
+  }
+
+  @Post("print-stations")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async createPrintStation(@Body() payload: PrintStationCreateRequest): Promise<PrintStation> {
+    const parsed = printStationCreateRequestSchema.parse(payload);
+    return this.printStationsRepo.createStation(parsed);
+  }
+
+  @Patch("print-stations/:id")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async updatePrintStation(
+    @Param("id") id: string,
+    @Body() payload: PrintStationUpdateRequest,
+  ): Promise<PrintStation> {
+    const parsed = printStationUpdateRequestSchema.parse(payload);
+    const updated = await this.printStationsRepo.updateStation(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Print station not found");
+    }
+    return updated;
+  }
+
+  @Delete("print-stations/:id")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async deletePrintStation(@Param("id") id: string): Promise<{ success: true; id: string }> {
+    const ok = await this.printStationsRepo.deleteStation(id);
+    if (!ok) {
+      throw new BadRequestException("Print station not found or is the default station");
+    }
+    return { success: true, id };
+  }
+
+  // ─── Production references (container/base counting) ──────────────────
+
+  @Get("production-references")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("printing")
+  async listProductionReferences(): Promise<ProductionReferencesListResponse> {
+    return this.productionReferencesRepo.listReferences();
+  }
+
+  @Post("production-references")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async createProductionReference(@Body() payload: ProductionReferenceCreateRequest): Promise<ProductionReference> {
+    const parsed = productionReferenceCreateRequestSchema.parse(payload);
+    return this.productionReferencesRepo.createReference(parsed);
+  }
+
+  @Patch("production-references/:id")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async updateProductionReference(
+    @Param("id") id: string,
+    @Body() payload: ProductionReferenceUpdateRequest,
+  ): Promise<ProductionReference> {
+    const parsed = productionReferenceUpdateRequestSchema.parse(payload);
+    const updated = await this.productionReferencesRepo.updateReference(id, parsed);
+    if (!updated) {
+      throw new NotFoundException("Production reference not found");
+    }
+    return updated;
+  }
+
+  @Delete("production-references/:id")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async deleteProductionReference(@Param("id") id: string): Promise<{ success: true; id: string }> {
+    const ok = await this.productionReferencesRepo.deleteReference(id);
+    if (!ok) {
+      throw new NotFoundException("Production reference not found");
+    }
+    return { success: true, id };
+  }
+
+  @Get("print-bridge/:id/logs")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async listBridgeLogs(
+    @Param("id") id: string,
+    @Query("level") level: string | undefined,
+    @Query("limit") limit: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<{ bridgeId: string; logs: PrintBridgeLogRecord[] }> {
+    const tenantId = request.user?.tenantId ?? "tenant_legacy";
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : 200;
+    const logs = await this.printBridgeRepo.listBridgeLogs(tenantId, id, {
+      ...(level ? { level } : {}),
+      ...(Number.isFinite(parsedLimit) ? { limit: parsedLimit } : {}),
+    });
+    return { bridgeId: id, logs };
+  }
+
   @Patch("print-bridge/:id/mappings")
   @Roles("admin")
   @RequiresModule("printing")
@@ -3412,5 +3660,53 @@ export class AppController {
 // CASCADE_APPCONTROLLER_TESTPRINT_AREA_DONE
     return { ...result, success: true } as PrintBridgeTestPrintResponse;
     /* CASCADE2_TESTPRINT_RETURN_DONE */
+  }
+
+  // ─── Network discovery (admin-triggered, executed by the agent) ─────────
+
+  @Post("print-bridge/:id/discover")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async requestBridgeDiscovery(@Param("id") id: string): Promise<{ command: PrintBridgeCommand }> {
+    const command = printBridgeCommandSchema.parse({
+      id: crypto.randomUUID(),
+      type: "scan",
+      createdAt: new Date().toISOString(),
+    });
+    await this.printBridgeRepo.setBridgeCommand(id, command);
+    return { command };
+  }
+
+  @Post("print-bridge/:id/update")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async requestBridgeUpdate(@Param("id") id: string): Promise<{ command: PrintBridgeCommand }> {
+    const command = printBridgeCommandSchema.parse({
+      id: crypto.randomUUID(),
+      type: "update",
+      createdAt: new Date().toISOString(),
+    });
+    await this.printBridgeRepo.setBridgeCommand(id, command);
+    return { command };
+  }
+
+  @Post("print-bridge/:id/test-printer")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async testBridgePrinter(
+    @Param("id") id: string,
+    @Body() payload: unknown,
+  ): Promise<{ command: PrintBridgeCommand }> {
+    const parsed = printBridgeTestPrinterRequestSchema.parse(payload);
+    const command = printBridgeCommandSchema.parse({
+      id: crypto.randomUUID(),
+      type: "test-print",
+      ip: parsed.ip,
+      ...(parsed.port ? { port: parsed.port } : {}),
+      ...(parsed.label ? { label: parsed.label } : {}),
+      createdAt: new Date().toISOString(),
+    });
+    await this.printBridgeRepo.setBridgeCommand(id, command);
+    return { command };
   }
 }

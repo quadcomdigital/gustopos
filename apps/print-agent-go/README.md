@@ -62,10 +62,81 @@ All bridge requests carry:
 - `X-Print-Bridge-Key: <6-digit code>` — the credential
 - `X-Bridge-Instance-Id: <stable UUID>` — claim ownership (persisted in config)
 
-The agent receives its administrative `claimedAreas` and area→printer mappings
-from the heartbeat response. The admin configures these in Settings; the agent
-persists them locally and uses them for subsequent queue claims and QZ routing.
-A bridge with no claimed areas intentionally receives no jobs.
+The agent receives its administrative `claimedAreas` and station→printer
+mappings from the heartbeat response. The admin configures these in Settings;
+the agent persists them locally and uses them for subsequent queue claims and
+routing. A bridge with no claimed areas intentionally receives no jobs.
+
+### Transports: QZ Tray or raw network printer
+
+A mapping can target either:
+- **QZ Tray** (`name`): a printer installed on the POS PC, printed through the
+  local QZ Tray WebSocket; or
+- **Rete/IP** (`ip` + `port`, default `9100`): raw ESC/POS sent directly to the
+  printer over TCP, bypassing QZ Tray and the OS driver entirely.
+
+This means a station can be bound to a network printer by IP and print from any
+POS PC on the same LAN, not only the machine where the printer was installed.
+
+### Network autodiscovery
+
+From **Settings → Stampa**, the admin can press **Scansiona rete** on a bridge.
+The command is delivered in the heartbeat response; the agent then probes its
+local RFC1918 subnets (auto-detected) for hosts with TCP port 9100 open, reads
+the ARP table for the MAC/vendor, and reports the devices back
+(`POST /api/print-bridge/discovered-printers`). Each discovered device has a
+**Test** button that prints an identification ticket straight to `ip:port`, so
+the operator can see which physical printer it is before binding it to a
+station. The scan never leaves private ranges and is strictly opt-in.
+
+The same one-shot command channel also powers a direct test print to an
+arbitrary IP before it is mapped.
+
+### Autostart (Windows)
+
+On first run `ensureStartup` registers a per-user logon task
+(`schtasks /SC ONLOGON`, name "GustoPOS Print Agent") running the agent in the
+interactive session — required because QZ Tray also runs there. On Linux/macOS
+the systemd/launchd unit provides autostart instead.
+
+### Self-update
+
+`AutoUpdate` (config, default enabled) makes the agent check the deploy
+origin's public `/downloads/version.json` — the manifest written by
+`make publish-downloads` — right after startup and then every 6 hours. When the
+manifest advertises a newer semver, the agent:
+
+1. picks the artifact for its `GOOS/GOARCH`;
+2. downloads it from `<origin>/downloads/bin/<file>`;
+3. verifies its SHA-256 against the manifest;
+4. replaces the running binary and restarts itself.
+
+Only the configured, trusted API origin is contacted and every artifact is
+checksum-verified. On Windows a detached `cmd` waits for the process to exit,
+moves the new binary into place and relaunches it (no console window); the
+named-mutex single-instance guard then succeeds for the new process. An admin
+can also force it from **Settings → Stampa** → *Aggiorna agente* (one-shot
+`update` command delivered in the heartbeat response).
+
+## Local diagnostics dashboard
+
+The agent exposes a **loopback-only** dashboard on `http://127.0.0.1:8183`
+(config `dashboardPort`, env `GUSTOPOS_AGENT_DASHBOARD_PORT`; auto-falls back to
+the next free port if busy). It is never bound to a public interface, so
+nothing is exposed and machines/tenants cannot collide.
+
+It shows: pairing/bridge state, QZ Tray connection, discovered printers,
+claimed areas + area→printer mappings, job counters and the last error, a live
+log view (in-memory ring buffer, 2000 entries), the recent job history, and a
+**Scarica diagnostica** button that exports a text bundle for bug reports.
+
+- Windows tray: "Apri pannello diagnostica".
+- Actions: reconnect QZ, test print to an area (validates the mapping),
+  re-pair (insert the 6-digit code again), download diagnostics.
+
+Logs are also shipped to the API (`POST /api/print-bridge/diagnostics`) every
+heartbeat, so an admin can read a remote POS agent's logs from
+**Settings → Configurazioni Stampa → Diagnostica bridge** (retention 7 days).
 
 ## Build
 
@@ -77,6 +148,11 @@ make linux          # static amd64+arm64
 make windows        # gustopos-print-agent-windows-amd64.exe
 make darwin
 ```
+
+> The Windows target is linked with `-H=windowsgui` (see `WINDOWS_LDFLAGS` in
+> the Makefile): the exe runs silently in the notification tray with **no
+> console window**. Diagnostics stay available in the loopback dashboard and in
+> the tray menu.
 
 ## Deploy (Linux POS with systemd)
 

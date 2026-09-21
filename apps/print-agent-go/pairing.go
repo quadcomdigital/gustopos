@@ -191,7 +191,7 @@ func (p *PairingServer) handlePair(w http.ResponseWriter, r *http.Request) {
 		// The API schema requires `areas` to be an array (null is rejected),
 		// so probe with the default areas like the running agent does.
 		Areas: DefaultConfig().Areas,
-	}); err != nil {
+	}, nil); err != nil {
 		if IsDetached(err) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Codice non valido o scaduto. Generane uno nuovo in Settings."})
 		} else {
@@ -223,6 +223,9 @@ func (p *PairingServer) handlePair(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.prev.PrinterNames != nil {
 			cfg.PrinterNames = p.prev.PrinterNames
+		}
+		if p.prev.PrinterTargets != nil {
+			cfg.PrinterTargets = p.prev.PrinterTargets
 		}
 	}
 	if err := cfg.Save(); err != nil {

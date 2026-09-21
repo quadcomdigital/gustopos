@@ -25,10 +25,15 @@ module.exports = {
       name: "gustopos-web",
       cwd: "/srv/gustopos",
       script: "npm",
-      args: "run dev --workspace @gustopos/web",
+      // Production static server for the built `dist/`. nginx also serves
+      // `dist/` directly; this PM2 app keeps the direct :11900 path alive
+      // (with /api + /socket.io proxied) without running Vite in dev mode.
+      // Rebuild with `npm run build --workspace @gustopos/web` before restart.
+      args: "run preview --workspace @gustopos/web",
       env: {
-        NODE_ENV: "development",
-        PORT: "11900",
+        NODE_ENV: "production",
+        VITE_WEB_PORT: "11900",
+        VITE_API_URL: "http://127.0.0.1:11901",
       },
       max_memory_restart: "512M",
       autorestart: true,

@@ -17,6 +17,9 @@ export const categorySchema = z.object({
   name: z.string().min(2),
   scope: categoryScopeSchema,
   isActive: z.boolean(),
+  stationId: z.string().nullable().optional(),
+  referenceId: z.string().nullable().optional(),
+  // @deprecated superseded by stationId
   printAreas: z.array(printAreaSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -28,12 +31,16 @@ export const categoryCreateRequestSchema = z.object({
   id: z.string().min(1).optional(),
   name: z.string().min(2),
   scope: categoryScopeSchema,
+  stationId: z.string().min(1).optional(),
+  referenceId: z.string().min(1).optional(),
   printAreas: z.array(printAreaSchema).default(["kitchen"]),
 });
 
 export const categoryUpdateRequestSchema = z.object({
   name: z.string().min(2).optional(),
   isActive: z.boolean().optional(),
+  stationId: z.string().min(1).nullable().optional(),
+  referenceId: z.string().min(1).nullable().optional(),
   printAreas: z.array(printAreaSchema).optional(),
 });
 
@@ -43,6 +50,7 @@ export const categoryModifierPoolOptionSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
   inventoryItemId: z.string().optional(),
+  referenceId: z.string().nullable().optional(),
   componentType: z.enum(["ingredient", "prep", "bom"]).default("ingredient"),
   componentId: z.string().optional(),
   quantity: z.number().default(1),
@@ -83,6 +91,7 @@ export const modifierOptionSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   inventoryItemId: z.string().optional(),
+  referenceId: z.string().nullable().optional(),
   componentType: z.enum(["ingredient", "prep", "bom"]).default("ingredient"),
   componentId: z.string().optional(),
   quantity: z.number().default(1),
@@ -134,6 +143,9 @@ export const menuItemSchema = z.object({
   price: z.number().nonnegative(),
   category: z.string(),
   categoryId: z.string().optional(),
+  stationId: z.string().nullable().optional(),
+  referenceId: z.string().nullable().optional(),
+  // @deprecated superseded by stationId
   printAreas: z.array(printAreaSchema),
   isJolly: z.boolean().optional().default(false),
   ingredients: z.array(z.string()),
@@ -148,6 +160,9 @@ export const menuItemAdminSchema = z.object({
   price: z.number().nonnegative(),
   category: z.string(),
   categoryId: z.string().optional(),
+  stationId: z.string().nullable().optional(),
+  referenceId: z.string().nullable().optional(),
+  // @deprecated superseded by stationId
   printAreas: z.array(printAreaSchema),
   isActive: z.boolean(),
   isJolly: z.boolean().optional().default(false),
@@ -163,6 +178,8 @@ export const menuItemCreateRequestSchema = z.object({
   price: z.number().nonnegative(),
   category: z.string().min(2),
   categoryId: z.string().optional(),
+  stationId: z.string().min(1).optional(),
+  referenceId: z.string().min(1).optional(),
   printAreas: z.array(printAreaSchema).default(["kitchen"]),
   recipe: z.array(menuRecipeComponentSchema).default([]),
   modifiers: z.array(menuItemModifierSchema.omit({ id: true, name: true, effectivePrice: true })).default([]),
@@ -174,6 +191,8 @@ export const menuItemUpdateRequestSchema = z.object({
   price: z.number().positive().optional(),
   category: z.string().min(2).optional(),
   categoryId: z.string().optional(),
+  stationId: z.string().min(1).nullable().optional(),
+  referenceId: z.string().min(1).nullable().optional(),
   printAreas: z.array(printAreaSchema).optional(),
   components: z.array(canonicalMenuComponentSchema).optional(),
   modifierGroups: z.array(modifierGroupInputSchema).optional(),

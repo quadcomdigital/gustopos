@@ -18,6 +18,7 @@ import StaffView from './StaffView';
 import PaymentsView from './PaymentsView';
 import TablesManagementView from './TablesManagementView';
 import PrintBridgesPanel from './print/PrintBridgesPanel';
+import PrintStationsManager from './print/PrintStationsManager';
 import PrintSettingsSection from './print/PrintSettingsSection';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';
@@ -467,6 +468,7 @@ export default function SettingsView({
 
         {activeTab === 'printing' && printingEnabled && (
           <div className="space-y-6">
+            <PrintStationsManager />
             <PrintBridgesPanel />
             <PrintSettingsSection
               draft={draft}

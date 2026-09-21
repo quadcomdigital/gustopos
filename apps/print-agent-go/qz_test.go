@@ -64,14 +64,18 @@ func TestHeartbeatReportsDiscoveredPrinters(t *testing.T) {
 
 	api := NewAPI(server.URL, "", "123456", "instance-test")
 	cfg := &Config{BridgeID: "bridge_test", Areas: []string{"kitchen"}, PrinterNames: map[string]string{"kitchen": "old-config"}}
-	if _, err := api.Heartbeat(cfg, []string{"Star TSP100", "EPSON TM-T88V"}); err != nil {
+	capabilities := []BridgePrinterCapability{
+		{Name: "Star TSP100", Source: "qz"},
+		{Name: "EPSON TM-T88V", Source: "qz"},
+	}
+	if _, err := api.Heartbeat(cfg, capabilities); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
-	if len(received.Printers) != 2 || received.Printers[0]["name"] != "Star TSP100" || received.Printers[1]["name"] != "EPSON TM-T88V" {
+	if len(received.Printers) != 2 || received.Printers[0].Name != "Star TSP100" || received.Printers[1].Name != "EPSON TM-T88V" {
 		t.Fatalf("unexpected discovered printers payload: %#v", received.Printers)
 	}
-	if received.Printers[0]["area"] != nil || received.Printers[1]["area"] != nil {
-		t.Fatalf("discovery payload must not masquerade as area mappings: %#v", received.Printers)
+	if received.Printers[0].Source != "qz" || received.Printers[1].Source != "qz" {
+		t.Fatalf("discovery payload must tag the source: %#v", received.Printers)
 	}
 }
 

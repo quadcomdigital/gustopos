@@ -1,8 +1,10 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, CanonicalCreateMenuProductRequest, PrepItemCreateRequest, CanonicalUnit, MenuItemUpdateRequest, MenuRecipeComponent, CategoryModifierPool, PrintArea, ModifierGroup, UnitConversion } from '@gustopos/shared';
+import type { Category, Ingredient, IngredientCreateRequest, BomItem, BomCreateRequest, PrepItem, MenuItemAdmin, CanonicalCreateMenuProductRequest, PrepItemCreateRequest, CanonicalUnit, MenuItemUpdateRequest, MenuRecipeComponent, CategoryModifierPool, ModifierGroup, UnitConversion } from '@gustopos/shared';
 import FormField from '../../../shared/ui/molecules/FormField';
 import { Plus, AlertTriangle, RefreshCw, Layers } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
+import { usePrintStations } from '../usePrintStations';
+import { useProductionReferences } from '../useProductionReferences';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import Button from '../../../shared/ui/atoms/Button';
 import InlineCategoryPicker from '../InlineCategoryPicker';
@@ -15,7 +17,6 @@ import CreatePrepInlineModal from './CreatePrepInlineModal';
 import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
 import { explodeBomCost } from '../useInventoryShared';
 
-const PRINT_AREA_LABELS: Record<string, string> = { kitchen: 'Cucina', bar: 'Bar', cashier: 'Cassa' };
 
 interface FoodProductModalProps {
   open: boolean;
@@ -54,7 +55,8 @@ export default function FoodProductModal({
   const [categoryId, setCategoryId] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [price, setPrice] = useState('');
-  const [printAreas, setPrintAreas] = useState<PrintArea[]>(['kitchen']);
+  const [stationId, setStationId] = useState('');
+  const [referenceId, setReferenceId] = useState('');
   const [recipe, setRecipe] = useState<MenuRecipeComponent[]>([]);
   const [isBase, setIsBase] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -77,6 +79,9 @@ export default function FoodProductModal({
   const [bomSaveYield, setBomSaveYield] = useState('1');
   const [bomSaving, setBomSaving] = useState(false);
 
+  const { stations } = usePrintStations();
+  const { references } = useProductionReferences();
+  const activeReferences = references.filter((r) => r.isActive);
   const menuCategories = useMemo(() => categories.filter((c) => !c.scope || c.scope === 'menu'), [categories]);
 
   const resolveComponentUnit = useCallback((component: MenuRecipeComponent): CanonicalUnit => {
@@ -96,7 +101,8 @@ export default function FoodProductModal({
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
       setPrice(String(editItem.price));
-      setPrintAreas(editItem.printAreas?.length ? editItem.printAreas : ['kitchen']);
+      setStationId(editItem.stationId ?? '');
+      setReferenceId(editItem.referenceId ?? '');
       setModifierGroups(editItem.modifierGroups ?? []);
 
       // Keep canonical components as-is (ingredient | bom | prep). BoM
@@ -107,7 +113,7 @@ export default function FoodProductModal({
       setOriginalResolved(JSON.parse(JSON.stringify(recipe)));
       setIsBase(editItem.price > 0 && recipe.length === 0);
     } else if (!open) {
-      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setPrintAreas(['kitchen']); setRecipe([]); setIsBase(false); setModifierGroups([]); setErrors({}); setError('');
+      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setStationId(''); setReferenceId(''); setRecipe([]); setIsBase(false); setModifierGroups([]); setErrors({}); setError('');
       setOriginalResolved([]);
     }
   }, [editItem, open]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -156,7 +162,9 @@ export default function FoodProductModal({
           category: catName,
           categoryId: categoryId || undefined,
           price: Number(price),
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           modifierGroups,
           components: finalRecipeWithUnits,
         });
@@ -166,7 +174,9 @@ export default function FoodProductModal({
           price: Number(price),
           category: catName.trim(),
           categoryId: categoryId || undefined,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           components: finalRecipeWithUnits,
           inlineIngredients: [],
           inlinePreps: [],
@@ -305,11 +315,12 @@ export default function FoodProductModal({
       name !== editItem.name
       || categoryId !== (editItem.categoryId ?? '')
       || price !== String(editItem.price)
-      || JSON.stringify(printAreas) !== JSON.stringify(editItem.printAreas)
+      || stationId !== (editItem.stationId ?? '')
+      || referenceId !== (editItem.referenceId ?? '')
       || JSON.stringify(recipe) !== JSON.stringify(originalRecipe)
       || JSON.stringify(modifierGroups) !== JSON.stringify(editItem.modifierGroups)
     );
-  }, [isEdit, editItem, name, categoryId, price, printAreas, recipe, originalResolved, modifierGroups]);
+  }, [isEdit, editItem, name, categoryId, price, stationId, referenceId, recipe, originalResolved, modifierGroups]);
 
   return (
     <>
@@ -345,16 +356,18 @@ export default function FoodProductModal({
             </FormField>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <div className="flex flex-wrap gap-2">
-              {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
-                <button key={area} type="button"
-                  onClick={() => setPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
-                  className={`min-h-[44px] px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'}`}>
-                  stampa {PRINT_AREA_LABELS[area]}
-                </button>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Stazione di stampa</label>
+            <select
+              value={stationId}
+              onChange={(e) => setStationId(e.target.value)}
+              className="px-3 py-2 rounded border border-border text-sm w-full min-h-[44px] bg-white"
+            >
+              <option value="">Stazione predefinita (dalla categoria)</option>
+              {stations.filter((s) => s.isActive && s.kind !== 'cashier').map((s) => (
+                <option key={s.id} value={s.id}>{s.name}{s.isDefault ? ' (predefinita)' : ''}</option>
               ))}
-            </div>
+            </select>
           </div>
 
           {/* BASE product toggle */}

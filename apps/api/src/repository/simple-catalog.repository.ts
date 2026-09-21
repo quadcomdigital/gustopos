@@ -38,6 +38,8 @@ export class SimpleCatalogRepository {
         name: row.name,
         price: Number(row.price),
         category: row.category,
+        stationId: row.stationId,
+        referenceId: row.referenceId,
         printAreas: parsePrintAreas(row.printAreas),
         ingredients: []
       }),
@@ -55,7 +57,9 @@ export class SimpleCatalogRepository {
       price: String(payload.price),
       category: payload.category,
       categoryId: payload.categoryId ?? null,
-      printAreas: JSON.stringify(payload.printAreas ?? ["kitchen"]),
+      stationId: payload.stationId ?? null,
+      referenceId: payload.referenceId ?? null,
+      printAreas: JSON.stringify(payload.printAreas ?? []),
       isActive: 1
     });
 
@@ -90,6 +94,8 @@ export class SimpleCatalogRepository {
         ...(parsed.name ? { name: parsed.name } : {}),
         ...(parsed.category ? { category: parsed.category } : {}),
         ...(parsed.categoryId !== undefined ? { categoryId: parsed.categoryId } : {}),
+        ...(parsed.stationId !== undefined ? { stationId: parsed.stationId } : {}),
+        ...(parsed.referenceId !== undefined ? { referenceId: parsed.referenceId } : {}),
         ...(parsed.printAreas ? { printAreas: JSON.stringify(parsed.printAreas) } : {}),
         ...(parsed.price !== undefined ? { price: String(parsed.price) } : {})
       })

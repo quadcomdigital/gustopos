@@ -12,3 +12,7 @@ export const courseRoundsConfigSchema = z.object({
 });
 
 export type CourseRoundsConfig = z.infer<typeof courseRoundsConfigSchema>;
+
+/** Admin update payload for the course-rounds config (same shape as stored). */
+export const courseRoundsConfigUpdateRequestSchema = courseRoundsConfigSchema;
+export type CourseRoundsConfigUpdateRequest = z.infer<typeof courseRoundsConfigUpdateRequestSchema>;

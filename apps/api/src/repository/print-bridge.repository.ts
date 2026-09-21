@@ -2,15 +2,17 @@ import { Injectable } from "@nestjs/common";
 import { db } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { and, desc, eq, gt, inArray, isNull, isNotNull, lt, ne, or } from "drizzle-orm";
-import { z } from "zod";
 import crypto from "node:crypto";
 import {
-  printAreaSchema,
-  printBridgePrinterMappingSchema,
+  printBridgeCommandSchema,
+  printBridgeLogRecordSchema,
   printJobSchema,
-  type PrintArea,
   type PrintBridge,
+  type PrintBridgeCommand,
+  type PrintBridgePrinter,
   type PrintBridgePrinterMapping,
+  type PrintBridgeLogEntry,
+  type PrintBridgeLogRecord,
   type PrintBridgeOnboardingSecret,
   type PrintBridgeOnboardingSecretCreateResponse,
   type PrintBridgeOnboardingSecretCreateCode6DigitResponse,
@@ -18,9 +20,21 @@ import {
 } from "@gustopos/shared";
 import {
   printBridges,
+  printBridgeLogs,
   printBridgeOnboardingSecrets,
   printJobs,
+  printStations,
 } from "../db/schema";
+
+// Legacy print_areas enum values replaced by dynamic station ids (migration
+// 0072). They must never be treated as a routing key again: jobs, claimed
+// areas and mappings all use station ids now. Values are normalized away on
+// read so stale rows can never resurrect the old routing.
+const LEGACY_AREA_KEYS = new Set(["kitchen", "pizzeria", "bar", "cashier"]);
+
+function isLegacyAreaKey(value: unknown): boolean {
+  return typeof value === "string" && LEGACY_AREA_KEYS.has(value.trim().toLowerCase());
+}
 
 @Injectable()
 export class PrintBridgeRepository {
@@ -59,13 +73,14 @@ export class PrintBridgeRepository {
   }
 
   private toPrintBridge(row: typeof printBridges.$inferSelect): PrintBridge {
-    let areas: PrintArea[] = [];
-    let printers: Array<{ area: PrintArea; name: string; ip?: string | null; port?: number }> = [];
+    // Areas/mappings hold opaque station ids (not the legacy enum). Never coerce
+    // an unknown value to a station — an empty value simply stays empty.
+    let areas: string[] = [];
+    let printers: PrintBridgePrinter[] = [];
     try {
       const parsedAreas = JSON.parse(row.areas);
       if (Array.isArray(parsedAreas)) {
-        areas = parsedAreas
-          .filter((a): a is PrintArea => a === "kitchen" || a === "bar" || a === "cashier");
+        areas = parsedAreas.filter((a): a is string => typeof a === "string" && a.length > 0 && !isLegacyAreaKey(a));
       }
     } catch {
       areas = [];
@@ -74,18 +89,17 @@ export class PrintBridgeRepository {
       const parsedPrinters = JSON.parse(row.printers);
       if (Array.isArray(parsedPrinters)) {
         printers = parsedPrinters
-          .filter((p): p is { area: string; name: string; ip?: string | null; port?: number } =>
+          .filter((p): p is { area?: unknown; name: string; ip?: string | null; port?: number; source?: unknown; vendor?: unknown; mac?: unknown } =>
             typeof p === "object" && p !== null && typeof (p as any).name === "string")
-          .map((p) => {
-            const area = (p as any).area;
-            const safeArea: PrintArea = area === "kitchen" || area === "bar" || area === "cashier" ? area : "kitchen";
-            return {
-              name: (p as any).name as string,
-              area: safeArea,
-              ip: (p as any).ip ?? null,
-              port: typeof (p as any).port === "number" ? (p as any).port : undefined,
-            };
-          });
+          .map((p) => ({
+            name: p.name as string,
+            area: typeof p.area === "string" ? p.area : null,
+            ip: typeof p.ip === "string" ? p.ip : null,
+            port: typeof p.port === "number" ? p.port : undefined,
+            ...(p.source === "qz" || p.source === "net" ? { source: p.source } : {}),
+            ...(typeof p.vendor === "string" ? { vendor: p.vendor } : {}),
+            ...(typeof p.mac === "string" ? { mac: p.mac } : {}),
+          }));
       }
     } catch {
       printers = [];
@@ -95,49 +109,28 @@ export class PrintBridgeRepository {
     try {
       const parsedMappings = JSON.parse(row.mappings);
       if (Array.isArray(parsedMappings)) {
-        const zodSafe = z.array(printBridgePrinterMappingSchema).safeParse(parsedMappings);
-        if (zodSafe.success) {
-          mappings = zodSafe.data.map((m) => ({ area: m.area, name: m.name, ip: m.ip, port: m.port }));
-        } else {
-          mappings = parsedMappings
-          .filter(
-            (m): m is { area: string; name: string; ip?: string | null; port?: number } =>
-              typeof m === "object" && m !== null && typeof (m as any).name === "string",
-          )
-          .map((m): PrintBridgePrinterMapping | null => {
-            const safeArea: PrintArea =
-              (m as any).area === "kitchen" || (m as any).area === "bar" || (m as any).area === "cashier"
-                ? ((m as any).area as PrintArea)
-                : "kitchen";
-            const name = typeof (m as any).name === "string" && (m as any).name.length > 0
-              ? ((m as any).name as string)
-              : null;
-            if (name === null) return null;
-            return {
-              area: safeArea,
-              name,
-              ip: typeof (m as any).ip === "string" ? ((m as any).ip as string) : undefined,
-              port: typeof (m as any).port === "number" ? ((m as any).port as number) : undefined,
-            };
-          })
-          .filter((m): m is PrintBridgePrinterMapping => m !== null);
-      }
+        mappings = parsedMappings
+          .filter((m): m is { area?: unknown; name: string; ip?: string | null; port?: number } =>
+            typeof m === "object" && m !== null && typeof (m as any).name === "string")
+          .map((m) => ({
+            area: typeof (m as any).area === "string" ? (m as any).area : null,
+            name: (m as any).name as string,
+            ip: typeof (m as any).ip === "string" ? (m as any).ip : undefined,
+            port: typeof (m as any).port === "number" ? (m as any).port : undefined,
+          }))
+          // A legacy enum key cannot address a station: drop it (the physical
+          // binding must be redone from Settings → Stampa).
+          .filter((m) => m.name.length > 0 && !isLegacyAreaKey(m.area));
       }
     } catch {
       mappings = [];
     }
-    let claimedAreas: PrintArea[] = [];
+
+    let claimedAreas: string[] = [];
     try {
       const parsedClaimed = JSON.parse(row.claimedAreas);
       if (Array.isArray(parsedClaimed)) {
-        const zodSafe = z.array(printAreaSchema).safeParse(parsedClaimed);
-        if (zodSafe.success) {
-          claimedAreas = zodSafe.data;
-        } else {
-          claimedAreas = parsedClaimed.filter(
-          (a): a is PrintArea => a === "kitchen" || a === "bar" || a === "cashier",
-        );
-      }
+        claimedAreas = parsedClaimed.filter((a): a is string => typeof a === "string" && a.length > 0 && !isLegacyAreaKey(a));
       }
     } catch {
       claimedAreas = [];
@@ -157,6 +150,8 @@ export class PrintBridgeRepository {
       updatedAt: row.updatedAt.toISOString(),
       mappings,
       claimedAreas,
+      lastError: row.lastError ?? null,
+      diagnosticsAt: row.diagnosticsAt ? row.diagnosticsAt.toISOString() : null,
     };
   }
 
@@ -274,6 +269,103 @@ export class PrintBridgeRepository {
       where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)),
     });
     return row ? this.toPrintBridge(row) : null;
+  }
+
+  // ─── One-shot commands (network scan / direct test print) ───────────────
+
+  async setBridgeCommand(bridgeId: string, command: PrintBridgeCommand): Promise<void> {
+    const tenantId = getTenantIdOrDefault();
+    await db
+      .update(printBridges)
+      .set({ command: JSON.stringify(command), updatedAt: new Date() })
+      .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)));
+  }
+
+  async getBridgeCommand(bridgeId: string, overrideTenantId?: string): Promise<PrintBridgeCommand | null> {
+    const tenantId = overrideTenantId ?? getTenantIdOrDefault();
+    const row = await db.query.printBridges.findFirst({
+      where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)),
+      columns: { command: true },
+    });
+    return this.parseCommand(row?.command ?? null);
+  }
+
+  async clearBridgeCommand(bridgeId: string, commandId: string, overrideTenantId?: string): Promise<boolean> {
+    const tenantId = overrideTenantId ?? getTenantIdOrDefault();
+    const row = await db.query.printBridges.findFirst({
+      where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)),
+      columns: { command: true },
+    });
+    const current = this.parseCommand(row?.command ?? null);
+    if (!current || current.id !== commandId) {
+      // Nothing to clear, or a newer command replaced this one: keep it.
+      return false;
+    }
+    await db
+      .update(printBridges)
+      .set({ command: null, updatedAt: new Date() })
+      .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)));
+    return true;
+  }
+
+  private parseCommand(raw: string | null): PrintBridgeCommand | null {
+    if (!raw) return null;
+    try {
+      const parsed = printBridgeCommandSchema.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Merge network-discovered devices into the bridge printer list. Network
+   * entries are replaced wholesale by the latest scan while QZ entries are
+   * preserved (they come from the heartbeat and must not be lost).
+   */
+  async mergeDiscoveredPrinters(
+    bridgeId: string,
+    devices: Array<{ ip: string; port: number; mac?: string; vendor?: string }>,
+    overrideTenantId?: string,
+  ): Promise<PrintBridge | null> {
+    const tenantId = overrideTenantId ?? getTenantIdOrDefault();
+    const row = await db.query.printBridges.findFirst({
+      where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)),
+    });
+    if (!row) return null;
+
+    let existing: PrintBridgePrinter[] = [];
+    try {
+      const parsed = JSON.parse(row.printers);
+      if (Array.isArray(parsed)) {
+        existing = parsed.filter((p): p is PrintBridgePrinter => typeof p === "object" && p !== null && typeof (p as any).name === "string");
+      }
+    } catch {
+      existing = [];
+    }
+    const kept = existing.filter((p) => p.source !== "net");
+    const seen = new Set<string>();
+    for (const device of devices) {
+      const ip = device.ip.trim();
+      if (!ip || seen.has(ip)) continue;
+      seen.add(ip);
+      kept.push({
+        name: (device.vendor ? device.vendor : "Stampante di rete") + " (" + ip + ")",
+        ip,
+        port: device.port,
+        source: "net",
+        ...(device.vendor ? { vendor: device.vendor } : {}),
+        ...(device.mac ? { mac: device.mac } : {}),
+      });
+    }
+    await db
+      .update(printBridges)
+      .set({ printers: JSON.stringify(kept), updatedAt: new Date() })
+      .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)));
+    const updated = await db.query.printBridges.findFirst({
+      where: and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)),
+    });
+    return updated ? this.toPrintBridge(updated) : null;
   }
 
   private async reclaimStalePrintJobClaims(tenantId: string): Promise<void> {
@@ -668,7 +760,7 @@ export class PrintBridgeRepository {
     return { firstBind };
   }
 
-  async updateBridgeMappings(bridgeId: string, mappings: Array<{ area: PrintArea; name: string; ip?: string | null; port?: number | null }>): Promise<PrintBridge> {
+  async updateBridgeMappings(bridgeId: string, mappings: Array<{ area: string; name: string; ip?: string | null; port?: number | null }>): Promise<PrintBridge> {
     const tenantId = getTenantIdOrDefault();
     await db
       .update(printBridges)
@@ -684,11 +776,27 @@ export class PrintBridgeRepository {
     return this.toPrintBridge(row);
   }
 
-  async updateBridgeClaimedAreas(bridgeId: string, claimedAreas: PrintArea[]): Promise<PrintBridge> {
+  async updateBridgeClaimedAreas(bridgeId: string, claimedAreas: string[]): Promise<PrintBridge> {
     const tenantId = getTenantIdOrDefault();
+    // Only real, active station ids can be a queue boundary. Anything else
+    // (legacy enum keys, deleted stations) would silently strand jobs.
+    const requested = claimedAreas.filter((a): a is string => typeof a === "string" && a.trim().length > 0);
+    let normalized: string[] = [];
+    if (requested.length > 0) {
+      const stationRows = await db
+        .select({ id: printStations.id })
+        .from(printStations)
+        .where(and(
+          eq(printStations.tenantId, tenantId),
+          eq(printStations.isActive, 1),
+          inArray(printStations.id, requested),
+        ));
+      const valid = new Set(stationRows.map((row) => row.id));
+      normalized = requested.filter((id) => valid.has(id));
+    }
     await db
       .update(printBridges)
-      .set({ claimedAreas: JSON.stringify(claimedAreas), updatedAt: new Date() })
+      .set({ claimedAreas: JSON.stringify(normalized), updatedAt: new Date() })
       .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)));
     const rows = await db
       .select()
@@ -750,5 +858,105 @@ export class PrintBridgeRepository {
         .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)));
       return true;
     });
+  }
+
+  // ─── Agent diagnostics (logs + snapshot) ──────────────────────────────
+
+  async bridgeExistsForTenant(tenantId: string, bridgeId: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: printBridges.id })
+      .from(printBridges)
+      .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /**
+   * Persist a batch of agent logs, refresh the bridge health snapshot
+   * (`last_error`, `diagnostics_at`) and prune entries older than the
+   * retention window. Kept in one transaction so the snapshot never lags the
+   * logs it summarizes.
+   */
+  async appendBridgeDiagnostics(params: {
+    tenantId: string;
+    bridgeId: string;
+    instanceId?: string;
+    lastError?: string | null;
+    logs: PrintBridgeLogEntry[];
+    retentionDays?: number;
+  }): Promise<number> {
+    const now = new Date();
+    const rows = params.logs.map((entry) => ({
+      id: `pbl_${crypto.randomUUID()}`,
+      tenantId: params.tenantId,
+      bridgeId: params.bridgeId,
+      instanceId: params.instanceId ?? null,
+      level: entry.level,
+      component: entry.component ?? null,
+      message: entry.message.slice(0, 1000),
+      // Trust the agent timestamp only when parseable; fall back to server time.
+      createdAt: Number.isNaN(new Date(entry.timestamp).getTime()) ? now : new Date(entry.timestamp),
+    }));
+
+    return db.transaction(async (tx) => {
+      if (rows.length > 0) {
+        await tx.insert(printBridgeLogs).values(rows);
+      }
+
+      await tx
+        .update(printBridges)
+        .set({
+          lastError: params.lastError ?? null,
+          diagnosticsAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(printBridges.tenantId, params.tenantId), eq(printBridges.id, params.bridgeId)));
+
+      const retentionMs = (params.retentionDays ?? 7) * 24 * 60 * 60 * 1000;
+      await tx
+        .delete(printBridgeLogs)
+        .where(
+          and(
+            eq(printBridgeLogs.tenantId, params.tenantId),
+            eq(printBridgeLogs.bridgeId, params.bridgeId),
+            lt(printBridgeLogs.createdAt, new Date(now.getTime() - retentionMs)),
+          ),
+        );
+
+      return rows.length;
+    });
+  }
+
+  async listBridgeLogs(
+    tenantId: string,
+    bridgeId: string,
+    options: { level?: string; limit?: number } = {},
+  ): Promise<PrintBridgeLogRecord[]> {
+    const conditions = [
+      eq(printBridgeLogs.tenantId, tenantId),
+      eq(printBridgeLogs.bridgeId, bridgeId),
+    ];
+    if (options.level) {
+      conditions.push(eq(printBridgeLogs.level, options.level));
+    }
+
+    const rows = await db
+      .select()
+      .from(printBridgeLogs)
+      .where(and(...conditions))
+      .orderBy(desc(printBridgeLogs.createdAt))
+      .limit(Math.min(Math.max(options.limit ?? 200, 1), 500));
+
+    return rows.map((row) =>
+      printBridgeLogRecordSchema.parse({
+        id: row.id,
+        bridgeId: row.bridgeId ?? undefined,
+        level: row.level,
+        component: row.component ?? undefined,
+        message: row.message,
+        timestamp: row.createdAt.toISOString(),
+        createdAt: row.createdAt.toISOString(),
+      }),
+    );
   }
 }

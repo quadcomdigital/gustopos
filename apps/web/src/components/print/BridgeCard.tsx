@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
-import type { PrintArea, PrintBridge } from '@gustopos/shared';
+import { useEffect, useMemo, useState } from 'react';
+import type { PrintBridge } from '@gustopos/shared';
+import { filterLegacyAreas } from './legacy-areas';
+import { usePrintStations } from '../inventory/usePrintStations';
 
 type Freshness = 'fresh' | 'slow' | 'offline';
 
@@ -9,19 +11,16 @@ interface BridgeCardProps {
   onEditMappings: (bridge: PrintBridge) => void;
   onEditClaimedAreas: (bridge: PrintBridge) => void;
   onDelete: (bridge: PrintBridge) => void;
-  onTestPrint: (bridgeId: string, area: PrintArea) => Promise<void>;
-  testingArea: PrintArea | null;
-  isAreaCoolingDown?: (area: PrintArea) => boolean;
+  onTestPrint: (bridgeId: string, area: string) => Promise<void>;
+  onScanNetwork: (bridgeId: string) => Promise<void>;
+  onTestDevice: (bridgeId: string, device: { ip: string; port?: number; label?: string }) => Promise<void>;
+  onUpdateAgent: (bridgeId: string) => Promise<void>;
+  testingArea: string | null;
+  isAreaCoolingDown?: (area: string) => boolean;
 }
 
 const GREEN_THRESHOLD_MS = 90_000;
 const AMBER_THRESHOLD_MS = 180_000;
-
-const AREA_LABELS: Record<PrintArea, string> = {
-  kitchen: 'Cucina',
-  bar: 'Bar',
-  cashier: 'Cassa',
-};
 
 function classifyFreshness(lastHeartbeatAt: string | null | undefined): Freshness {
   if (!lastHeartbeatAt) return 'offline';
@@ -51,6 +50,9 @@ export default function BridgeCard({
   onEditClaimedAreas,
   onDelete,
   onTestPrint,
+  onScanNetwork,
+  onTestDevice,
+  onUpdateAgent,
   testingArea,
   isAreaCoolingDown,
 }: BridgeCardProps) {
@@ -59,6 +61,58 @@ export default function BridgeCard({
     const id = setInterval(() => setTick((t) => t + 1), 15_000);
     return () => clearInterval(id);
   }, []);
+
+  const { stations } = usePrintStations();
+  const stationName = useMemo(() => new Map(stations.map((s) => [s.id, s.name])), [stations]);
+  const [scanning, setScanning] = useState(false);
+  const [deviceTesting, setDeviceTesting] = useState<string | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [feedback, setFeedback] = useState('');
+
+  const networkDevices = useMemo(
+    () => (Array.isArray(bridge.printers) ? bridge.printers : []).filter((p) => p.source === 'net' && p.ip),
+    [bridge.printers],
+  );
+  const isGoAgent = typeof bridge.version === 'string' && bridge.version.startsWith('go-');
+
+  const handleScan = async () => {
+    setScanning(true);
+    setFeedback('');
+    try {
+      await onScanNetwork(bridge.id);
+      setFeedback('Scansione avviata: i risultati arrivano tra pochi secondi.');
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : 'Scansione non avviata');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const handleTestDevice = async (ip: string, port: number | null | undefined, label: string) => {
+    setDeviceTesting(ip);
+    setFeedback('');
+    try {
+      await onTestDevice(bridge.id, { ip, port: port ?? undefined, label });
+      setFeedback(`Test inviato a ${ip}.`);
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : 'Test fallito');
+    } finally {
+      setDeviceTesting(null);
+    }
+  };
+
+  const handleUpdate = async () => {
+    setUpdating(true);
+    setFeedback('');
+    try {
+      await onUpdateAgent(bridge.id);
+      setFeedback('Aggiornamento richiesto: l\'agente si aggiorna e riavvia tra pochi secondi.');
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : 'Aggiornamento non richiesto');
+    } finally {
+      setUpdating(false);
+    }
+  };
 
   const freshness = classifyFreshness(bridge.lastHeartbeatAt);
   const dot =
@@ -71,11 +125,7 @@ export default function BridgeCard({
     'offline';
 
   const printerCount = Array.isArray(bridge.printers) ? bridge.printers.length : 0;
-  const claimedAreas = Array.isArray(bridge.claimedAreas)
-    ? bridge.claimedAreas.filter((a): a is PrintArea =>
-        a === 'kitchen' || a === 'bar' || a === 'cashier',
-      )
-    : [];
+  const claimedAreas = filterLegacyAreas(bridge.claimedAreas);
   const mappingsByArea = new Map<string, string>(
     (bridge.mappings ?? []).map((m) => [String(m.area ?? ''), String(m.name ?? '')]),
   );
@@ -132,6 +182,17 @@ export default function BridgeCard({
         >
           🗑 Rimuovi
         </button>
+        {isGoAgent && (
+          <button
+            type="button"
+            onClick={() => void handleUpdate()}
+            disabled={updating || freshness === 'offline'}
+            title={freshness === 'offline' ? 'Bridge offline' : "Scarica e installa l'ultima versione dell'agente"}
+            className="px-2.5 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1.5"
+          >
+            {updating ? 'Aggiornamento…' : '⟳ Aggiorna agente'}
+          </button>
+        )}
       </div>
 
       {/* ─── Per-area test buttons ─────────────────── */}
@@ -142,7 +203,7 @@ export default function BridgeCard({
             const coolingDown = isAreaCoolingDown?.(area) ?? false;
             const disabled = !mapped || testingArea === area || coolingDown || freshness === 'offline';
             const title = !mapped
-              ? `Configura prima il mapping per ${AREA_LABELS[area]}`
+              ? `Configura prima il mapping per ${stationName.get(area) ?? area}`
               : coolingDown
                 ? 'Cooldown 3s — aspetta prima del prossimo test'
                 : freshness === 'offline'
@@ -152,8 +213,8 @@ export default function BridgeCard({
             const label = isTestingThis
               ? 'Invio…'
               : coolingDown
-                ? `⏳ ${AREA_LABELS[area]}`
-                : `🖨 ${AREA_LABELS[area]}`;
+                ? `⏳ ${stationName.get(area) ?? area}`
+                : `🖨 ${stationName.get(area) ?? area}`;
             return (
               <button
                 key={area}
@@ -173,6 +234,66 @@ export default function BridgeCard({
           })}
         </div>
       )}
+
+      {/* ─── Rete locale: scansione + stampanti trovate ─────────── */}
+      <div className="border-t border-border pt-2 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">
+            Rete locale ({networkDevices.length})
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleScan()}
+            disabled={scanning || freshness === 'offline'}
+            title={freshness === 'offline' ? 'Bridge offline' : 'Cerca stampanti di rete (porta 9100)'}
+            className="px-2.5 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider hover:bg-gray-50 disabled:opacity-40"
+          >
+            {scanning ? 'Scansione…' : '⇄ Scansiona rete'}
+          </button>
+        </div>
+        {networkDevices.length === 0 ? (
+          <p className="text-[10px] text-text-muted">
+            Nessuna stampante di rete trovata. Avvia una scansione per cercare dispositivi con
+            porta 9100 aperta.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {networkDevices.map((device) => {
+              const ip = device.ip as string;
+              return (
+                <li
+                  key={ip}
+                  className="flex items-center justify-between gap-2 rounded border border-border px-2 py-1"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-mono text-secondary truncate">
+                      {ip}:{device.port ?? 9100}
+                    </p>
+                    {device.vendor && (
+                      <p className="text-[10px] text-text-muted truncate">{device.vendor}</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleTestDevice(
+                        ip,
+                        device.port,
+                        device.vendor ? `${device.vendor} ${ip}` : ip,
+                      )
+                    }
+                    disabled={deviceTesting === ip || freshness === 'offline'}
+                    className="shrink-0 px-2 py-1 rounded border border-primary text-primary text-[10px] font-bold uppercase tracking-wider hover:bg-primary hover:text-white disabled:opacity-40"
+                  >
+                    {deviceTesting === ip ? 'Invio…' : 'Test'}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {feedback && <p className="text-[10px] text-text-muted">{feedback}</p>}
+      </div>
 
       <p className="text-[10px] text-text-muted font-mono pt-1 border-t border-border">id: {bridge.id}</p>
     </div>

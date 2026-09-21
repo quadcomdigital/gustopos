@@ -7,6 +7,7 @@ import { orderSchema, orderItemSchema } from "../contracts/order.schema";
 export const publicMenuCategorySchema = z.object({
   id: z.string(),
   name: z.string(),
+  stationId: z.string().nullable().optional(),
   printAreas: z.array(printAreaSchema),
 });
 
@@ -18,6 +19,7 @@ export const publicMenuItemSchema = z.object({
   category: z.string(),
   ingredients: z.array(z.string()),
   bomIds: z.array(z.string()),
+  stationId: z.string().nullable().optional(),
   printAreas: z.array(printAreaSchema),
   isFeatured: z.boolean().default(false),
   isSoldOut: z.boolean().default(false),

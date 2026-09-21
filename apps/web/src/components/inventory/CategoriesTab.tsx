@@ -1,4 +1,4 @@
-import type { Category } from '@gustopos/shared';
+import type { Category, CategoryCreateRequest, CategoryUpdateRequest } from '@gustopos/shared';
 import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import { Plus, RotateCcw, Save, ChevronDown, Search, Tag, Package, Layers, UtensilsCrossed } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -10,20 +10,16 @@ import { useDebounce } from '../../hooks/useDebounce';
 import { required, minLength, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
-
-const PRINT_AREA_LABELS: Record<string, string> = {
-  kitchen: 'Cucina',
-  bar: 'Bar',
-  cashier: 'Cassa',
-};
+import { usePrintStations } from './usePrintStations';
+import { useProductionReferences } from './useProductionReferences';
 
 interface CategoriesTabProps {
   categories: Category[];
   simpleCatalogMode?: boolean;
   loading?: boolean;
   onRefresh?: () => Promise<void>;
-  onCreate?: (payload: { name: string; scope: Category['scope']; printAreas: Array<'kitchen' | 'bar' | 'cashier'> }) => Promise<void>;
-  onUpdate?: (id: string, payload: { name?: string; isActive?: boolean; printAreas?: Array<'kitchen' | 'bar' | 'cashier'> }) => Promise<void>;
+  onCreate?: (payload: CategoryCreateRequest) => Promise<void>;
+  onUpdate?: (id: string, payload: CategoryUpdateRequest) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
 }
 
@@ -36,13 +32,21 @@ export default function CategoriesTab({
   onUpdate,
   onDelete,
 }: CategoriesTabProps) {
+  const { stations } = usePrintStations();
+  const { references } = useProductionReferences();
+  const printStations = useMemo(() => stations.filter((s) => s.isActive && s.kind !== 'cashier'), [stations]);
+  const activeReferences = useMemo(() => references.filter((r) => r.isActive), [references]);
+  const stationName = useMemo(() => new Map(stations.map((s) => [s.id, s.name])), [stations]);
+
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryScope, setNewCategoryScope] = useState<Category['scope']>(simpleCatalogMode ? 'menu' : 'ingredient');
-  const [newCategoryPrintAreas, setNewCategoryPrintAreas] = useState<Array<'kitchen' | 'bar' | 'cashier'>>(['kitchen']);
+  const [newCategoryStationId, setNewCategoryStationId] = useState('');
+  const [newCategoryReferenceId, setNewCategoryReferenceId] = useState('');
 
   const [editingCategoryId, setEditingCategoryId] = useState('');
   const [editCategoryName, setEditCategoryName] = useState('');
-  const [editCategoryPrintAreas, setEditCategoryPrintAreas] = useState<Array<'kitchen' | 'bar' | 'cashier'>>(['kitchen']);
+  const [editCategoryStationId, setEditCategoryStationId] = useState('');
+  const [editCategoryReferenceId, setEditCategoryReferenceId] = useState('');
   const [createErrors, setCreateErrors] = useState<ValidationErrors>({});
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -64,9 +68,10 @@ export default function CategoriesTab({
     if (!editingCategory) return false;
     return (
       editCategoryName.trim() !== editingCategory.name
-      || JSON.stringify(editCategoryPrintAreas) !== JSON.stringify(editingCategory.printAreas)
+      || editCategoryStationId !== (editingCategory.stationId ?? '')
+      || editCategoryReferenceId !== (editingCategory.referenceId ?? '')
     );
-  }, [editingCategory, editCategoryName, editCategoryPrintAreas]);
+  }, [editingCategory, editCategoryName, editCategoryStationId, editCategoryReferenceId]);
 
   const scopes: Category['scope'][] = ['ingredient', 'bom', 'menu'];
   const { confirm, requestConfirm, handleConfirm, handleCancel } = useConfirm();
@@ -79,12 +84,12 @@ export default function CategoriesTab({
     setCreateErrors(errors);
     if (Object.values(errors).some(Boolean)) return;
     const name = newCategoryName.trim();
-    const printAreas = (newCategoryPrintAreas.length > 0 ? newCategoryPrintAreas : ['kitchen']) as ('kitchen' | 'bar' | 'cashier')[];
     setSaving(true);
     try {
-      await onCreate({ name, scope: newCategoryScope, printAreas });
+      await onCreate({ name, scope: newCategoryScope, stationId: newCategoryStationId || undefined, referenceId: newCategoryReferenceId || undefined, printAreas: [] });
       setNewCategoryName('');
-      setNewCategoryPrintAreas(['kitchen']);
+      setNewCategoryStationId('');
+      setNewCategoryReferenceId('');
       setCreateErrors({});
       setShowCreateForm(false);
       void onRefresh?.();
@@ -98,7 +103,8 @@ export default function CategoriesTab({
   const startEdit = (category: Category) => {
     setEditingCategoryId(category.id);
     setEditCategoryName(category.name);
-    setEditCategoryPrintAreas([...category.printAreas]);
+    setEditCategoryStationId(category.stationId ?? '');
+    setEditCategoryReferenceId(category.referenceId ?? '');
   };
 
   const saveEdit = async () => {
@@ -111,7 +117,8 @@ export default function CategoriesTab({
     try {
       await onUpdate(editingCategory.id, {
         name: editCategoryName.trim(),
-        printAreas: editCategoryPrintAreas.length > 0 ? editCategoryPrintAreas : ['kitchen'],
+        stationId: editCategoryStationId || null,
+        referenceId: editCategoryReferenceId || null,
       });
       setEditingCategoryId('');
       void onRefresh?.();
@@ -190,24 +197,30 @@ export default function CategoriesTab({
             <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
           ))}
         </select>
-        <div className="md:col-span-2 flex flex-wrap gap-2 items-center">
-          {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
-            <button
-              key={`new-cat-area-${area}`}
-              onClick={() => setNewCategoryPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
-              className={`px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border ${
-                newCategoryPrintAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'
-              }`}
-            >
-              {PRINT_AREA_LABELS[area] ?? area}
-            </button>
+        <select
+          value={newCategoryStationId}
+          onChange={(e) => setNewCategoryStationId(e.target.value)}
+          className="px-3 py-2 rounded border border-border text-sm"
+        >
+          <option value="">Stazione predefinita</option>
+          {printStations.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}{s.isDefault ? ' (predefinita)' : ''}</option>
           ))}
-        </div>
+        </select>
+        <select
+          value={newCategoryReferenceId}
+          onChange={(e) => setNewCategoryReferenceId(e.target.value)}
+          className="px-3 py-2 rounded border border-border text-sm"
+        >
+          <option value="">Referenza predefinita</option>
+          {activeReferences.map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+        </select>
         <Button variant="primary" onClick={() => void createCategory()} disabled={saving}>
           <Plus size={14} />
           {saving ? 'Creazione...' : 'Crea'}
         </Button>
-
       </div>
       )}
 
@@ -241,19 +254,9 @@ export default function CategoriesTab({
                       label={category.name}
                       tone={category.isActive ? 'success' : 'neutral'}
                     />
-                    {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
-                      <button
-                        key={`${category.id}-${area}`}
-                        onClick={() => void onUpdate?.(category.id, {
-                          printAreas: category.printAreas.includes(area) ? category.printAreas.filter((a) => a !== area) : [...category.printAreas, area],
-                        })}
-                        className={`min-h-[44px] px-3 py-2 rounded-full text-xs font-bold uppercase tracking-wider border ${
-                          category.printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'
-                        }`}
-                      >
-                        {PRINT_AREA_LABELS[area] ?? area}
-                      </button>
-                    ))}
+                    <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                      {category.stationId ? (stationName.get(category.stationId) ?? 'stazione eliminata') : 'predefinita'}
+                    </span>
                     <Button variant="secondary" onClick={() => startEdit(category)}>
                       Modifica
                     </Button>
@@ -295,20 +298,32 @@ export default function CategoriesTab({
               {editErrors.name && <p className="text-[9px] text-danger">{editErrors.name.message}</p>}
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Aree di stampa</label>
-              <div className="flex gap-2">
-                {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
-                  <button
-                    key={`edit-area-${area}`}
-                    onClick={() => setEditCategoryPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
-                    className={`px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border ${
-                      editCategoryPrintAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'
-                    }`}
-                  >
-                    {PRINT_AREA_LABELS[area] ?? area}
-                  </button>
+              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stazione di stampa</label>
+              <select
+                value={editCategoryStationId}
+                onChange={(e) => setEditCategoryStationId(e.target.value)}
+                className="px-3 py-2 rounded border border-border text-sm"
+              >
+                <option value="">Stazione predefinita</option>
+                {printStations.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}{s.isDefault ? ' (predefinita)' : ''}</option>
                 ))}
-              </div>
+              </select>
+              <p className="text-[10px] text-text-muted">I prodotti senza stazione propria usano quella della categoria.</p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Referenza conteggio (contenitore)</label>
+              <select
+                value={editCategoryReferenceId}
+                onChange={(e) => setEditCategoryReferenceId(e.target.value)}
+                className="px-3 py-2 rounded border border-border text-sm"
+              >
+                <option value="">Nessuna</option>
+                {activeReferences.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-text-muted">Contata nel RIEPILOGO in stampa; un modifier principale può sovrascriverla.</p>
             </div>
             <div className="flex items-center gap-3 pt-2 border-t border-border">
               <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Stato</label>

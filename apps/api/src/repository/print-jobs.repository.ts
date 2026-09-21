@@ -4,11 +4,9 @@ import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import {
-  printAreaSchema,
   printJobSchema,
   printJobsListResponseSchema,
   printJobsQuerySchema,
-  type PrintArea,
   type PrintJob,
   type PrintJobsQuery,
 } from "@gustopos/shared";
@@ -31,7 +29,7 @@ export class PrintJobsRepository {
     return printJobSchema.parse({
       id: row.id,
       orderId: row.orderId,
-      area: printAreaSchema.parse(row.area),
+      area: row.area,
       protocol: row.protocol,
       status: row.status,
       payload: row.payload,
@@ -69,7 +67,7 @@ export class PrintJobsRepository {
         printJobSchema.parse({
           id: row.id,
           orderId: row.orderId,
-          area: printAreaSchema.parse(row.area),
+          area: row.area,
           protocol: row.protocol,
           status: row.status,
           payload: row.payload,
@@ -82,7 +80,7 @@ export class PrintJobsRepository {
     );
   }
 
-  async pollPrintJobs(areas: PrintArea[]): Promise<PrintJob[]> {
+  async pollPrintJobs(areas: string[]): Promise<PrintJob[]> {
     const tenantId = getTenantIdOrDefault();
 
     // Atomic: update pending jobs to dispatched and return them in one query.
@@ -109,7 +107,7 @@ export class PrintJobsRepository {
       printJobSchema.parse({
         id: row.id,
         orderId: row.orderId,
-        area: printAreaSchema.parse(row.area),
+        area: row.area,
         protocol: row.protocol,
         status: row.status,
         payload: row.payload,
@@ -142,7 +140,7 @@ export class PrintJobsRepository {
     return printJobSchema.parse({
       id: row.id,
       orderId: row.orderId,
-      area: printAreaSchema.parse(row.area),
+      area: row.area,
       protocol: row.protocol,
       status: row.status,
       payload: row.payload,
@@ -173,7 +171,7 @@ export class PrintJobsRepository {
     return printJobSchema.parse({
       id: row.id,
       orderId: row.orderId,
-      area: printAreaSchema.parse(row.area),
+      area: row.area,
       protocol: row.protocol,
       status: row.status,
       payload: row.payload,
@@ -211,7 +209,7 @@ export class PrintJobsRepository {
     return printJobSchema.parse({
       id: row.id,
       orderId: row.orderId,
-      area: printAreaSchema.parse(row.area),
+      area: row.area,
       protocol: row.protocol,
       status: row.status,
       payload: row.payload,
@@ -241,7 +239,7 @@ export class PrintJobsRepository {
     return printJobSchema.parse({
       id: row.id,
       orderId: row.orderId,
-      area: printAreaSchema.parse(row.area),
+      area: row.area,
       protocol: row.protocol,
       status: row.status,
       payload: row.payload,
@@ -273,7 +271,7 @@ export class PrintJobsRepository {
     return printJobSchema.parse({
       id: row.id,
       orderId: row.orderId,
-      area: printAreaSchema.parse(row.area),
+      area: row.area,
       protocol: row.protocol,
       status: row.status,
       payload: row.payload,

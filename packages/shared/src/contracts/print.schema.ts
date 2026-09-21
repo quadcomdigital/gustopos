@@ -22,7 +22,7 @@ export const printJobsListResponseSchema = z.array(printJobSchema);
 
 export const printJobsQuerySchema = z.object({
   status: z.enum(["pending", "dispatched", "completed", "failed"]).optional(),
-  area: printAreaSchema.optional(),
+  area: z.string().optional(),
   limit: z.number().int().min(1).max(500).optional(),
 });
 
@@ -76,6 +76,9 @@ export const uiSettingsSchema = z.object({
     barPrinterIp: z.string().max(45).optional(),
     barPrinterPort: z.number().int().min(1).max(65535).optional(),
     protocol: z.enum(["escpos", "disabled"]),
+    // Dynamic station ids that should receive order tickets (supersedes
+    // activeAreas). Empty falls back to activeAreas for legacy settings.
+    activeStationIds: z.array(z.string()).default([]),
     activeAreas: z.array(printAreaSchema),
     autoPrintKitchen: z.boolean(),
     autoPrintOnClose: z.boolean(),
@@ -111,6 +114,11 @@ export const printBridgePrinterSchema = z.object({
   name: z.string(),
   ip: z.string().nullable().optional(),
   port: z.number().nullable().optional(),
+  // "qz" = printer installed on the POS PC and seen by QZ Tray;
+  // "net" = raw network printer found by scanning the LAN.
+  source: z.enum(["qz", "net"]).optional(),
+  vendor: z.string().max(80).optional(),
+  mac: z.string().max(32).optional(),
 });
 /* CASCADE2_PRINTER_SCHEMA_DONE */
 
@@ -133,8 +141,10 @@ export const printBridgeSchema = z.object({
   areas: z.array(z.string()).default([]),
   printers: z.array(printBridgePrinterSchema).default([]),
   mappings: z.array(printBridgePrinterMappingSchema).default([]),
-  claimedAreas: z.array(printAreaSchema).default([]),
+  claimedAreas: z.array(z.string()).default([]),
   lastHeartbeatAt: z.string().nullable().optional(),
+  lastError: z.string().nullable().optional(),
+  diagnosticsAt: z.string().nullable().optional(),
   createdAt: z.string().nullable().optional(),
   updatedAt: z.string().nullable().optional(),
 });
@@ -144,16 +154,58 @@ export const printBridgeHeartbeatRequestSchema = z.object({
   name: z.string().optional(),
   host: z.string().optional(),
   version: z.string().optional(),
-  areas: z.array(printAreaSchema).default([]),
+  areas: z.array(z.string()).default([]),
   printers: z.array(printBridgePrinterSchema).default([]),
+});
+
+// Command pushed to a bridge in the heartbeat response. One-shot: the agent
+// executes it and acks, then the server clears it.
+export const printBridgeCommandSchema = z.object({
+  id: z.string(),
+  type: z.enum(["scan", "test-print", "update"]),
+  ip: z.string().max(45).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  label: z.string().max(120).optional(),
+  createdAt: z.string().optional(),
 });
 
 export const printBridgeHeartbeatResponseSchema = z.object({
   bridge: printBridgeSchema,
   serverTime: z.string(),
+  // Present only when an admin requested a network scan or a direct test print
+  // from Settings → Stampa.
+  command: printBridgeCommandSchema.optional(),
   // Certified fiscal (Path B): the tenant's RT printer config, present only
   // when the tenant configured a device. The Go agent applies it on receipt.
   fiscalPrinter: fiscalPrinterConfigSchema.optional(),
+});
+
+// ─── Network discovery ─────────────────────────────────────────────────
+
+export const printBridgeDiscoveredDeviceSchema = z.object({
+  ip: z.string().min(1).max(45),
+  port: z.number().int().min(1).max(65535),
+  mac: z.string().max(32).optional(),
+  vendor: z.string().max(80).optional(),
+  source: z.literal("net").optional(),
+});
+
+export const printBridgeDiscoveredPrintersRequestSchema = z.object({
+  bridgeId: z.string(),
+  devices: z.array(printBridgeDiscoveredDeviceSchema).max(512),
+});
+
+export const printBridgeCommandAckRequestSchema = z.object({
+  bridgeId: z.string(),
+  commandId: z.string(),
+});
+
+// Admin request: direct test print to an arbitrary network printer (used to
+// identify a discovered IP before binding it to a station).
+export const printBridgeTestPrinterRequestSchema = z.object({
+  ip: z.string().min(1).max(45),
+  port: z.number().int().min(1).max(65535).optional(),
+  label: z.string().max(120).optional(),
 });
 
 export const printBridgeClaimRequestSchema = z.object({
@@ -219,7 +271,7 @@ export const printBridgeUpdateMappingsRequestSchema = z.object({
 });
 
 export const printBridgeUpdateClaimedAreasRequestSchema = z.object({
-  claimedAreas: z.array(printAreaSchema),
+  claimedAreas: z.array(z.string()),
 });
 
 export const printBridgeTestPrintRequestSchema = z.object({
@@ -254,6 +306,42 @@ export const printBridgeJobFailResponseSchema = z.object({
 
 export const printBridgePrintBridgesListResponseSchema = z.array(printBridgeSchema);
 
+// ─── Agent diagnostics (logs + health) ─────────────────────────────────
+//
+// The Go agent keeps a local ring buffer of logs/status (local dashboard on
+// 127.0.0.1) and ships a compact batch to the API so admins can inspect remote
+// POS agents without physical access. Retention/pruning is server-side.
+
+export const printBridgeLogLevelSchema = z.enum(["info", "warn", "error"]);
+
+export const printBridgeLogEntrySchema = z.object({
+  timestamp: z.string(),
+  level: printBridgeLogLevelSchema,
+  component: z.string().max(80).optional(),
+  message: z.string().min(1).max(1000),
+});
+
+export const printBridgeDiagnosticsRequestSchema = z.object({
+  bridgeId: z.string(),
+  instanceId: z.string().optional(),
+  version: z.string().max(40).optional(),
+  os: z.string().max(40).optional(),
+  // Last error surfaced by the agent, if any (kept on the bridge for a badge).
+  lastError: z.string().max(500).nullable().optional(),
+  logs: z.array(printBridgeLogEntrySchema).max(200).default([]),
+});
+
+export const printBridgeLogRecordSchema = printBridgeLogEntrySchema.extend({
+  id: z.string(),
+  bridgeId: z.string().nullable().optional(),
+  createdAt: z.string(),
+});
+
+export const printBridgeDiagnosticsResponseSchema = z.object({
+  bridgeId: z.string(),
+  logs: z.array(printBridgeLogRecordSchema),
+});
+
 // ─── Local browser-bridge config ───────────────────────────────────────
 
 export const localBridgePrinterMappingSchema = z.object({
@@ -270,7 +358,7 @@ export const localBridgeConfigSchema = z.object({
   enabled: z.boolean(),
   bridgeId: z.string(),
   deviceName: z.string(),
-  areas: z.array(printAreaSchema),
+  areas: z.array(z.string()),
   printersPerArea: z.array(localBridgePrinterMappingSchema),
   enableWakeLock: z.boolean().default(true),
   enableKeepaliveWorker: z.boolean().default(true),
@@ -307,6 +395,7 @@ export const defaultUiSettings: UiSettings = {
     barPrinterIp: undefined,
     barPrinterPort: undefined,
     protocol: "escpos",
+    activeStationIds: [],
     activeAreas: ["kitchen", "cashier"],
     autoPrintKitchen: true,
     autoPrintOnClose: false,
@@ -349,11 +438,21 @@ export type PrintBridgeUpdateMappingsRequest = z.infer<typeof printBridgeUpdateM
 export type PrintBridgeUpdateClaimedAreasRequest = z.infer<typeof printBridgeUpdateClaimedAreasRequestSchema>;
 export type PrintBridgeTestPrintRequest = z.infer<typeof printBridgeTestPrintRequestSchema>;
 export type PrintBridgeTestPrintResponse = z.infer<typeof printBridgeTestPrintResponseSchema>;
+export type PrintBridgeCommand = z.infer<typeof printBridgeCommandSchema>;
+export type PrintBridgeDiscoveredDevice = z.infer<typeof printBridgeDiscoveredDeviceSchema>;
+export type PrintBridgeDiscoveredPrintersRequest = z.infer<typeof printBridgeDiscoveredPrintersRequestSchema>;
+export type PrintBridgeCommandAckRequest = z.infer<typeof printBridgeCommandAckRequestSchema>;
+export type PrintBridgeTestPrinterRequest = z.infer<typeof printBridgeTestPrinterRequestSchema>;
 export type PrintBridgeListResponse = z.infer<typeof printBridgeListResponseSchema>;
 export type PrintBridgeOnboardingSecretsListResponse = z.infer<typeof printBridgeOnboardingSecretsListResponseSchema>;
 export type PrintBridgeJobCompleteResponse = z.infer<typeof printBridgeJobCompleteResponseSchema>;
 export type PrintBridgeJobFailResponse = z.infer<typeof printBridgeJobFailResponseSchema>;
 export type PrintBridgePrintBridgesListResponse = z.infer<typeof printBridgePrintBridgesListResponseSchema>;
+export type PrintBridgeLogLevel = z.infer<typeof printBridgeLogLevelSchema>;
+export type PrintBridgeLogEntry = z.infer<typeof printBridgeLogEntrySchema>;
+export type PrintBridgeDiagnosticsRequest = z.infer<typeof printBridgeDiagnosticsRequestSchema>;
+export type PrintBridgeLogRecord = z.infer<typeof printBridgeLogRecordSchema>;
+export type PrintBridgeDiagnosticsResponse = z.infer<typeof printBridgeDiagnosticsResponseSchema>;
 export type LocalBridgePrinterMapping = z.infer<typeof localBridgePrinterMappingSchema>;
 export type LocalBridgeConfig = z.infer<typeof localBridgeConfigSchema>;
-export type LocalBridgeArea = z.infer<typeof printAreaSchema>;
+export type LocalBridgeArea = string;

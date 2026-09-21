@@ -1,7 +1,9 @@
 import { useState, useMemo, useEffect } from 'react';
-import type { Category, Ingredient, BomItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, PrintArea, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
+import type { Category, Ingredient, BomItem, MenuItemAdmin, MenuItemCreateRequest, MenuItemUpdateRequest, CanonicalCreateMenuProductRequest, ModifierGroup, CategoryModifierPool } from '@gustopos/shared';
 import { Plus, Trash2 } from 'lucide-react';
 import Modal from '../../../shared/ui/molecules/Modal';
+import { usePrintStations } from '../usePrintStations';
+import { useProductionReferences } from '../useProductionReferences';
 import SaveFooter from '../../../shared/ui/molecules/SaveFooter';
 import Button from '../../../shared/ui/atoms/Button';
 import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
@@ -10,7 +12,6 @@ import ModifierGroupsEditor from '../ModifierGroupsEditor';
 import FormField from '../../../shared/ui/molecules/FormField';
 import { required, minLength, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
 
-const PRINT_AREA_LABELS: Record<string, string> = { kitchen: 'Cucina', bar: 'Bar', cashier: 'Cassa' };
 
 interface Variant {
   id: string;
@@ -45,13 +46,17 @@ export default function VariableProductModal({
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [categoryName, setCategoryName] = useState('');
-  const [printAreas, setPrintAreas] = useState<PrintArea[]>(['kitchen']);
+  const [stationId, setStationId] = useState('');
+  const [referenceId, setReferenceId] = useState('');
   const [variants, setVariants] = useState<Variant[]>([]);
   const [additionalModifierGroups, setAdditionalModifierGroups] = useState<ModifierGroup[]>([]);
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [error, setError] = useState('');
 
+  const { stations } = usePrintStations();
+  const { references } = useProductionReferences();
+  const activeReferences = references.filter((r) => r.isActive);
   const menuCategories = useMemo(() => categories.filter((c) => !c.scope || c.scope === 'menu'), [categories]);
   const rawIngredients = useMemo(() => inventory.filter((i) => i.isActive).map((i) => ({ id: i.id, name: i.name, unit: i.unit })), [inventory]);
 
@@ -61,11 +66,12 @@ export default function VariableProductModal({
       setName(editItem.name);
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
-      setPrintAreas(editItem.printAreas?.length ? editItem.printAreas : ['kitchen']);
+      setStationId(editItem.stationId ?? '');
+      setReferenceId(editItem.referenceId ?? '');
       const additional = (editItem.modifierGroups ?? []).filter((g) => g.name !== 'Formato');
       setAdditionalModifierGroups(additional);
     } else if (!open) {
-      setName(''); setCategoryId(''); setCategoryName(''); setPrintAreas(['kitchen']); setVariants([]); setAdditionalModifierGroups([]); setErrors({}); setError('');
+      setName(''); setCategoryId(''); setCategoryName(''); setStationId(''); setReferenceId(''); setVariants([]); setAdditionalModifierGroups([]); setErrors({}); setError('');
     }
   }, [editItem, open]);
 
@@ -126,7 +132,9 @@ export default function VariableProductModal({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           modifierGroups: allModifierGroups,
         });
       } else if (onCreateMenuProduct) {
@@ -138,7 +146,9 @@ export default function VariableProductModal({
           price: 0,
           category: catName.trim(),
           categoryId: categoryId || undefined,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           components: [],
           inlineIngredients: [],
           inlinePreps: [],
@@ -149,7 +159,9 @@ export default function VariableProductModal({
           name: name.trim(),
           category: catName,
           categoryId: categoryId || undefined,
-          printAreas,
+          stationId: stationId || undefined,
+          referenceId: referenceId || undefined,
+          printAreas: [],
           price: 0,
           recipe: [],
           modifiers: [],
@@ -196,14 +208,25 @@ export default function VariableProductModal({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
-            <button key={area} type="button"
-              onClick={() => setPrintAreas((prev) => prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area])}
-              className={`min-h-[44px] px-3 py-2 rounded-full text-[11px] font-bold uppercase tracking-wider border transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${printAreas.includes(area) ? 'bg-accent text-white border-accent' : 'bg-white text-secondary border-border'}`}>
-              stampa {PRINT_AREA_LABELS[area]}
-            </button>
-          ))}
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Stazione di stampa</label>
+          <select
+            value={stationId}
+            onChange={(e) => setStationId(e.target.value)}
+            className="px-3 py-2 rounded border border-border text-sm w-full min-h-[44px] bg-white"
+          >
+            <option value="">Stazione predefinita (dalla categoria)</option>
+            {stations.filter((s) => s.isActive && s.kind !== 'cashier').map((s) => (
+              <option key={s.id} value={s.id}>{s.name}{s.isDefault ? ' (predefinita)' : ''}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Referenza conteggio (contenitore)</label>
+          <select value={referenceId} onChange={(e) => setReferenceId(e.target.value)} className="px-3 py-2 rounded border border-border text-sm w-full min-h-[44px] bg-white">
+            <option value="">Nessuna (eredita dalla categoria)</option>
+            {activeReferences.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+          </select>
         </div>
 
         <div className="border-t border-border pt-3">

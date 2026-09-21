@@ -201,6 +201,7 @@ import {
   updateUiSettings as updateUiSettingsRequest,
   updateOrder,
   updateOrderItemQuantity,
+  resendOrderPrintJobs,
   voidOrder as voidOrderRequest,
   dispatchPrintJob as dispatchPrintJobRequest,
   upsertDeliveryOrder as upsertDeliveryOrderRequest,
@@ -259,6 +260,9 @@ import {
   triggerBridgeTestPrint as triggerBridgeTestPrintRequest,
   listPrintBridges as listPrintBridgesRequest,
   deletePrintBridgeRequest,
+  requestBridgeDiscovery as requestBridgeDiscoveryRequest,
+  testBridgePrinter as testBridgePrinterRequest,
+  requestBridgeUpdate as requestBridgeUpdateRequest,
 
 } from '../shared/api/client';
 import { disconnectSocket, getSocket } from '../shared/api/socket';
@@ -823,6 +827,7 @@ interface AppState {
   createOrder: (order: CreateOrderRequest) => Promise<Order>;
   upsertDeliveryOrder: (orderId: string, payload: DeliveryUpsertRequest) => Promise<void>;
   updateOrderItemQuantity: (orderId: string, orderItemId: number, quantity: number) => Promise<Order>;
+  resendOrderPrintJobs: (orderId: string) => Promise<void>;
   updateOrder: (id: string, updates: UpdateOrderRequest) => Promise<Order>;
   voidOrder: (id: string, payload: VoidOrderRequest) => Promise<VoidOrderResponse>;
   payTable: (tableId: string) => Promise<PayTableResponse>;
@@ -949,6 +954,9 @@ interface AppState {
   updateBridgeMappings: (bridgeId: string, mappings: PrintBridgePrinterMapping[]) => Promise<void>;
   updateBridgeClaimedAreas: (bridgeId: string, claimedAreas: LocalBridgeArea[]) => Promise<void>;
   triggerBridgeTestPrint: (bridgeId: string, area: LocalBridgeArea) => Promise<void>;
+  requestBridgeDiscovery: (bridgeId: string) => Promise<void>;
+  testBridgePrinter: (bridgeId: string, payload: { ip: string; port?: number; label?: string }) => Promise<void>;
+  requestBridgeUpdate: (bridgeId: string) => Promise<void>;
   deleteBridge: (bridgeId: string) => Promise<void>;
   refreshOnboardingSecrets: () => Promise<void>;
   createOnboardingSecret: (hint?: { bridgeIdHint?: string }) => Promise<{ plaintext: string; suggestedBridgeId: string; bootstrapSnippet: string }>;
@@ -2024,6 +2032,19 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           : s,
       );
       return updated;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  resendOrderPrintJobs: async (orderId) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'printing')) {
+        throw new Error('Modulo printing disabilitato per questo tenant');
+      }
+      await resendOrderPrintJobs(orderId);
     } catch (err) {
       set({ error: handleActionError(err) });
       throw err;
@@ -3639,6 +3660,15 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   triggerBridgeTestPrint: async (bridgeId, area) => {
     await triggerBridgeTestPrintRequest(bridgeId, area);
     set({ printBridgesLastFetchedAt: new Date().toISOString() });
+  },
+  requestBridgeDiscovery: async (bridgeId) => {
+    await requestBridgeDiscoveryRequest(bridgeId);
+  },
+  testBridgePrinter: async (bridgeId, payload) => {
+    await testBridgePrinterRequest(bridgeId, payload);
+  },
+  requestBridgeUpdate: async (bridgeId) => {
+    await requestBridgeUpdateRequest(bridgeId);
   },
   deleteBridge: async (bridgeId) => {
     await deletePrintBridgeRequest(bridgeId);

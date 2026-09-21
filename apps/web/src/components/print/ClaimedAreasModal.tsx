@@ -1,47 +1,43 @@
 import { useEffect, useState } from 'react';
-import type { PrintArea, PrintBridge } from '@gustopos/shared';
+import type { PrintBridge } from '@gustopos/shared';
+import { usePrintStations } from '../inventory/usePrintStations';
+import { filterLegacyAreas, isLegacyAreaKey } from './legacy-areas';
 
 interface ClaimedAreasModalProps {
   bridge: PrintBridge;
   onClose: () => void;
-  onSave: (claimedAreas: PrintArea[]) => Promise<void>;
+  onSave: (claimedAreas: string[]) => Promise<void>;
 }
-
-const AREA_DESCRIPTIONS: Record<PrintArea, string> = {
-  kitchen: 'riceve job comande dalla cucina',
-  bar: 'riceve job comande dal bar',
-  cashier: 'riceve job scontrini di chiusura ed emissione fiscale (RT)',
-};
 
 export default function ClaimedAreasModal({
   bridge,
   onClose,
   onSave,
 }: ClaimedAreasModalProps) {
-  const [selected, setSelected] = useState<PrintArea[]>([]);
+  const { stations } = usePrintStations();
+  const [selected, setSelected] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const hadLegacyAreas = Array.isArray(bridge.claimedAreas)
+    && bridge.claimedAreas.some((a) => isLegacyAreaKey(a));
 
   useEffect(() => {
-    const sanitized = Array.isArray(bridge.claimedAreas)
-      ? bridge.claimedAreas.filter((a): a is PrintArea =>
-          a === 'kitchen' || a === 'bar' || a === 'cashier',
-        )
-      : [];
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- [bridge-sync] syncs selected areas from bridge.claimedAreas prop; setters receive primitives derived from props
-    setSelected(sanitized);
+    // Legacy enum keys cannot address a station: never seed them back into the
+    // selection, otherwise "Salva" would persist them again.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- [bridge-sync] syncs selected stations from bridge.claimedAreas prop
+    setSelected(filterLegacyAreas(bridge.claimedAreas));
   }, [bridge.id, bridge.claimedAreas]);
 
-  const toggle = (area: PrintArea) => {
+  const toggle = (stationId: string) => {
     setSelected((prev) =>
-      prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area],
+      prev.includes(stationId) ? prev.filter((a) => a !== stationId) : [...prev, stationId],
     );
   };
 
   const handleSave = async () => {
     if (selected.length === 0) {
-      setError('Seleziona almeno un\'area.');
+      setError('Seleziona almeno una stazione.');
       return;
     }
     setSaving(true);
@@ -49,13 +45,15 @@ export default function ClaimedAreasModal({
     setSuccess('');
     try {
       await onSave(selected);
-      setSuccess('Aree salvate.');
+      setSuccess('Stazioni salvate.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Salvataggio fallito');
     } finally {
       setSaving(false);
     }
   };
+
+  const activeStations = stations.filter((s) => s.isActive);
 
   return (
     <div
@@ -68,7 +66,7 @@ export default function ClaimedAreasModal({
         <header className="px-5 py-4 border-b border-border flex items-center justify-between">
           <div>
             <h3 className="text-base font-bold uppercase tracking-wider text-secondary">
-              Aree reclamate
+              Stazioni reclamate
             </h3>
             <p className="text-[11px] text-text-muted">
               Bridge <span className="font-mono">{bridge.name}</span>. Scegli a quali code di
@@ -91,14 +89,23 @@ export default function ClaimedAreasModal({
           {success && (
             <p className="rounded border border-success/30 bg-green-50 px-3 py-2 text-xs text-success">{success}</p>
           )}
+          {hadLegacyAreas && (
+            <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Alcune aree legacy (kitchen/bar/cashier) sono state ignorate: non sono più
+              valide. Seleziona le stazioni corrette e salva.
+            </p>
+          )}
           <p className="text-[11px] text-text-muted">
-            Un bridge senza aree reclamate non riceverà alcun job.
+            Un bridge senza stazioni reclamate non riceverà alcun job.
           </p>
-          {(['kitchen', 'bar', 'cashier'] as PrintArea[]).map((area) => {
-            const checked = selected.includes(area);
+          {activeStations.length === 0 && (
+            <p className="text-[11px] text-text-muted italic">Nessuna stazione configurata in Magazzino.</p>
+          )}
+          {activeStations.map((station) => {
+            const checked = selected.includes(station.id);
             return (
               <label
-                key={area}
+                key={station.id}
                 className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
                   checked
                     ? 'border-primary bg-primary/5'
@@ -108,12 +115,16 @@ export default function ClaimedAreasModal({
                 <input
                   type="checkbox"
                   checked={checked}
-                  onChange={() => toggle(area)}
+                  onChange={() => toggle(station.id)}
                   className="mt-0.5 w-4 h-4 accent-primary"
                 />
                 <div>
-                  <p className="text-sm font-bold text-secondary capitalize">{area}</p>
-                  <p className="text-[11px] text-text-muted">{AREA_DESCRIPTIONS[area]}</p>
+                  <p className="text-sm font-bold text-secondary">{station.name}</p>
+                  <p className="text-[11px] text-text-muted">
+                    {station.kind === 'cashier'
+                      ? 'riceve scontrini di chiusura ed emissione fiscale (RT)'
+                      : 'riceve job comande e ticket di cucina/bar'}
+                  </p>
                 </div>
               </label>
             );
@@ -134,7 +145,7 @@ export default function ClaimedAreasModal({
             disabled={saving || selected.length === 0}
             className="px-4 py-2 rounded bg-primary text-white text-[11px] font-bold uppercase tracking-wider disabled:opacity-50"
           >
-            {saving ? 'Salvataggio…' : 'Salva aree'}
+            {saving ? 'Salvataggio…' : 'Salva stazioni'}
           </button>
         </footer>
       </div>

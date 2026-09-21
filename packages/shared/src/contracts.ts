@@ -79,6 +79,7 @@ export * from "./contracts/inventory-workflow.schema";
 export * from "./contracts/coupon.schema";
 export * from "./contracts/cart.schema";
 export * from "./contracts/rounds.schema";
+export * from "./contracts/production.schema";
 export * from "./contracts/food-cost.schema";
 export * from "./contracts/loyalty.schema";
 

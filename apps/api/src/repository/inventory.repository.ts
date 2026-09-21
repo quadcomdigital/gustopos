@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
+import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, SQL, lt, gte, lte } from "drizzle-orm";
 import crypto from "node:crypto";
 import {
@@ -22,7 +23,6 @@ import {
   canonicalUnitSchema,
   type MenuProductResponse,
   menuItemUpdateRequestSchema,
-  printAreaSchema,
   type Ingredient,
   type IngredientCreateRequest,
   type IngredientUpdateRequest,
@@ -91,15 +91,7 @@ function toNumeric(value: string | number): number {
 }
 
 function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
-  if (!raw) return ["kitchen"];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return ["kitchen"];
-    const valid = parsed
-      .map((entry: unknown) => { try { return printAreaSchema.parse(entry); } catch { return null; } })
-      .filter((entry): entry is PrintArea => entry !== null);
-    return valid.length > 0 ? valid : ["kitchen"];
-  } catch { return ["kitchen"]; }
+  return parsePrintAreasUtil(raw);
 }
 
 type InventoryConversionRow = {
@@ -147,6 +139,8 @@ export class InventoryRepository {
       name: row.name,
       scope: categoryScopeSchema.parse(row.scope),
       isActive: row.isActive === 1,
+      stationId: row.stationId,
+      referenceId: row.referenceId,
       printAreas: parsePrintAreas(row.printAreas),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -331,7 +325,7 @@ export class InventoryRepository {
     const optionsByGroupId = new Map<string, any[]>();
     for (const opt of modifierOptionRows) {
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
-      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
+      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, referenceId: opt.referenceId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
       optionsByGroupId.set(opt.groupId, existing);
     }
     const modifierGroupsByMenuId = new Map<string, any[]>();
@@ -342,6 +336,7 @@ export class InventoryRepository {
     }
     return menuItemAdminListResponseSchema.parse(menuRows.map((row) => menuItemAdminSchema.parse({
       id: row.id, name: row.name, price: Number(row.price), category: row.category, categoryId: row.categoryId ?? undefined,
+      stationId: row.stationId, referenceId: row.referenceId,
       printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1, isJolly: row.isJolly === 1,
       recipe: recipeByMenuId.get(row.id) ?? [], modifiers: [], modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
     })));
@@ -1317,6 +1312,8 @@ const inserted = await db
     tenantId,
     name: parsed.name.trim(),
     scope: parsed.scope,
+    stationId: parsed.stationId ?? null,
+    referenceId: parsed.referenceId ?? null,
     printAreas: JSON.stringify(parsed.printAreas),
     isActive: 1,
     createdAt: new Date(),
@@ -1335,6 +1332,8 @@ const updated = await db
   .set({
     ...(parsed.name ? { name: parsed.name.trim() } : {}),
     ...(parsed.isActive !== undefined ? { isActive: parsed.isActive ? 1 : 0 } : {}),
+    ...(parsed.stationId !== undefined ? { stationId: parsed.stationId } : {}),
+    ...(parsed.referenceId !== undefined ? { referenceId: parsed.referenceId } : {}),
     ...(parsed.printAreas ? { printAreas: JSON.stringify(parsed.printAreas) } : {}),
     updatedAt: new Date(),
   })
@@ -1416,6 +1415,7 @@ for (const opt of optionRows) {
     id: opt.id,
     name: opt.name ?? undefined,
     inventoryItemId: opt.inventoryItemId ?? undefined,
+    referenceId: opt.referenceId ?? undefined,
     componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
     componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
     quantity: Number(opt.quantity ?? 1),
@@ -1482,6 +1482,7 @@ if (payload.options.length > 0) {
       poolId,
       name: opt.name ?? null,
       inventoryItemId: opt.inventoryItemId ?? null,
+      referenceId: opt.referenceId ?? null,
       componentType: opt.componentType ?? "ingredient",
       componentId: opt.componentId ?? opt.inventoryItemId ?? null,
       priceDelta: String(opt.priceDelta),
@@ -1534,6 +1535,7 @@ if (payload.options !== undefined) {
         poolId: id,
         name: opt.name ?? null,
         inventoryItemId: opt.inventoryItemId ?? null,
+        referenceId: opt.referenceId ?? null,
         priceDelta: String(opt.priceDelta),
         sortOrder: idx,
       })),
@@ -1721,6 +1723,8 @@ return this.mapMenuItemsAdmin();
         price: String(parsed.price),
         category: parsed.category,
         categoryId: parsed.categoryId ?? null,
+        stationId: parsed.stationId ?? null,
+        referenceId: parsed.referenceId ?? null,
         printAreas: JSON.stringify(parsed.printAreas),
         isActive: 1,
       });
@@ -1750,6 +1754,8 @@ return this.mapMenuItemsAdmin();
         price: parsed.price,
         category: parsed.category,
         categoryId: parsed.categoryId,
+        stationId: parsed.stationId,
+        referenceId: parsed.referenceId,
         printAreas: parsed.printAreas,
         isActive: true,
         components: resolvedComponents.map((component) => {
@@ -1782,6 +1788,8 @@ return this.mapMenuItemsAdmin();
       if (parsed.name !== undefined) scalarUpdates.name = parsed.name;
       if (parsed.category !== undefined) scalarUpdates.category = parsed.category;
       if (parsed.categoryId !== undefined) scalarUpdates.categoryId = parsed.categoryId ?? null;
+      if (parsed.stationId !== undefined) scalarUpdates.stationId = parsed.stationId;
+      if (parsed.referenceId !== undefined) scalarUpdates.referenceId = parsed.referenceId;
       if (parsed.printAreas !== undefined) scalarUpdates.printAreas = JSON.stringify(parsed.printAreas);
       if (parsed.price !== undefined) scalarUpdates.price = String(parsed.price);
       if (Object.keys(scalarUpdates).length > 0) {
@@ -1900,6 +1908,7 @@ return this.mapMenuItemsAdmin();
           groupId,
           name: opt.name,
           inventoryItemId: opt.inventoryItemId || null,
+          referenceId: opt.referenceId ?? null,
           componentType: opt.componentType ?? "ingredient",
           componentId: opt.componentId ?? opt.inventoryItemId ?? null,
           priceDelta: String(opt.priceDelta),

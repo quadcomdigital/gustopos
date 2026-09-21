@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -45,6 +46,11 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[print-agent] ")
 
+	// Shared diagnostic state: captures every log line (ring buffer) and powers
+	// both the local dashboard (127.0.0.1) and the log shipping to the API.
+	runtimeState := newAgentRuntime()
+	log.SetOutput(io.MultiWriter(os.Stderr, runtimeState.Logs))
+
 	releaseInstance, alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
 		fatalExit(fmt.Sprintf("cannot acquire single-instance lock: %v", err))
@@ -54,6 +60,9 @@ func main() {
 		return
 	}
 	defer releaseInstance()
+
+	// Drop a partial download left by an interrupted self-update.
+	cleanupStaleUpdate()
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -84,6 +93,36 @@ func main() {
 	defer signal.Stop(sig)
 	var agentRunning atomic.Bool
 	pairingRequests := make(chan struct{}, 1)
+	var currentAgent *Agent
+
+	dashboardURL := ""
+	dashboard, dashErr := StartDashboard(runtimeState, dashboardCallbacks{
+		ReconnectQZ: func() {
+			if a := currentAgent; a != nil {
+				a.ReconnectQZ()
+			}
+		},
+		TestPrint: func(area string) error {
+			if a := currentAgent; a != nil {
+				return a.TestPrint(area)
+			}
+			return fmt.Errorf("agent non ancora attivo")
+		},
+		RequestPair: func() {
+			select {
+			case pairingRequests <- struct{}{}:
+			default:
+			}
+		},
+	}, cfg.DashboardPort)
+	if dashErr != nil {
+		log.Printf("could not start local diagnostics dashboard: %v", dashErr)
+	} else {
+		dashboardURL = dashboard.URL()
+		log.Printf("diagnostics dashboard: %s", dashboardURL)
+		defer dashboard.Stop()
+	}
+
 	trayCleanup, trayUpdateBridge := StartTray(cfg.BridgeID,
 		func() string {
 			if agentRunning.Load() {
@@ -95,6 +134,11 @@ func main() {
 			select {
 			case pairingRequests <- struct{}{}:
 			default:
+			}
+		},
+		func() {
+			if dashboardURL != "" {
+				openBrowser(dashboardURL)
 			}
 		},
 		func() {
@@ -110,10 +154,11 @@ func main() {
 	// answers 401, we wipe the credential and show the pairing page again so
 	// the machine can attach to the same or another tenant.
 	for {
-		agent, err := NewAgent(cfg)
+		agent, err := NewAgent(cfg, runtimeState)
 		if err != nil {
 			fatalExit(fmt.Sprintf("agent init failed: %v", err))
 		}
+		currentAgent = agent
 		runCtx, cancelAgent := context.WithCancel(context.Background())
 		errCh := make(chan error, 1)
 		agentRunning.Store(true)

@@ -4,17 +4,21 @@
 
 import { printAreaSchema, type PrintArea } from "@gustopos/shared";
 
+// Parses the deprecated `print_areas` JSON column. Empty/invalid input yields
+// an empty array — there is intentionally NO implicit "kitchen" fallback, so
+// routing never silently assigns a station from legacy data. New code resolves
+// stations from `station_id` (see PrintStationsRepository).
 export function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
   if (!raw) {
-    return ["kitchen"];
+    return [];
   }
 
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
-      return ["kitchen"];
+      return [];
     }
-    const valid = parsed
+    return parsed
       .map((entry) => {
         try {
           return printAreaSchema.parse(entry);
@@ -23,10 +27,8 @@ export function parsePrintAreas(raw: string | null | undefined): PrintArea[] {
         }
       })
       .filter((entry): entry is PrintArea => entry !== null);
-
-    return valid.length > 0 ? valid : ["kitchen"];
   } catch {
-    return ["kitchen"];
+    return [];
   }
 }
 

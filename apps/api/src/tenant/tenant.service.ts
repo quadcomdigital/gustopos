@@ -25,6 +25,7 @@ import { getRedisUrl } from "../config/redis.config";
 import { db } from "../db/client";
 import { categories, menuItems, tenantAuditLogs, tenantModuleConfigs, tenantModules, tenants } from "../db/schema";
 import { BootstrapTenantService } from "./bootstrap-tenant.service";
+import { planModuleToggle } from "./module-dependencies";
 
 const DEFAULT_MODULES: ModuleKey[] = [
   "kitchen",
@@ -44,9 +45,6 @@ const DEFAULT_MODULES: ModuleKey[] = [
   "staff_shifts_timeclock",
   "fiscal_exports",
 ];
-
-const MUTUALLY_EXCLUSIVE_MODULES: Array<[ModuleKey, ModuleKey]> = [["inventory", "simple_catalog"]];
-const MODULE_DEPENDENCIES: Array<[ModuleKey, ModuleKey]> = [["loyalty_points", "customers"]];
 
 @Injectable()
 export class TenantService {
@@ -199,39 +197,29 @@ export class TenantService {
       const toggled = await upsertModule(parsed.moduleKey, parsed.enabled);
       const disabledModules: ModuleKey[] = [];
 
-      if (parsed.enabled) {
-        for (const [first, second] of MUTUALLY_EXCLUSIVE_MODULES) {
-          const opposite = parsed.moduleKey === first ? second : parsed.moduleKey === second ? first : null;
-          if (opposite) {
-            await upsertModule(opposite, false);
-            disabledModules.push(opposite);
-          }
-        }
-        for (const [child, parent] of MODULE_DEPENDENCIES) {
-          if (parsed.moduleKey === child) {
-            const parentExisting = await tx
-              .select()
-              .from(tenantModules)
-              .where(and(eq(tenantModules.tenantId, tenantId), eq(tenantModules.moduleKey, parent)))
-              .limit(1);
-            if (parentExisting.length === 0 || parentExisting[0].enabled === 0) {
-              await upsertModule(parent, true);
-            }
-          }
-        }
-      } else {
-        for (const [child, parent] of MODULE_DEPENDENCIES) {
-          if (parsed.moduleKey === parent) {
-            const childExisting = await tx
-              .select()
-              .from(tenantModules)
-              .where(and(eq(tenantModules.tenantId, tenantId), eq(tenantModules.moduleKey, child)))
-              .limit(1);
-            if (childExisting.length > 0 && childExisting[0].enabled === 1) {
-              await upsertModule(child, false);
-              disabledModules.push(child);
-            }
-          }
+      // Load the current state once so the planner works on a consistent
+      // snapshot (fewer queries, deterministic cascade).
+      const currentRows = await tx
+        .select({ moduleKey: tenantModules.moduleKey, enabled: tenantModules.enabled })
+        .from(tenantModules)
+        .where(eq(tenantModules.tenantId, tenantId));
+      const currentState = new Map<ModuleKey, boolean>(
+        currentRows.map((row) => [row.moduleKey as ModuleKey, row.enabled === 1]),
+      );
+
+      const plan = planModuleToggle({
+        moduleKey: parsed.moduleKey,
+        enabled: parsed.enabled,
+        isEnabled: (moduleKey) => currentState.get(moduleKey) === true,
+      });
+
+      for (const moduleKey of plan.enable) {
+        await upsertModule(moduleKey, true);
+      }
+      for (const moduleKey of plan.disable) {
+        await upsertModule(moduleKey, false);
+        if (!disabledModules.includes(moduleKey)) {
+          disabledModules.push(moduleKey);
         }
       }
 

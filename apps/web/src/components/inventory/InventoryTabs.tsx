@@ -26,12 +26,13 @@ import BomTab from './BomTab';
 import MenuItemsTab from './MenuItemsTab';
 import CategoryPoolEditor from './CategoryPoolEditor';
 import FoodCostMatrixTab from './FoodCostMatrixTab';
+import ProductionReferencesManager from './ProductionReferencesManager';
 import PrepView from './PrepView';
 import Button from '../../shared/ui/atoms/Button';
 import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
 import type { CategoryModifierPool, CategoryModifierPoolCreateRequest, CategoryModifierPoolUpdateRequest } from '@gustopos/shared';
 
-export type InventoryTabKey = 'stock' | 'bom' | 'prep' | 'menu' | 'categories' | 'pools' | 'foodcost';
+export type InventoryTabKey = 'stock' | 'bom' | 'prep' | 'menu' | 'categories' | 'pools' | 'foodcost' | 'references';
 type _TabKey = InventoryTabKey;
 
 interface InventoryTabsProps {
@@ -131,6 +132,7 @@ const TABS: Array<{ key: InventoryTabKey; label: string }> = [
   { key: 'menu', label: 'Menu' },
   { key: 'categories', label: 'Categorie' },
   { key: 'pools', label: 'Mod. Categoria' },
+  { key: 'references', label: 'Referenze' },
   { key: 'foodcost', label: 'Food Cost' },
 ];
 
@@ -138,6 +140,7 @@ const SIMPLE_TABS: Array<{ key: InventoryTabKey; label: string }> = [
   { key: 'menu', label: 'Prodotti' },
   { key: 'categories', label: 'Categorie' },
   { key: 'pools', label: 'Mod. Categoria' },
+  { key: 'references', label: 'Referenze' },
 ];
 
 export default function InventoryTabs({
@@ -459,6 +462,10 @@ export default function InventoryTabs({
               onRefreshCategoryModifierPools?.();
             }}
           />
+        )}
+
+        {activeTab === 'references' && (
+          <ProductionReferencesManager />
         )}
 
         {activeTab === 'foodcost' && !simpleCatalogMode && (
