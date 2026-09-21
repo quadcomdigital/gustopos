@@ -56,6 +56,7 @@ func NewAgent(cfg *Config, runtime *AgentRuntime, updateReady chan<- stagedUpdat
 	if err := cfg.Save(); err != nil {
 		log.Printf("could not persist canonical API origin: %v", err)
 	}
+	saveIdentity(cfg.BridgeID, cfg.InstanceID)
 	cachedPrinters := append([]string(nil), cfg.DiscoveredPrinters...)
 	agent := &Agent{
 		cfg:                cfg,
@@ -501,6 +502,7 @@ func (a *Agent) applyHeartbeatConfig(response *HeartbeatResponse) {
 	if response.Bridge.ID != "" && response.Bridge.ID != a.cfg.BridgeID {
 		log.Printf("bridge id canonicalized by server: %s -> %s", a.cfg.BridgeID, response.Bridge.ID)
 		a.cfg.BridgeID = response.Bridge.ID
+		saveIdentity(a.cfg.BridgeID, a.cfg.InstanceID)
 	}
 	if response.Bridge.ClaimedAreas != nil {
 		a.cfg.Areas = append([]string(nil), response.Bridge.ClaimedAreas...)

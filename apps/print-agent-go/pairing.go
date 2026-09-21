@@ -232,6 +232,8 @@ func (p *PairingServer) handlePair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Salvataggio configurazione fallito: " + err.Error()})
 		return
 	}
+	saveIdentity(cfg.BridgeID, cfg.InstanceID)
+	log.Printf("paired config saved: path=%s bridge=%s", configPath(), cfg.BridgeID)
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	select {
 	case p.done <- cfg:

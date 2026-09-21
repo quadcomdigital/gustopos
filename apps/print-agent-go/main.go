@@ -98,11 +98,35 @@ func main() {
 	if err != nil {
 		fatalExit(fmt.Sprintf("cannot read config: %v", err))
 	}
+	cfgPath := configPath()
+	if cfg == nil {
+		log.Printf("config: not found at %s — starting pairing", cfgPath)
+	} else if !cfg.IsPaired() {
+		log.Printf("config: incomplete at %s (apiBase=%v bridge=%q instance=%v code=%v) — starting pairing",
+			cfgPath, cfg.APIBase != "", cfg.BridgeID, cfg.InstanceID != "", cfg.Code != "")
+	} else {
+		log.Printf("config: loaded from %s (bridge=%s)", cfgPath, cfg.BridgeID)
+	}
 
 	// First run (or detached): show the pairing UI. The pairing page carries a
 	// pre-filled server URL, so the user only ever types the 6-digit code.
+	// Reuse the machine identity so a re-pair attaches to the existing bridge
+	// row instead of creating a duplicate.
 	if cfg == nil || !cfg.IsPaired() {
-		cfg = pairOnce(*apiBase, nil)
+		prev := cfg
+		if prev == nil {
+			prev = &Config{}
+		}
+		if identity := loadIdentity(); identity != nil {
+			if prev.InstanceID == "" {
+				prev.InstanceID = identity.InstanceID
+			}
+			if prev.BridgeID == "" {
+				prev.BridgeID = identity.BridgeID
+			}
+			log.Printf("config: reusing identity instance=%s bridge=%s", prev.InstanceID, prev.BridgeID)
+		}
+		cfg = pairOnce(*apiBase, prev)
 		if cfg == nil {
 			return
 		}
@@ -261,6 +285,7 @@ func main() {
 			cancelAgent()
 			waitCh(errCh, shutdownWait)
 			log.Println("pairing requested from tray")
+			log.Printf("config: removing %s (pairing requested)", configPath())
 			_ = os.Remove(configPath())
 			cfg = pairOnce(*apiBase, cfg)
 			if cfg == nil {
@@ -299,6 +324,7 @@ func main() {
 			cancelAgent()
 			if runErr == errDetachedSentinel {
 				log.Println("bridge detached by tenant settings — showing pairing UI again")
+				log.Printf("config: removing %s (bridge detached)", configPath())
 				_ = os.Remove(configPath())
 				if *apiBase == "" {
 					*apiBase = cfg.APIBase
