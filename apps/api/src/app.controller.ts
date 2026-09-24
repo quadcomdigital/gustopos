@@ -1478,11 +1478,17 @@ export class AppController {
       throw new BadRequestException("Print endpoint not in allowlist");
     }
 
+    // The bridge's authMiddleware rejects any /print call without the shared
+    // key when PRINT_BRIDGE_SECRET is set (production). Send it so a manual
+    // dispatch from Settings → Stampa does not bounce with 401; a bridge
+    // running without a secret simply ignores the header.
+    const bridgeKey = process.env.PRINT_BRIDGE_SECRET?.trim();
     try {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(bridgeKey ? { "X-Print-Bridge-Key": bridgeKey } : {}),
         },
         body: JSON.stringify({
           id: job.id,
