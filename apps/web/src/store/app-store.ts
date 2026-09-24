@@ -95,6 +95,8 @@ import {
   type TransferTableResponse,
   type MergeTableRequest,
   type MergeTableResponse,
+  type SuspendTableRequest,
+  type SuspendTableResponse,
   type SelfOrderSessionRotateResponse,
   type UiSettings,
   type CourseRoundsConfig,
@@ -175,6 +177,8 @@ import {
   isDuplicateIdempotentError,
   transferTable as transferTableRequest,
   mergeTable as mergeTableRequest,
+  suspendTable as suspendTableRequest,
+  resumeTable as resumeTableRequest,
   rotateSelfOrderQrSession,
   replaceBomComponents as replaceBomComponentsRequest,
   addBomComponent as addBomComponentRequest,
@@ -844,6 +848,11 @@ interface AppState {
     sourceTableId: string,
     payload: MergeTableRequest,
   ) => Promise<MergeTableResponse>;
+  suspendTable: (
+    tableId: string,
+    payload: SuspendTableRequest,
+  ) => Promise<SuspendTableResponse>;
+  resumeTable: (tableId: string) => Promise<Table>;
   rotateSelfOrderQrForTable: (tableId: string) => Promise<SelfOrderSessionRotateResponse>;
   refreshStaffAdmin: () => Promise<void>;
   createStaffAdmin: (payload: StaffCreateRequest) => Promise<void>;
@@ -2268,6 +2277,45 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       }
       const result = await mergeTableRequest(sourceTableId, payload);
       // Socket-first: tables:update + orders:update (merge) aggiornano lo store.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  suspendTable: async (tableId, payload) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        enqueueBlockedAction(set as StoreSet, 'kitchen', { action: 'suspendTable', tableId, payload });
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      const result = await suspendTableRequest(tableId, payload);
+      // Socket-first: tables:update aggiorna lo stato del tavolo.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  resumeTable: async (tableId) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        enqueueBlockedAction(set as StoreSet, 'kitchen', { action: 'resumeTable', tableId });
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      const result = await resumeTableRequest(tableId);
       if (!getSocket().connected) {
         const data = await fetchData();
         set({ data });

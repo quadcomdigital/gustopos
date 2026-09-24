@@ -131,10 +131,13 @@ import {
   transferTableResponseSchema,
   mergeTableRequestSchema,
   mergeTableResponseSchema,
+  suspendTableRequestSchema,
+  suspendTableResponseSchema,
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   uiSettingsSchema,
   courseRoundsConfigSchema,
+  publicMenuModuleConfigSchema,
   printStationSchema,
   printStationsListResponseSchema,
   printStationCreateRequestSchema,
@@ -289,10 +292,14 @@ import {
   type TransferTableResponse,
   type MergeTableRequest,
   type MergeTableResponse,
+  type SuspendTableRequest,
+  type SuspendTableResponse,
   type VoidOrderRequest,
   type VoidOrderResponse,
   type UiSettings,
   type CourseRoundsConfig,
+  type PublicMenuModuleConfig,
+  type PublicMenuTenantEditable,
   type PrintStation,
   type PrintStationCreateRequest,
   type PrintStationUpdateRequest,
@@ -620,14 +627,25 @@ export async function refreshSession(): Promise<boolean> {
         body: JSON.stringify(request),
       });
 
-      if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        // Refresh token rejected: the session is genuinely over.
         clearAuthSession();
+        return false;
+      }
+
+      if (!response.ok) {
+        // Transient failure (e.g. 502 while the API restarts): keep the
+        // session intact so a later retry can refresh successfully, instead
+        // of wiping tokens and leaving the SPA "logged in" but unauthenticated.
         return false;
       }
 
       const payload = await readJson(response, refreshResponseSchema);
       persistAuthSession(payload);
       return true;
+    } catch {
+      // Network error: leave the session untouched and let the caller retry.
+      return false;
     } finally {
       refreshPromise = null;
     }
@@ -1090,6 +1108,39 @@ export async function updateCourseRoundsConfig(config: CourseRoundsConfig): Prom
   return readJson(response, courseRoundsConfigResponseSchema);
 }
 
+// ─── Public menu design (tenant-facing) ────────────────────────────────
+
+export type PublicMenuConfigResponse = {
+  config: PublicMenuModuleConfig;
+  moduleEnabled: boolean;
+};
+
+const publicMenuConfigResponseSchema = z.object({
+  config: publicMenuModuleConfigSchema,
+  moduleEnabled: z.boolean(),
+});
+
+const publicMenuConfigUpdateResponseSchema = z.object({
+  config: publicMenuModuleConfigSchema,
+});
+
+export async function fetchPublicMenuConfig(): Promise<PublicMenuConfigResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/public-menu/config`);
+  return readJson(response, publicMenuConfigResponseSchema);
+}
+
+export async function updatePublicMenuConfig(
+  patch: PublicMenuTenantEditable,
+): Promise<PublicMenuModuleConfig> {
+  const response = await authorizedFetch(`${API_URL}/api/public-menu/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const parsed = await readJson(response, publicMenuConfigUpdateResponseSchema);
+  return parsed.config;
+}
+
 // ─── Print stations ────────────────────────────────────────────────────
 
 export async function fetchPrintStations(): Promise<PrintStation[]> {
@@ -1518,6 +1569,33 @@ export async function mergeTable(
   });
 
   return readJson(response, mergeTableResponseSchema);
+}
+
+export async function suspendTable(
+  tableId: string,
+  payload: SuspendTableRequest,
+): Promise<SuspendTableResponse> {
+  const request = suspendTableRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/tables/${tableId}/suspend`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  return readJson(response, suspendTableResponseSchema);
+}
+
+export async function resumeTable(tableId: string): Promise<Table> {
+  const response = await authorizedFetch(`${API_URL}/api/tables/${tableId}/resume`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  return readJson(response, tableSchema);
 }
 
 export async function fetchBomItems(): Promise<BomItem[]> {

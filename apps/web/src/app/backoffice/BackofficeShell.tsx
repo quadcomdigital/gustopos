@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   BarChart3,
@@ -79,6 +79,8 @@ export default function BackofficeShell(props: BackofficeShellProps) {
   const [showModePicker, setShowModePicker] = useState(false);
   const [showTablePicker, setShowTablePicker] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
   const posOrderMode = useAppStore((s) => s.posOrderMode);
   const posTableNumber = useAppStore((s) => s.posTableNumber);
   const posMenuSearch = useAppStore((s) => s.posMenuSearch);
@@ -331,10 +333,11 @@ export default function BackofficeShell(props: BackofficeShellProps) {
           })}
         </nav>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-6">
+        <div className={cn('flex-1 min-h-0 p-4 md:p-6 2xl:p-8 pb-[calc(6rem+env(safe-area-inset-bottom))] md:pb-6 2xl:pb-8', activeRouteKey === 'pos' ? 'h-full overflow-hidden' : 'overflow-y-auto')}>
+          <div className={cn('mx-auto w-full max-w-[1700px]', activeRouteKey === 'pos' && 'h-full')}>
           <Suspense
             fallback={(
-              <div className="flex items-center justify-center h-full text-text-muted">
+              <div className="flex items-center justify-center min-h-[60vh] text-text-muted">
                 <div className="flex flex-col items-center gap-3">
                   <div className="w-10 h-10 border-4 border-accent border-t-transparent rounded-full animate-spin" />
                   <p className="text-sm font-medium">Caricamento modulo...</p>
@@ -344,6 +347,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
           >
             {children ?? <Outlet />}
           </Suspense>
+          </div>
         </div>
       </div>
 
@@ -479,6 +483,11 @@ export default function BackofficeShell(props: BackofficeShellProps) {
                     key={key}
                     onClick={() => {
                       useAppStore.setState({ posOrderMode: key });
+                      // Leaving an open takeaway/delivery conto: drop the
+                      // `order` query param so the POS stops binding to it.
+                      if (location.search.includes('order=')) {
+                        navigate(location.pathname, { replace: true });
+                      }
                       setShowModePicker(false);
                     }}
                     className={cn(
@@ -521,6 +530,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
               <div className="p-4 overflow-y-auto flex-1">
                 <div className="grid grid-cols-4 gap-2">
                   {data.tables
+                    .filter((table) => !table.isVirtual)
                     .slice()
                     .sort((a, b) => a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' }))
                     .map((table) => (

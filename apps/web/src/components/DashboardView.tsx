@@ -199,7 +199,7 @@ export default function DashboardView({
               >
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-primary">
-                    {order.orderType === 'takeaway' ? `#${order.ticketNumber}` : `T${order.table}`}
+                    {order.orderType === 'dine_in' ? `T${order.table}` : (order.ticketNumber ? `#${order.ticketNumber}` : order.orderType === 'delivery' ? 'Consegna' : 'Asporto')}
                   </span>
                   <span className={cn(
                     'text-[9px] font-bold uppercase px-2 py-0.5 rounded-full',
@@ -241,7 +241,7 @@ export default function DashboardView({
                 <tr key={order.id} className="border-b border-border/50 hover:bg-bg/30 transition-colors">
                   <td className="py-2">{new Date(order.timestamp).toLocaleString()}</td>
                   <td className="py-2 uppercase">{order.orderType}</td>
-                  <td className="py-2">{order.orderType === 'takeaway' ? order.ticketNumber : order.table}</td>
+                  <td className="py-2">{order.orderType === 'dine_in' ? order.table : (order.ticketNumber ?? '-')}</td>
                   <td className="py-2">{order.customerName ?? '-'}</td>
                   <td className="py-2 uppercase">{order.status}</td>
                   <td className="py-2 font-bold">€{order.total.toFixed(2)}</td>

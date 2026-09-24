@@ -3,6 +3,9 @@ import type { MenuItem, BomItem, Ingredient, PrepItem, MenuItemModifier, Categor
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { computeGroupModifierDelta } from '../lib/modifier-pricing';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
+import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
 
 interface ModifierModalProps {
   item: MenuItem;
@@ -25,12 +28,39 @@ interface ModifierModalProps {
 type LeafComponent = {
   componentType: 'ingredient' | 'prep';
   componentId: string;
+  componentName?: string;
   quantity: number;
   unit: string;
 };
 
+/**
+ * Pool options of this item's category that are already persisted as
+ * selectedModifiers. They carry their price inside the existing
+ * `modifierPriceDelta`, so both the "added" set and the existing-price
+ * subtraction must account for them (see ModifierModal).
+ */
+function restorablePoolOptionIds(
+  existingSelectedModifiers: Array<{ groupId: string; optionId: string }>,
+  item: MenuItem,
+  categoryModifierPools?: CategoryModifierPool[],
+): string[] {
+  if (!categoryModifierPools || existingSelectedModifiers.length === 0) return [];
+  const pools = item.categoryId
+    ? categoryModifierPools.filter((p) => p.categoryIds?.includes(item.categoryId!) || p.categoryId === item.categoryId)
+    : categoryModifierPools;
+  const selectedKeys = new Set(existingSelectedModifiers.map((s) => `${s.groupId}:${s.optionId}`));
+  const ids: string[] = [];
+  for (const pool of pools) {
+    for (const option of pool.options) {
+      if (option.isActive === false) continue;
+      if (selectedKeys.has(`${pool.id}:${option.id}`)) ids.push(option.id);
+    }
+  }
+  return ids;
+}
+
 function collectLeafIngredientIds(
-  recipe: Array<{ componentType: string; componentId: string; quantity: number; unit: string }>,
+  recipe: Array<{ componentType: string; componentId: string; componentName?: string; quantity: number; unit: string }>,
   bomItems: BomItem[],
   visited: Set<string> = new Set(),
 ): LeafComponent[] {
@@ -40,6 +70,7 @@ function collectLeafIngredientIds(
       components.push({
         componentType: comp.componentType,
         componentId: comp.componentId,
+        componentName: comp.componentName,
         quantity: comp.quantity,
         unit: comp.unit,
       });
@@ -141,11 +172,17 @@ export default function ModifierModal({
           .filter((o) => o.action === 'remove')
           .map((o) => o.ingredientId),
       );
-      setAddedIds(
-        existingOverridesRef.current
+      setAddedIds([
+        ...existingOverridesRef.current
           .filter((o) => o.action === 'add')
           .map((o) => o.ingredientId),
-      );
+        // Pool options (e.g. MAXI) are persisted as selectedModifiers, not as
+        // ingredient overrides. Restore them so the option reads as selected
+        // on re-open — otherwise a second confirm would charge it twice.
+        // Read from the raw prop (declared above) rather than `poolOptions`,
+        // which is initialised later in the component body.
+        ...restorablePoolOptionIds(existingSelectedModifiers, item, categoryModifierPools),
+      ]);
       const initialSelections: Record<string, string[]> = {};
       const selectedMap = new Map(existingSelectedModifiers.map((selected) => [selected.groupId, selected.optionId]));
       for (const group of (item.modifierGroups ?? [])) {
@@ -167,6 +204,7 @@ export default function ModifierModal({
   }, [existingSelectedModifiers, isOpen, item]);
 
   const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   React.useEffect(() => {
     if (!isOpen) return;
@@ -175,13 +213,17 @@ export default function ModifierModal({
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    lockBodyScroll();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unlockBodyScroll();
+    };
   }, [isOpen, onClose]);
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
   const prepById = useMemo(() => new Map(prepItems.map((prep) => [prep.id, prep])), [prepItems]);
   const modifierGroups = useMemo(
-    () => ((item.modifierGroups ?? []) as Array<{ id: string; name: string; required: boolean; minSelections: number; maxSelections: number; options: ModifierOption[] }>)
+    () => ((item.modifierGroups ?? []) as Array<{ id: string; name: string; required: boolean; minSelections: number; maxSelections: number; multiSelectPriceMode?: 'max' | 'sum' | 'none'; options: ModifierOption[] }>)
       .filter((group) => group.name.trim().toLowerCase() !== 'base' && group.options.some((option) => option.isActive)),
     [item.modifierGroups],
   );
@@ -197,8 +239,13 @@ export default function ModifierModal({
         byId.set(component.componentId, { ...component });
       }
     }
-    return [...byId.values()];
-  }, [item.recipe, bomItems]);
+    const labelOf = (component: LeafComponent) =>
+      inventoryById.get(component.componentId)?.name
+      ?? prepById.get(component.componentId)?.name
+      ?? component.componentName
+      ?? component.componentId;
+    return [...byId.values()].sort((a, b) => labelOf(a).localeCompare(labelOf(b), 'it', { sensitivity: 'base' }));
+  }, [item.recipe, bomItems, inventoryById, prepById]);
 
   const modifiers: MenuItemModifier[] = useMemo(() => (item as any).modifiers ?? [], [item]);
 
@@ -208,7 +255,8 @@ export default function ModifierModal({
       ? categoryModifierPools.filter((p) => p.categoryIds?.includes(item.categoryId!) || p.categoryId === item.categoryId)
       : categoryModifierPools;
     return pools.flatMap((pool) =>
-      pool.options.map((o) => ({
+      // Disabled options are not purchasable.
+      pool.options.filter((o) => o.isActive !== false).map((o) => ({
         id: o.id,
         poolId: pool.id,
         poolName: pool.name,
@@ -219,9 +267,25 @@ export default function ModifierModal({
         unit: o.unit ?? 'pz',
         name: o.name ?? (o.inventoryItemId ? inventoryById.get(o.inventoryItemId)?.name : undefined) ?? o.inventoryItemId ?? o.componentId ?? '',
         priceDelta: o.priceDelta,
+        priceMultiplier: o.priceMultiplier ?? undefined,
       })),
     );
   }, [categoryModifierPools, item.categoryId, inventoryById]);
+
+  /**
+   * Cost of one "add" entry as shown in the list: a priceMultiplier option
+   * (MAXI) costs `item.price × (m - 1)` plus its flat delta.
+   */
+  const addableDelta = useMemo(() => {
+    return (option: { priceDelta: number; priceMultiplier?: number }): number => {
+      const multiplier = option.priceMultiplier;
+      const scaled =
+        typeof multiplier === 'number' && Number.isFinite(multiplier) && multiplier !== 1
+          ? item.price * (multiplier - 1)
+          : 0;
+      return scaled + option.priceDelta;
+    };
+  }, [item.price]);
 
   const allAddableItems = useMemo(() => {
     const items: Array<{ id: string; name: string; subtitle?: string; priceDelta: number; invId: string; componentType?: string; poolId?: string }> = [];
@@ -245,7 +309,7 @@ export default function ModifierModal({
         id: opt.id,
         name: opt.name,
         subtitle: opt.poolName,
-        priceDelta: opt.priceDelta,
+        priceDelta: addableDelta(opt),
         componentType: opt.componentType,
         poolId: opt.poolId,
         // Pool options may reference a prep/BoM (componentId) instead of an
@@ -254,8 +318,8 @@ export default function ModifierModal({
         invId: opt.inventoryItemId ?? opt.componentId ?? '',
       });
     }
-    return items;
-  }, [modifiers, poolOptions, inventoryById]);
+    return items.sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
+  }, [modifiers, poolOptions, inventoryById, addableDelta]);
 
   const toggleRemove = (ingredientId: string) => {
     setRemovedIds((prev) =>
@@ -276,26 +340,36 @@ export default function ModifierModal({
     for (const [groupId, optionIds] of Object.entries(groupSelections)) {
       const group = modifierGroups.find((candidate) => candidate.id === groupId);
       if (!group || optionIds.length === 0) continue;
-      const deltas = optionIds.map((optionId) => group.options.find((option) => option.id === optionId)).filter(Boolean).filter((option) => !option!.isDefault).map((option) => option!.priceDelta);
-      total += group.maxSelections > 1 ? (deltas.length > 0 ? Math.max(...deltas) : 0) : deltas.reduce((sum, delta) => sum + delta, 0);
+      total += computeGroupModifierDelta(group, optionIds, item.price);
     }
     return total;
-  }, [groupSelections, modifierGroups]);
+  }, [groupSelections, modifierGroups, item.price]);
 
   const existingGroupPriceDelta = useMemo(() => {
     let total = 0;
     for (const selected of existingSelectedModifiers) {
       const group = modifierGroups.find((candidate) => candidate.id === selected.groupId);
       const option = group?.options.find((candidate) => candidate.id === selected.optionId);
-      if (option && !option.isDefault) total += option.priceDelta;
+      if (!option || option.isDefault) continue;
+      total += computeGroupModifierDelta(group!, [option.id], item.price);
     }
     return total;
-  }, [existingSelectedModifiers, modifierGroups]);
+  }, [existingSelectedModifiers, modifierGroups, item.price]);
 
   const existingAddedPriceDelta = useMemo(() => {
     const ids = new Set(existingOverrides.filter((override) => override.action === 'add').map((override) => override.ingredientId));
-    return allAddableItems.filter((option) => ids.has(option.id)).reduce((sum, option) => sum + option.priceDelta, 0);
-  }, [allAddableItems, existingOverrides]);
+    // Mirror of the addedIds restore above: pool options persisted as
+    // selectedModifiers already carry their price inside the existing delta,
+    // so they must be subtracted here or the price would be counted twice.
+    const restoredPoolIds = new Set(
+      allAddableItems
+        .filter((option) => option.poolId && existingSelectedModifiers.some((s) => s.groupId === option.poolId && s.optionId === option.id))
+        .map((option) => option.id),
+    );
+    return allAddableItems
+      .filter((option) => ids.has(option.id) || restoredPoolIds.has(option.id))
+      .reduce((sum, option) => sum + option.priceDelta, 0);
+  }, [allAddableItems, existingOverrides, existingSelectedModifiers]);
 
   const selectedModifiers = useMemo(() => {
     const baseSelections = existingSelectedModifiers.filter((selected) => !modifierGroups.some((group) => group.id === selected.groupId));
@@ -379,7 +453,7 @@ export default function ModifierModal({
     <AnimatePresence>
       {isOpen && (
         <div className="fixed inset-0 z-[1400] flex items-end sm:items-center justify-center">
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/50 backdrop-blur-sm" {...backdropDismiss} />
           <motion.div
             initial={{ opacity: 0, y: 60 }}
             animate={{ opacity: 1, y: 0 }}
@@ -427,7 +501,7 @@ export default function ModifierModal({
                     leafComponents.map((component) => {
                       const ing = inventoryById.get(component.componentId);
                       const prep = prepById.get(component.componentId);
-                      const label = ing?.name ?? prep?.name ?? component.componentId;
+                      const label = ing?.name ?? prep?.name ?? component.componentName ?? component.componentId;
                       const subtitle = `${component.quantity} ${component.unit}`;
                       return (
                         <CheckboxRow

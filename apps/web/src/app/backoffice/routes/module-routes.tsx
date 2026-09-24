@@ -1,5 +1,5 @@
 import { lazy, useCallback, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '../../../store/app-store';
 import { useBackofficeContext } from '../BackofficeContext';
 import { fetchStockMovements, fetchFoodCostMatrix, updateFoodCostMatrixCell, importFoodCostFull, importFoodCostXlsx, type FoodCostMatrixResponse } from '../../../shared/api/client';
@@ -23,6 +23,8 @@ export function TablesRoute() {
   const currentUser = useAppStore((s) => s.currentUser);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const rotateSelfOrderQrForTable = useAppStore((s) => s.rotateSelfOrderQrForTable);
+  const suspendTable = useAppStore((s) => s.suspendTable);
+  const resumeTable = useAppStore((s) => s.resumeTable);
   const { setSelectedTable } = useBackofficeContext();
   const navigate = useNavigate();
   if (!data || !currentUser) return null;
@@ -32,9 +34,27 @@ export function TablesRoute() {
       data={data}
       onSelectTable={(tableNumber) => {
         setSelectedTable(tableNumber);
+        // Selecting a table means a dine-in order: reset the persisted POS mode
+        // so the cart binds to `dine_in:<table>` instead of the last-used
+        // takeaway/delivery context (which would show an empty cart).
+        useAppStore.setState({ posOrderMode: 'dine_in' });
         navigate('/app/pos');
       }}
       onRotateSelfOrderQr={canRotateSelfOrderQr ? rotateSelfOrderQrForTable : undefined}
+      onSuspendTable={
+        enabledModules.includes('kitchen') && (currentUser.role === 'admin' || currentUser.role === 'waiter' || currentUser.permissions?.includes('tables:pay'))
+          ? suspendTable
+          : undefined
+      }
+      onResumeTable={
+        enabledModules.includes('kitchen') && (currentUser.role === 'admin' || currentUser.role === 'waiter' || currentUser.permissions?.includes('tables:pay'))
+          ? async (tableId) => { await resumeTable(tableId); }
+          : undefined
+      }
+      onSelectOrder={(orderId) => {
+        setSelectedTable(null);
+        navigate(`/app/pos?order=${encodeURIComponent(orderId)}`);
+      }}
     />
   );
 }
@@ -54,9 +74,13 @@ export function PosRoute() {
   const _getTablePaymentStatus = useAppStore((s) => s.getTablePaymentStatus);
   const transferTable = useAppStore((s) => s.transferTable);
   const mergeTable = useAppStore((s) => s.mergeTable);
+  const suspendTable = useAppStore((s) => s.suspendTable);
+  const resumeTable = useAppStore((s) => s.resumeTable);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const { selectedTable, setSelectedTable } = useBackofficeContext();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialOrderId = searchParams.get('order');
   if (!data || !currentUser) return null;
   const canCloseTable = enabledModules.includes('kitchen') &&
     (currentUser.role === 'admin' || currentUser.role === 'waiter' || currentUser.permissions?.includes('tables:pay'));
@@ -76,6 +100,13 @@ export function PosRoute() {
       onSearchCustomers={refreshCustomers}
       onCreateOrReuseCustomer={createOrReuseCustomer}
       initialTable={selectedTable || '1'}
+      initialOrderId={initialOrderId}
+      onOrderContextChange={(orderId) => {
+        const next = new URLSearchParams(searchParams);
+        if (orderId) next.set('order', orderId);
+        else next.delete('order');
+        setSearchParams(next, { replace: true });
+      }}
       onOpenTablesView={(tableNumber) => {
         setSelectedTable(tableNumber);
         navigate('/app/tables');
@@ -86,6 +117,12 @@ export function PosRoute() {
         : undefined}
       onMergeTable={canRelocateTables
         ? async (sourceId, targetId) => { await mergeTable(sourceId, { targetTableId: targetId }); }
+        : undefined}
+      onSuspendTable={canCloseTable
+        ? async (tableId, options) => { await suspendTable(tableId, options); }
+        : undefined}
+      onResumeTable={canCloseTable
+        ? async (tableId) => { await resumeTable(tableId); }
         : undefined}
     />
   );
@@ -241,6 +278,7 @@ export function SimpleCatalogRoute() {
   const refreshAllData = useAppStore((s) => s.refreshAllData);
   const menuItemsAdmin = useAppStore((s) => s.menuItemsAdmin);
   const categories = useAppStore((s) => s.categories);
+  const categoryModifierPools = useAppStore((s) => s.categoryModifierPools);
   const refreshCategories = useAppStore((s) => s.refreshCategories);
   const createCategory = useAppStore((s) => s.createCategory);
   const updateCategory = useAppStore((s) => s.updateCategory);
@@ -249,12 +287,17 @@ export function SimpleCatalogRoute() {
   const createSimpleCatalogItem = useAppStore((s) => s.createSimpleCatalogItem);
   const updateMenuItem = useAppStore((s) => s.updateMenuItem);
   const setMenuItemActiveAdmin = useAppStore((s) => s.setMenuItemActiveAdmin);
+  const refreshCategoryModifierPools = useAppStore((s) => s.refreshCategoryModifierPools);
+  const createCategoryModifierPool = useAppStore((s) => s.createCategoryModifierPool);
+  const updateCategoryModifierPool = useAppStore((s) => s.updateCategoryModifierPool);
+  const deleteCategoryModifierPool = useAppStore((s) => s.deleteCategoryModifierPool);
   return (
     <InventoryView
       inventory={[]}
       bomItems={[]}
       menuItems={menuItemsAdmin}
       categories={categories.filter((entry) => entry.scope === 'menu')}
+      categoryModifierPools={categoryModifierPools}
       onRefreshCategories={() => refreshCategories('menu')}
       onCreateCategory={(payload) => createCategory({ ...payload, scope: 'menu' })}
       onUpdateCategory={updateCategory}
@@ -263,6 +306,14 @@ export function SimpleCatalogRoute() {
       onCreateMenuItem={(payload) => createSimpleCatalogItem(payload)}
       onUpdateMenuItem={updateMenuItem}
       onSetMenuItemActive={setMenuItemActiveAdmin}
+      // Category modifier pools (e.g. MAXI) must be manageable in
+      // simple_catalog too — the "Mod. Categoria" tab is in SIMPLE_TABS and
+      // the API gates on RequiresAnyOfModules("inventory","simple_catalog").
+      // Without these props the editor rendered empty and "Crea Pool" no-oped.
+      onRefreshCategoryModifierPools={refreshCategoryModifierPools}
+      onCreateCategoryModifierPool={createCategoryModifierPool}
+      onUpdateCategoryModifierPool={updateCategoryModifierPool}
+      onDeleteCategoryModifierPool={deleteCategoryModifierPool}
       simpleCatalogMode
       loading={loading}
       error={error}
@@ -348,7 +399,7 @@ export function SettingsRoute() {
       onRefundPayment={refundPayment}
       onRefreshPrintJobs={() => refreshPrintJobs({ limit: 100 })}
       onDispatchPrintJob={dispatchPrintJob}
-      tables={data?.tables ?? []}
+      tables={(data?.tables ?? []).filter((table) => !table.isVirtual)}
       onRefreshTables={refreshTables}
       onCreateTable={createTable}
       onBulkCreateTables={bulkCreateTables}

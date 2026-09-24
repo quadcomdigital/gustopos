@@ -1,9 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, ArrowDownUp, MoveRight, GitMerge } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, MoveRight, GitMerge } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { buildComponentNameById, buildModifierOptionNameById } from '../lib/catalog-names';
 import { useAppStore } from '../store/app-store';
+import { useViewport } from '../hooks/useViewport';
+import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
 import { trackUxMetric } from '../shared/ux/metrics';
 import POSProductModal from './POSProductModal';
 import ModifierModal from './ModifierModal';
@@ -12,8 +15,24 @@ import { CheckoutModal } from './checkout';
 import { useCheckoutStore } from '../store/checkout-store';
 import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
 import Modal from '../shared/ui/molecules/Modal';
-import RoundReorderDialog from './RoundReorderDialog';
 import TableMoveMergeDialog, { type TableRelocateMode } from './TableMoveMergeDialog';
+
+/**
+ * Takes are always for the current day, so the picker only captures a
+ * `HH:mm` time. Combine it with today's date into an ISO timestamp.
+ */
+function buildPickupEtaIso(time: string): string | undefined {
+  const match = /^(\d{2}):(\d{2})$/.exec(time.trim());
+  if (!match) return undefined;
+  const date = new Date();
+  date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  return date.toISOString();
+}
+
+function formatTimeOfDay(iso: string): string {
+  const date = new Date(iso);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
 
 interface POSViewProps {
   data: AppData;
@@ -28,10 +47,14 @@ interface POSViewProps {
   onSearchCustomers?: (query?: { query?: string; limit?: number }) => Promise<void>;
   onCreateOrReuseCustomer?: (payload: { fullName: string; phone?: string }) => Promise<Customer>;
   initialTable?: string;
+  initialOrderId?: string | null;
+  onOrderContextChange?: (orderId: string | null) => void;
   onOpenTablesView?: (tableNumber: string) => void;
   canCloseTable?: boolean;
   onTransferTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
   onMergeTable?: (sourceTableId: string, targetTableId: string) => Promise<void>;
+  onSuspendTable?: (tableId: string, options: { printPreBill?: boolean }) => Promise<{ printed: boolean } | void>;
+  onResumeTable?: (tableId: string) => Promise<void>;
 }
 
 export default function POSView({
@@ -47,10 +70,14 @@ export default function POSView({
   onSearchCustomers,
   onCreateOrReuseCustomer,
   initialTable = '1',
+  initialOrderId,
+  onOrderContextChange,
   onOpenTablesView,
   canCloseTable = false,
   onTransferTable,
   onMergeTable,
+  onSuspendTable,
+  onResumeTable,
 }: POSViewProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>('Tutti');
   const orderMode = useAppStore((s) => s.posOrderMode);
@@ -65,6 +92,8 @@ export default function POSView({
   const setCartContext = useAppStore((s) => s.setCartContext);
   const relocateCart = useAppStore((s) => s.relocateCart);
   const prepItems = useAppStore((s) => s.prepItems);
+  const deliveryOrders = useAppStore((s) => s.deliveryOrders);
+  const refreshDeliveryOrders = useAppStore((s) => s.refreshDeliveryOrders);
   const [takeawayCustomerName, setTakeawayCustomerName] = useState('');
   const [takeawayCustomerPhone, setTakeawayCustomerPhone] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -81,6 +110,19 @@ export default function POSView({
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
   const [showCartMobile, setShowCartMobile] = useState(false);
+  const { band } = useViewport();
+  // Side cart from tablet up, matching the shell's `md` breakpoint; the
+  // full-screen overlay + FAB stay mobile-only.
+  const isMobile = band === 'mobile';
+  const isCartOverlay = showCartMobile && isMobile;
+
+  // Prevent rubber-band scrolling of the shell behind the full-screen cart.
+  React.useEffect(() => {
+    if (!isCartOverlay) return;
+    lockBodyScroll();
+    return () => unlockBodyScroll();
+  }, [isCartOverlay]);
+
   const [showCustomerDetailsModal, setShowCustomerDetailsModal] = useState(false);
   const [showTableActions, setShowTableActions] = useState(false);
   const [relocateMode, setRelocateMode] = useState<TableRelocateMode | null>(null);
@@ -90,6 +132,11 @@ export default function POSView({
 
   // Per-item "Salta stampa cucina" toggles (set of cart item IDs)
   const [skipKitchenById, setSkipKitchenById] = useState<Set<string>>(new Set());
+
+  // Latest delivery address, readable inside async callbacks without stale
+  // closures (used to avoid clobbering a conto address with a customer default).
+  const deliveryAddressRef = React.useRef(deliveryAddress);
+  React.useEffect(() => { deliveryAddressRef.current = deliveryAddress; }, [deliveryAddress]);
 
   // Product/modifier modal state. The draft keeps inline Base selections while
   // the secondary modifier modal is open, including for a not-yet-carted item.
@@ -105,7 +152,6 @@ export default function POSView({
   const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
   const [modifierDraft, setModifierDraft] = useState<ModifierDraft | null>(null);
-  const [showRoundReorder, setShowRoundReorder] = useState(false);
   const courseRoundsConfig = useAppStore((s) => s.courseRoundsConfig);
   const courseRoundsModuleEnabled = useAppStore((s) => s.courseRoundsModuleEnabled);
   const roundsActive = courseRoundsModuleEnabled && courseRoundsConfig.enabled && orderMode === 'dine_in';
@@ -118,28 +164,81 @@ export default function POSView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTable]);
 
+  // Open takeaway/delivery conto: when the POS is opened from the Tables map
+  // "Asporti/Consegne" section we bind to that order's hidden virtual table so
+  // the waiter can add items and settle it via the standard table checkout.
+  const orderContext = useMemo(
+    () => (initialOrderId ? data.orders.find((order) => order.id === initialOrderId) ?? null : null),
+    [initialOrderId, data.orders],
+  );
+  // The open conto is the source of truth while it exists: derive the mode from
+  // it during render so the cart binds on the first paint (no effect race).
+  const effectiveOrderMode = orderContext ? orderContext.orderType : orderMode;
+  const contextMatchesMode = Boolean(orderContext);
+
+  // Explicitly choosing a different mode leaves the open conto.
+  const handleSelectMode = (mode: 'dine_in' | 'takeaway' | 'delivery') => {
+    if (orderContext && orderContext.orderType !== mode) onOrderContextChange?.(null);
+    setOrderMode(mode);
+  };
+
+  React.useEffect(() => {
+    if (!orderContext) return;
+    if (orderContext.orderType !== orderMode) setOrderMode(orderContext.orderType);
+    if (orderContext.table) setTableNumber(orderContext.table);
+    if (orderContext.customerId) setSelectedCustomerId(orderContext.customerId);
+    setTakeawayCustomerName(orderContext.customerName ?? '');
+    setTakeawayCustomerPhone(orderContext.customerPhone ?? '');
+    setPickupEta(orderContext.scheduledFor ? formatTimeOfDay(orderContext.scheduledFor) : '');
+    if (orderContext.orderType === 'delivery') {
+      const record = deliveryOrders.find((entry) => entry.orderId === orderContext.id);
+      if (record) {
+        setDeliveryAddress(record.customerAddress ?? '');
+        setDeliveryCourierName(record.courierName ?? '');
+        setDeliveryCourierPhone(record.courierPhone ?? '');
+        setDeliveryFee(String(record.deliveryFee ?? 0));
+      } else {
+        void refreshDeliveryOrders({ limit: 100 });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bind once per conto id
+  }, [orderContext?.id]);
+
   // Fetch customer addresses when customer is selected for delivery
   useEffect(() => {
-    if (orderMode !== 'delivery' || !selectedCustomerId) {
+    if (effectiveOrderMode !== 'delivery' || !selectedCustomerId) {
       setCustomerAddresses([]); // eslint-disable-line react-hooks/set-state-in-effect -- [literal-reset] reset addresses when not in delivery mode; literal []
       return;
     }
     fetchCustomerAddresses(selectedCustomerId)
       .then((addrs) => {
         setCustomerAddresses(addrs);
-        if (addrs.length > 0 && !deliveryAddress) {
+        if (addrs.length > 0 && !deliveryAddressRef.current) {
           const defaultAddr = addrs.find((a) => a.isDefault) ?? addrs[0];
           setDeliveryAddress(defaultAddr.address);
         }
       })
       .catch(() => setCustomerAddresses([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deliveryAddress is read+written inside the effect (default pick on first load); adding to deps would cause infinite re-run loop
-  }, [orderMode, selectedCustomerId]);
+  }, [effectiveOrderMode, selectedCustomerId]);
 
-  // Sync cart context when mode or table changes
-  const cartContextKey = orderMode === 'dine_in'
-    ? `dine_in:${posTableNumber}`
-    : orderMode;
+  // Sync cart context when mode, table or open conto changes
+  const activeGroupTable = contextMatchesMode
+    ? orderContext?.table
+    : (effectiveOrderMode === 'dine_in' && !data.tables.find((table) => table.number === posTableNumber)?.isVirtual
+        ? posTableNumber
+        : undefined);
+  const cartContextKey = activeGroupTable
+    ? `${effectiveOrderMode}:${activeGroupTable}`
+    : effectiveOrderMode;
+
+  const orderHeaderLabel = contextMatchesMode
+    ? `${effectiveOrderMode === 'delivery' ? 'Consegna' : 'Asporto'}${orderContext?.customerName ? ` · ${orderContext.customerName}` : orderContext?.ticketNumber ? ` · ${orderContext.ticketNumber}` : ''}`
+    : effectiveOrderMode === 'dine_in'
+      ? `Tavolo ${posTableNumber}`
+      : effectiveOrderMode === 'takeaway'
+        ? 'Asporto'
+        : 'Delivery';
 
   React.useEffect(() => {
     setCartContext(cartContextKey);
@@ -153,22 +252,26 @@ export default function POSView({
 
   React.useEffect(() => {
     if (data.tables.length === 0) return;
-    const exists = data.tables.some((table) => table.number === posTableNumber);
+    // In sala a virtual asporto/delivery conto is not a valid table.
+    const exists = data.tables.some(
+      (table) => table.number === posTableNumber && (effectiveOrderMode !== 'dine_in' || !table.isVirtual),
+    );
     if (!exists) {
       const fallback = [...data.tables]
+        .filter((table) => !table.isVirtual)
         .sort((a, b) => a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' }))[0]
         ?.number;
       if (fallback) setTableNumber(fallback);
     }
-  }, [data.tables, posTableNumber]);
+  }, [data.tables, posTableNumber, effectiveOrderMode]);
 
   React.useEffect(() => {
-    if (!['takeaway', 'delivery'].includes(orderMode) || !onSearchCustomers) return;
+    if (!['takeaway', 'delivery'].includes(effectiveOrderMode) || !onSearchCustomers) return;
     const handle = window.setTimeout(() => {
       void onSearchCustomers({ query: takeawayCustomerName.trim(), limit: 20 });
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [orderMode, takeawayCustomerName, onSearchCustomers]);
+  }, [effectiveOrderMode, takeawayCustomerName, onSearchCustomers]);
 
   // Auto-clear success/error messages
   React.useEffect(() => {
@@ -205,9 +308,9 @@ export default function POSView({
   // Track order context for inline editing (orderId + orderItemId per item)
   type OrderedItem = OrderItem & { _orderId: string; _orderItemId: number };
   const alreadyOrdered = useMemo((): OrderedItem[] => {
-    if (orderMode === 'takeaway' || orderMode === 'delivery') return [];
+    if (!activeGroupTable) return [];
     const openOrders = data.orders.filter(
-      (o) => o.table === posTableNumber && o.status !== 'paid' && o.status !== 'cancelled',
+      (o) => o.table === activeGroupTable && o.status !== 'paid' && o.status !== 'cancelled',
     );
     const grouped: Record<string, OrderedItem> = {};
     for (const order of openOrders) {
@@ -225,12 +328,28 @@ export default function POSView({
       }
     }
     return Object.values(grouped);
-  }, [data.orders, orderMode, posTableNumber]);
+  }, [data.orders, activeGroupTable]);
 
   // --- Cart operations (using store) ---
   const cartTotal = posCart.reduce((sum, item) => sum + (item.basePrice + item.modifierPriceDelta) * item.quantity, 0);
   const alreadyOrderedTotal = alreadyOrdered.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const grandTotal = cartTotal + alreadyOrderedTotal;
+
+  // When portate are active, "Nuovi Articoli" are grouped by round (no-round
+  // last) so the cart order matches how the kitchen ticket will be laid out,
+  // even when items were added out of order. Stable within the same round.
+  const sortedPosCart = useMemo(() => {
+    if (!roundsActive) return posCart;
+    return posCart
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => {
+        const aRound = a.item.round ?? Number.MAX_SAFE_INTEGER;
+        const bRound = b.item.round ?? Number.MAX_SAFE_INTEGER;
+        if (aRound !== bRound) return aRound - bRound;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.item);
+  }, [posCart, roundsActive]);
 
   // --- Modal handlers ---
   const openProductModal = (item: MenuItem, existingCartItem?: CartItem) => {
@@ -330,7 +449,7 @@ export default function POSView({
     try {
       let customerId = selectedCustomerId || undefined;
       if (
-        (orderMode === 'takeaway' || orderMode === 'delivery') &&
+        (effectiveOrderMode === 'takeaway' || effectiveOrderMode === 'delivery') &&
         !customerId &&
         takeawayCustomerName.trim().length >= 2 &&
         onCreateOrReuseCustomer
@@ -346,16 +465,16 @@ export default function POSView({
       }
 
       const createdOrder = await createOrder({
-        orderType: orderMode,
-        ...(orderMode === 'dine_in' ? { table: posTableNumber } : {}),
-        ...(orderMode === 'takeaway' || orderMode === 'delivery'
+        orderType: effectiveOrderMode,
+        ...(effectiveOrderMode === 'dine_in' || contextMatchesMode ? { table: posTableNumber } : {}),
+        ...(effectiveOrderMode === 'takeaway' || effectiveOrderMode === 'delivery'
           ? {
               customerId,
               customerName: takeawayCustomerName.trim() || undefined,
               customerPhone: takeawayCustomerPhone.trim() || undefined,
-              pickupEta: pickupEta ? new Date(pickupEta).toISOString() : undefined,
+              pickupEta: buildPickupEtaIso(pickupEta),
             }
-          : {}),          items: posCart.map((ci) => ({
+          : {}),          items: sortedPosCart.map((ci) => ({
           id: ci.menuItemId,
           name: ci.name,
           price: ci.basePrice + ci.modifierPriceDelta,
@@ -370,7 +489,7 @@ export default function POSView({
         staffId: currentStaffId,
       });
 
-      if (orderMode === 'delivery' && createdOrder?.id && upsertDeliveryOrder) {
+      if (effectiveOrderMode === 'delivery' && createdOrder?.id && upsertDeliveryOrder) {
         await upsertDeliveryOrder(createdOrder.id, {
           customerAddress: deliveryAddress.trim(),
           courierName: deliveryCourierName.trim() || undefined,
@@ -393,10 +512,22 @@ export default function POSView({
         }
       }
 
+      // Keep the POS bound to this open conto so further items are appended to
+      // it and the waiter can settle it from here.
+      if (effectiveOrderMode === 'takeaway' || effectiveOrderMode === 'delivery') {
+        onOrderContextChange?.(createdOrder.id);
+      }
+
       clearPosCart();
       setSkipKitchenById(new Set());
       setShowCartMobile(false);
-      setActionSuccess(orderMode === 'delivery' ? 'Delivery creato con successo' : 'Ordine inviato in cucina');
+      setActionSuccess(
+        effectiveOrderMode === 'delivery'
+          ? 'Delivery aggiornato con successo'
+          : effectiveOrderMode === 'takeaway'
+            ? (contextMatchesMode ? 'Articoli aggiunti all\'asporto' : 'Asporto creato con successo')
+            : 'Ordine inviato in cucina',
+      );
     } catch (error) {
       // A double-tap on "Invia" makes the API middleware reject the second
       // request with 409 (same idempotency key). The order was already
@@ -414,34 +545,63 @@ export default function POSView({
   // --- Checkout handlers ---
   const inventoryById = useMemo(() => new Map(data.inventory.map((e) => [e.id, e])), [data.inventory]);
 
-  const modifierOptionNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const mi of data.menu) {
-      for (const group of (mi.modifierGroups ?? []) as Array<{ id: string; options: Array<{ id: string; name: string }> }>) {
-        for (const opt of group.options) {
-          map.set(opt.id, opt.name);
-        }
-      }
-    }
-    // Category pool options are also selectable as modifiers (e.g. AGGIUNTA,
-    // Granella, Topping) — without these the cart renders cmpo_… ids.
-    for (const pool of categoryModifierPools) {
-      for (const opt of pool.options ?? []) {
-        map.set(opt.id, opt.name ?? opt.inventoryItemId ?? opt.componentId ?? opt.id);
-      }
-    }
-    return map;
-  }, [data.menu, categoryModifierPools]);
+  const componentNameById = useMemo(() => buildComponentNameById(data), [data]);
+
+  const modifierOptionNameById = useMemo(
+    () => buildModifierOptionNameById({ menu: data.menu, categoryModifierPools }, componentNameById),
+    [data.menu, categoryModifierPools, componentNameById],
+  );
 
   const selectedTable = data.tables.find((t) => t.number === posTableNumber);
   const canRelocateCurrentTable =
-    orderMode === 'dine_in' &&
-    selectedTable?.status === 'occupied' &&
+    effectiveOrderMode === 'dine_in' &&
+    (selectedTable?.status === 'occupied' || selectedTable?.status === 'suspended') &&
     Boolean(onTransferTable && onMergeTable);
+  const canSuspendCurrentTable =
+    effectiveOrderMode === 'dine_in' &&
+    selectedTable?.status === 'occupied' &&
+    Boolean(onSuspendTable);
+  const canResumeCurrentTable =
+    effectiveOrderMode === 'dine_in' &&
+    selectedTable?.status === 'suspended' &&
+    Boolean(onResumeTable);
+  const [suspendPreBill, setSuspendPreBill] = useState(true);
+  const [suspendBusy, setSuspendBusy] = useState(false);
+  const [resumeBusy, setResumeBusy] = useState(false);
   const openRelocate = (mode: TableRelocateMode) => {
     if (!selectedTable) return;
     setRelocateSourceTableId(selectedTable.id);
     setRelocateMode(mode);
+  };
+
+  const handleSuspendTable = async () => {
+    if (!selectedTable || !onSuspendTable) return;
+    setSuspendBusy(true);
+    setActionError('');
+    try {
+      await onSuspendTable(selectedTable.id, { printPreBill: suspendPreBill });
+      setActionSuccess(suspendPreBill ? 'Conto sospeso · preconto inviato in cassa' : 'Conto sospeso');
+      setShowTableActions(false);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Sospensione conto non riuscita');
+    } finally {
+      setSuspendBusy(false);
+    }
+  };
+
+  const handleResumeTable = async () => {
+    if (!selectedTable || !onResumeTable) return;
+    setResumeBusy(true);
+    setActionError('');
+    try {
+      await onResumeTable(selectedTable.id);
+      setActionSuccess('Conto riattivato');
+      setShowTableActions(false);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Riattivazione conto non riuscita');
+    } finally {
+      setResumeBusy(false);
+    }
   };
 
   // After a successful move/merge, transfer the not-yet-sent cart of the
@@ -476,26 +636,33 @@ export default function POSView({
     )
     .slice(0, 8);
 
-  const customerDetailsValid = orderMode !== 'delivery' || deliveryAddress.trim().length >= 5;
-  const customerDetailsConfigured = orderMode === 'delivery'
+  const customerDetailsValid = effectiveOrderMode !== 'delivery' || deliveryAddress.trim().length >= 5;
+  const customerDetailsConfigured = effectiveOrderMode === 'delivery'
     ? customerDetailsValid
     : Boolean(takeawayCustomerName.trim() || takeawayCustomerPhone.trim() || pickupEta);
-  const customerDetailsNeedsAttention = orderMode === 'delivery' && !customerDetailsValid;
-  const customerDetailsSummary = orderMode === 'delivery'
+  const customerDetailsNeedsAttention = effectiveOrderMode === 'delivery' && !customerDetailsValid;
+  const customerDetailsSummary = effectiveOrderMode === 'delivery'
     ? deliveryAddress.trim() || 'Indirizzo da aggiungere'
     : takeawayCustomerName.trim() || 'Cliente non selezionato';
 
   return (
-    <div className="flex h-full gap-4 lg:gap-8 relative">
+    <div
+      className={cn(
+        'flex h-full min-h-0 gap-4 md:gap-8 relative',
+        // Full-bleed on mobile while the cart sheet is open: cancel the page
+        // padding (p-4) so the cart uses the whole width.
+        isCartOverlay && '-mx-4',
+      )}
+    >
       {/* ============ MENU SECTION ============ */}
       <div
         className={cn(
-          'flex-1 flex flex-col min-w-0 transition-all duration-300',
-          showCartMobile ? 'hidden lg:flex' : 'flex',
+          'flex-1 flex flex-col min-w-0 min-h-0 transition-all duration-300',
+          isCartOverlay ? 'hidden' : 'flex',
         )}
       >
         {/* ============ MOBILE HEADER ============ */}
-        <div className="lg:hidden space-y-3 mb-4">
+        <div className="md:hidden space-y-3 mb-4">
           {/* Category Pills */}
           <div className="overflow-x-auto no-scrollbar">
             <div className="flex gap-1.5">
@@ -517,7 +684,7 @@ export default function POSView({
           </div>
 
           {/* Takeaway / delivery details trigger (form lives in one modal for all viewports) */}
-          {orderMode !== 'dine_in' && (
+          {effectiveOrderMode !== 'dine_in' && (
             <button
               type="button"
               onClick={() => setShowCustomerDetailsModal(true)}
@@ -532,7 +699,7 @@ export default function POSView({
                 </span>
                 <span className="min-w-0">
                   <span className="block text-[10px] font-bold uppercase tracking-widest text-text-muted">
-                    {orderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
+                    {effectiveOrderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
                   </span>
                   <span className="block text-sm font-bold text-primary truncate">{customerDetailsSummary}</span>
                 </span>
@@ -545,7 +712,7 @@ export default function POSView({
         </div>
 
         {/* Desktop Header */}
-        <div className="hidden lg:flex items-center justify-between mb-6">
+        <div className="hidden md:flex items-center justify-between mb-6">
           <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar flex-1 mr-4">
             {categoryFilterOptions.map((cat) => (
               <button
@@ -581,34 +748,34 @@ export default function POSView({
               )}
             </div>
             <button
-              onClick={() => setOrderMode('dine_in')}
+              onClick={() => handleSelectMode('dine_in')}
               className={cn(
                 'px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border min-h-10',
-                orderMode === 'dine_in' ? 'bg-primary text-white border-primary' : 'bg-white border-border',
+                effectiveOrderMode === 'dine_in' ? 'bg-primary text-white border-primary' : 'bg-white border-border',
               )}
             >
               Sala
             </button>
             <button
-              onClick={() => setOrderMode('takeaway')}
+              onClick={() => handleSelectMode('takeaway')}
               className={cn(
                 'px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border min-h-10',
-                orderMode === 'takeaway' ? 'bg-primary text-white border-primary' : 'bg-white border-border',
+                effectiveOrderMode === 'takeaway' ? 'bg-primary text-white border-primary' : 'bg-white border-border',
               )}
             >
               Asporto
             </button>
             <button
-              onClick={() => setOrderMode('delivery')}
+              onClick={() => handleSelectMode('delivery')}
               className={cn(
                 'px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border min-h-10',
-                orderMode === 'delivery' ? 'bg-primary text-white border-primary' : 'bg-white border-border',
+                effectiveOrderMode === 'delivery' ? 'bg-primary text-white border-primary' : 'bg-white border-border',
               )}
             >
               Delivery
             </button>
           </div>
-          {orderMode === 'dine_in' ? (
+          {effectiveOrderMode === 'dine_in' ? (
             <button
               type="button"
               onClick={() => setShowTableActions(true)}
@@ -620,6 +787,11 @@ export default function POSView({
               <div className="pl-1 pr-10 py-2 bg-transparent font-bold text-accent text-sm min-w-[80px] text-left">
                 {posTableNumber}
               </div>
+              {selectedTable?.status === 'suspended' && (
+                <span className="absolute -top-2 left-2 rounded-full bg-warning px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white shadow">
+                  Conto sospeso
+                </span>
+              )}
               <ChevronDown size={14} className="absolute right-3 text-accent pointer-events-none" />
             </button>
           ) : (
@@ -630,14 +802,14 @@ export default function POSView({
                 'flex items-center gap-3 min-w-0 max-w-[min(20rem,30vw)] min-h-[52px] px-3 py-2 rounded-xl border text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
                 customerDetailsNeedsAttention ? 'border-danger/50 bg-danger/5 hover:border-danger' : 'border-border bg-white hover:border-accent',
               )}
-              aria-label={orderMode === 'delivery' ? 'Apri dati consegna' : 'Apri dati asporto'}
+              aria-label={effectiveOrderMode === 'delivery' ? 'Apri dati consegna' : 'Apri dati asporto'}
             >
               <span className={cn('w-9 h-9 rounded-full flex items-center justify-center shrink-0', customerDetailsNeedsAttention ? 'bg-danger/10 text-danger' : 'bg-accent/10 text-accent')}>
                 {customerDetailsNeedsAttention ? <MapPin size={17} /> : <User size={17} />}
               </span>
               <span className="min-w-0">
                 <span className="block text-[10px] font-bold uppercase tracking-widest text-text-muted">
-                  {orderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
+                  {effectiveOrderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
                 </span>
                 <span className="block max-w-52 truncate text-sm font-bold text-primary">{customerDetailsSummary}</span>
               </span>
@@ -662,7 +834,7 @@ export default function POSView({
             )}
           </div>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4 overflow-y-auto pr-2 pb-20 lg:pb-0">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4 overflow-y-auto pr-2 pb-20 md:pb-0">
           {filteredMenu.length === 0 ? (
             <div className="col-span-full py-16 flex flex-col items-center justify-center text-text-muted opacity-50">
               <Search size={36} />
@@ -707,15 +879,16 @@ export default function POSView({
       {/* ============ CART SECTION ============ */}
       <div
         className={cn(
-          'bg-white rounded-xl border border-border flex flex-col shadow-sm overflow-hidden transition-all duration-300',
-          'w-full lg:w-80',
-          showCartMobile ? 'flex' : 'hidden lg:flex',
+          'bg-white flex flex-col overflow-hidden min-h-0 transition-all duration-300',
+          'w-full md:w-72 xl:w-80',
+          'md:rounded-xl md:border md:border-border md:shadow-sm',
+          isCartOverlay ? 'flex' : 'hidden md:flex',
         )}
       >
-        <div className="px-4 py-3 border-b border-border bg-bg/30">
+        <div className="px-3 sm:px-4 py-3 border-b border-border bg-bg/30">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-[10px] sm:text-xs font-bold text-primary uppercase tracking-widest truncate">
-              {orderMode === 'dine_in' ? `Tavolo ${posTableNumber}` : orderMode === 'takeaway' ? 'Asporto' : 'Delivery'}
+              {orderHeaderLabel}
             </h2>
             <div className="flex items-center gap-2 shrink-0">
               {canRelocateCurrentTable && (
@@ -740,17 +913,6 @@ export default function POSView({
                   </button>
                 </>
               )}
-              {roundsActive && posCart.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowRoundReorder(true)}
-                  className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-accent hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  aria-label="Imposta ordine delle portate"
-                  title="Imposta ordine delle portate"
-                >
-                  <ArrowDownUp size={17} />
-                </button>
-              )}
               <div className="flex items-center gap-1 text-[9px] text-text-muted">
                 <User size={10} />
                 <span>{currentStaffName}</span>
@@ -759,7 +921,7 @@ export default function POSView({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-5 space-y-6">
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-4 sm:px-4 md:p-5 md:space-y-6">
           {/* Already Ordered */}
           {alreadyOrdered.length > 0 && (
             <div className="space-y-1.5">
@@ -833,7 +995,7 @@ export default function POSView({
                   </p>
                 </div>
               ) : (
-                posCart.map((item) => (
+                sortedPosCart.map((item) => (
                   <motion.div
                     initial={{ opacity: 0, x: 10 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -857,8 +1019,11 @@ export default function POSView({
                       >
                         <span className="font-bold text-secondary text-xs truncate block">{item.name}</span>
                         {roundsActive && item.round !== undefined && item.round !== null && (
-                          <span className="mt-1 inline-flex max-w-full truncate rounded-full bg-accent/10 px-2 py-0.5 text-[9px] font-bold text-accent">
-                            {courseRoundsConfig.labels[item.round] ?? `Portata ${item.round + 1}`}
+                          <span
+                            className="mt-1 inline-flex min-w-[18px] h-[18px] items-center justify-center rounded-md bg-accent px-1 text-[10px] font-bold tabular-nums text-white"
+                            aria-label={courseRoundsConfig.labels[item.round] ?? `Portata ${item.round + 1}`}
+                          >
+                            {item.round + 1}
                           </span>
                         )}
                       </button>
@@ -925,7 +1090,7 @@ export default function POSView({
                           <p className="text-[9px] truncate">
                             {item.ingredientOverrides
                               .map((e) => {
-                                const name = inventoryById.get(e.ingredientId)?.name ?? e.ingredientId;
+                                const name = componentNameById.get(e.ingredientId) ?? inventoryById.get(e.ingredientId)?.name ?? e.ingredientId;
                                 return e.action === 'add' ? `+${name}` : `-${name}`;
                               })
                               .join(', ')}
@@ -941,29 +1106,29 @@ export default function POSView({
         </div>
 
         {/* Cart Footer */}
-        <div className="px-4 py-3 border-t border-border bg-bg/30 space-y-2 shrink-0">
+        <div className="px-3 sm:px-4 py-3 border-t border-border bg-bg/30 space-y-2 shrink-0">
           <div className="flex justify-between text-sm font-bold text-primary">
             <span>Totale</span>
-            <span>€{grandTotal.toFixed(2)}</span>
+            <span className="tabular-nums">€{grandTotal.toFixed(2)}</span>
           </div>
 
           <button
-            disabled={posCart.length === 0 || isProcessing || (orderMode === 'delivery' && deliveryAddress.trim().length < 5)}
+            disabled={posCart.length === 0 || isProcessing || (effectiveOrderMode === 'delivery' && deliveryAddress.trim().length < 5)}
             onClick={() => setShowSendConfirm(true)}
             className="w-full flex items-center justify-center gap-2 py-3.5 bg-accent text-white rounded-xl active:bg-blue-800 shadow-md transition-all disabled:opacity-50 text-xs font-bold uppercase tracking-widest active:scale-[0.98]"
           >
             <ChefHat size={18} />
-            {isProcessing ? 'Invio in corso...' : orderMode === 'delivery'
+            {isProcessing ? 'Invio in corso...' : effectiveOrderMode === 'delivery'
               ? 'Crea Delivery'
               : 'Invia in Cucina'}
           </button>
           {posCart.length === 0 && (
             <p className="text-[9px] text-text-muted text-center">Aggiungi almeno un piatto</p>
           )}
-          {posCart.length > 0 && orderMode === 'delivery' && deliveryAddress.trim().length < 5 && (
+          {posCart.length > 0 && effectiveOrderMode === 'delivery' && deliveryAddress.trim().length < 5 && (
             <p className="text-[9px] text-danger text-center font-medium">Inserisci un indirizzo di consegna</p>
           )}
-          {canCloseTable && selectedTable?.status === 'occupied' && (
+          {canCloseTable && (selectedTable?.status === 'occupied' || selectedTable?.status === 'suspended') && (effectiveOrderMode === 'dine_in' || contextMatchesMode) && (
             <button
               onClick={() => {
                 if (selectedTable) {
@@ -974,7 +1139,7 @@ export default function POSView({
               className="w-full flex items-center justify-center gap-2 py-3 bg-success text-white rounded-xl active:bg-green-800 shadow-md transition-all text-xs font-bold uppercase tracking-widest active:scale-[0.98]"
             >
               <Receipt size={16} />
-              Chiudi Conto
+              {contextMatchesMode ? (effectiveOrderMode === 'delivery' ? 'Incassa Consegna' : 'Incassa Asporto') : 'Chiudi Conto'}
             </button>
           )}
           {actionError && <p className="text-[10px] text-danger text-center font-semibold">{actionError}</p>}
@@ -982,7 +1147,7 @@ export default function POSView({
 
           <button
             onClick={() => setShowCartMobile(false)}
-            className="lg:hidden w-full min-h-[44px] py-2.5 text-xs font-bold text-accent uppercase tracking-widest"
+            className="md:hidden w-full min-h-[44px] py-2.5 text-xs font-bold text-accent uppercase tracking-widest"
           >
             Torna al Menu
           </button>
@@ -990,10 +1155,10 @@ export default function POSView({
       </div>
 
       {/* ============ MOBILE CART FAB ============ */}
-      {!showCartMobile && (posCart.length > 0 || alreadyOrdered.length > 0) && (
+      {isMobile && !showCartMobile && (posCart.length > 0 || alreadyOrdered.length > 0) && (
         <button
           onClick={() => setShowCartMobile(true)}
-          className="lg:hidden fixed bottom-24 right-4 bg-accent text-white p-4 rounded-full shadow-xl z-50 flex items-center gap-2 active:scale-95 transition-transform"
+          className="md:hidden fixed bottom-24 right-4 bg-accent text-white p-4 rounded-full shadow-xl z-50 flex items-center gap-2 active:scale-95 transition-transform"
         >
           <div className="relative">
             <ShoppingCart size={24} />
@@ -1005,22 +1170,22 @@ export default function POSView({
           </div>
           <div className="text-left">
             <p className="text-[10px] font-bold opacity-70 uppercase leading-none mb-1">
-              {orderMode === 'dine_in' ? `Tavolo ${posTableNumber}` : orderMode === 'takeaway' ? 'Asporto' : 'Delivery'}
+              {orderHeaderLabel}
             </p>
-            <p className="font-bold text-sm leading-none">€{grandTotal.toFixed(2)}</p>
+            <p className="font-bold text-sm leading-none tabular-nums">€{grandTotal.toFixed(2)}</p>
           </div>
         </button>
       )}
 
       {/* ============ TABLE ACTIONS MODAL ============ */}
       <AnimatePresence>
-        {showTableActions && orderMode === 'dine_in' && (
+        {showTableActions && effectiveOrderMode === 'dine_in' && (
           <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4 bg-primary/40 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, y: 50 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 40 }}
-              className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden"
+              className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden max-h-[95dvh] flex flex-col"
             >
               <div className="p-5 border-b border-border flex items-center justify-between">
                 <div>
@@ -1038,7 +1203,7 @@ export default function POSView({
                   <X size={18} />
                 </button>
               </div>
-              <div className="p-5 space-y-4">
+              <div className="p-5 space-y-4 overflow-y-auto">
                 <div className="rounded-xl border border-border p-4 bg-bg/40">
                   <p className="text-[10px] font-bold text-text-muted uppercase tracking-widest">
                     Stato attuale
@@ -1046,17 +1211,56 @@ export default function POSView({
                   <p className="mt-2 text-sm font-bold text-primary">
                     {selectedTable?.status === 'occupied'
                       ? 'Occupato'
-                      : selectedTable?.status === 'reserved'
-                        ? 'Prenotato'
-                        : 'Libero'}
+                      : selectedTable?.status === 'suspended'
+                        ? 'Conto sospeso (in attesa di incasso)'
+                        : selectedTable?.status === 'reserved'
+                          ? 'Prenotato'
+                          : 'Libero'}
                   </p>
                 </div>
+
+                {canSuspendCurrentTable && (
+                  <div className="space-y-2 rounded-xl border border-warning-200 bg-warning-50 p-4">
+                    <p className="text-[10px] font-bold text-warning-800 uppercase tracking-widest">
+                      Sospendi conto (preconto)
+                    </p>
+                    <label className="flex min-h-[44px] cursor-pointer items-center justify-between gap-3 text-sm text-warning-900">
+                      <span className="font-semibold">Stampa preconto in cassa</span>
+                      <input
+                        type="checkbox"
+                        checked={suspendPreBill}
+                        onChange={(e) => setSuspendPreBill(e.target.checked)}
+                        className="h-5 w-5 rounded border-border text-warning-700 focus:ring-warning-600"
+                      />
+                    </label>
+                    <button
+                      onClick={() => void handleSuspendTable()}
+                      disabled={suspendBusy}
+                      className="w-full flex items-center justify-center gap-2 py-3 bg-warning-700 text-white rounded-xl hover:bg-warning-800 transition-colors font-bold text-xs uppercase tracking-wider active:scale-[0.98] disabled:opacity-50"
+                    >
+                      <Receipt size={16} />
+                      {suspendBusy ? 'Sospensione...' : 'Sospendi conto'}
+                    </button>
+                  </div>
+                )}
+
+                {canResumeCurrentTable && (
+                  <button
+                    onClick={() => void handleResumeTable()}
+                    disabled={resumeBusy}
+                    className="w-full flex items-center justify-center gap-2 py-3 bg-warning-700 text-white rounded-xl hover:bg-warning-800 transition-colors font-bold text-xs uppercase tracking-wider active:scale-[0.98] disabled:opacity-50"
+                  >
+                    <Receipt size={16} />
+                    {resumeBusy ? 'Riattivazione...' : 'Riattiva conto'}
+                  </button>
+                )}
+
                 <button
                   onClick={() => {
                     setShowTableActions(false);
                     onOpenTablesView?.(posTableNumber);
                   }}
-                  className="w-full flex items-center justify-center gap-2 py-3 bg-accent text-white rounded-xl hover:bg-blue-700 transition-all font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
+                  className="w-full flex items-center justify-center gap-2 py-3 bg-accent text-white rounded-xl hover:bg-accent/90 transition-colors font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
                 >
                   <ArrowRight size={16} />
                   Vai alla Mappa Tavoli
@@ -1069,13 +1273,13 @@ export default function POSView({
 
       {/* ============ TAKEAWAY / DELIVERY DETAILS MODAL ============ */}
       <Modal
-        open={showCustomerDetailsModal && orderMode !== 'dine_in'}
+        open={showCustomerDetailsModal && effectiveOrderMode !== 'dine_in'}
         onClose={() => setShowCustomerDetailsModal(false)}
-        title={orderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
+        title={effectiveOrderMode === 'delivery' ? 'Dati consegna' : 'Dati asporto'}
         size="md"
         footer={(
           <>
-            {orderMode === 'delivery' && !customerDetailsValid && (
+            {effectiveOrderMode === 'delivery' && !customerDetailsValid && (
               <p className="w-full text-xs text-danger font-semibold" role="alert">
                 Inserisci un indirizzo di almeno 5 caratteri per creare il delivery.
               </p>
@@ -1122,9 +1326,10 @@ export default function POSView({
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">Orario <span className="font-normal normal-case">(opzionale)</span></span>
+              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">{effectiveOrderMode === 'delivery' ? 'Orario consegna' : 'Orario ritiro'} <span className="font-normal normal-case">(opzionale)</span></span>
               <input
-                type="datetime-local"
+                type="time"
+                step={300}
                 value={pickupEta}
                 onChange={(e) => setPickupEta(e.target.value)}
                 className="w-full min-h-[44px] px-3 py-2.5 rounded-lg border border-border text-base bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1"
@@ -1144,7 +1349,7 @@ export default function POSView({
                       setSelectedCustomerId(customer.id);
                       setTakeawayCustomerName(customer.fullName);
                       setTakeawayCustomerPhone(customer.phone ?? '');
-                      if (orderMode === 'delivery' && customer.addresses && customer.addresses.length > 0) {
+                      if (effectiveOrderMode === 'delivery' && customer.addresses && customer.addresses.length > 0) {
                         const def = customer.addresses.find((a) => a.isDefault) ?? customer.addresses[0];
                         setDeliveryAddress(def.address);
                       }
@@ -1159,7 +1364,7 @@ export default function POSView({
             </div>
           )}
 
-          {orderMode === 'delivery' && (
+          {effectiveOrderMode === 'delivery' && (
             <div className="space-y-3 border-t border-border pt-4">
               <div className="flex items-center gap-2">
                 <MapPin size={16} className="text-accent" />
@@ -1236,15 +1441,11 @@ export default function POSView({
         onClose={() => setModalItem(null)}
         onAddToCart={handleModalAddToCart}
         inventory={data.inventory}
-        orderMode={orderMode}
+        orderMode={effectiveOrderMode}
         existingCartItem={modalItem?.editCartItem}
         menuItems={data.menu}
         courseRoundsConfig={courseRoundsConfig}
         courseRoundsModuleEnabled={courseRoundsModuleEnabled}
-        onOpenRoundReorder={roundsActive && posCart.length > 0 ? () => {
-          setModalItem(null);
-          setShowRoundReorder(true);
-        } : undefined}
         categoryModifierPools={categoryModifierPools}
         onOpenModifierModal={(draft) => {          if (modalItem?.item) {
             const itemToEdit = modalItem.item;
@@ -1252,20 +1453,6 @@ export default function POSView({
             setModalItem(null);
             setModifierModalItem(itemToEdit);
           }
-        }}
-      />
-
-      {/* ============ ROUND REORDER DIALOG ============ */}
-      <RoundReorderDialog
-        open={showRoundReorder && roundsActive && posCart.length > 0}
-        cart={posCart}
-        config={courseRoundsConfig}
-        onClose={() => setShowRoundReorder(false)}
-        onApply={(rounds) => {
-          for (const item of posCart) {
-            updatePosCartItem(item.cartItemId, { round: rounds[item.cartItemId] ?? null });
-          }
-          setShowRoundReorder(false);
         }}
       />
 
@@ -1289,12 +1476,12 @@ export default function POSView({
       {/* ============ SEND CONFIRM ============ */}
       <ConfirmDialog
         open={showSendConfirm}
-        title={orderMode === 'delivery' ? 'Conferma Delivery' : 'Invia in Cucina'}
-        message={orderMode === 'delivery'
+        title={effectiveOrderMode === 'delivery' ? 'Conferma Delivery' : 'Invia in Cucina'}
+        message={effectiveOrderMode === 'delivery'
           ? 'Creare il delivery?'
           : `Inviare ${posCart.length} ${posCart.length === 1 ? 'piatto' : 'piatti'} in cucina?`
         }
-        confirmLabel={orderMode === 'delivery' ? 'Crea Delivery' : 'Invia'}
+        confirmLabel={effectiveOrderMode === 'delivery' ? 'Crea Delivery' : 'Invia'}
         onConfirm={() => {
           setShowSendConfirm(false);
           void handleSendToKitchen();

@@ -3,6 +3,9 @@ import type { CartItem, CourseRoundsConfig, Ingredient, MenuItem, CategoryModifi
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Plus, Minus, ShoppingCart, Settings, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { computeGroupModifierDelta, isMultiSelectGroup, modifierOptionPriceBadge } from '../lib/modifier-pricing';
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
+import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
 
 function parseExistingToppings(
   fullNotes: string,
@@ -50,7 +53,6 @@ interface POSProductModalProps {
   categoryModifierPools?: CategoryModifierPool[];
   courseRoundsConfig: CourseRoundsConfig;
   courseRoundsModuleEnabled: boolean;
-  onOpenRoundReorder?: () => void;
 }
 
 export default function POSProductModal({
@@ -66,7 +68,6 @@ export default function POSProductModal({
   categoryModifierPools = [],
   courseRoundsConfig,
   courseRoundsModuleEnabled,
-  onOpenRoundReorder,
 }: POSProductModalProps) {
   const [quantity, setQuantity] = useState(existingCartItem?.quantity ?? 1);
   const [notes, setNotes] = useState(existingCartItem?.notes ?? '');
@@ -82,6 +83,7 @@ export default function POSProductModal({
   const [customPrice, setCustomPrice] = useState<number>(existingCartItem?.basePrice ?? 0);
   const [selectedRound, setSelectedRound] = useState<number | null>(existingCartItem?.round ?? null);
   const roundsActive = courseRoundsModuleEnabled && courseRoundsConfig.enabled && _orderMode === 'dine_in';
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   const resolvedItem = menuItems.find((m) => m.id === item?.id) ?? item;
   const isJolly = Boolean((resolvedItem as any)?.isJolly);
@@ -93,17 +95,28 @@ export default function POSProductModal({
     return categoryModifierPools.filter((p) => {
       const belongsToCategory = p.categoryIds?.includes(resolvedItem.categoryId!) || p.categoryId === resolvedItem.categoryId;
       if (!belongsToCategory) return false;
+      // Disabled options are not purchasable; a pool left with none disappears.
+      const activeOptions = (p.options ?? []).filter((o) => o.isActive !== false);
+      if (activeOptions.length === 0) return false;
       const name = p.name.toLowerCase();
       const isLegacyInline = name.includes('salsa') || name.includes('salse') || name.includes('topping');
+      // Inline chips are NOTE-ONLY: they never reach the price calculation.
+      // Any pool whose options carry a cost (priceDelta or priceMultiplier,
+      // e.g. MAXI doubling) must therefore be chosen in "Personalizza",
+      // where the modifier modal prices it.
+      const isPriced = activeOptions.some(
+        (o) => (o.priceDelta ?? 0) !== 0 || (o.priceMultiplier != null && o.priceMultiplier !== 1),
+      );
+      if (isPriced) return false;
       // Inline: pool salsa/topping (legacy) + pool piccoli (≤8 opzioni, es. Granella).
       // I pool grossi (es. AGGIUNTA 35 opzioni) restano solo nel modale Personalizza.
-      return isLegacyInline || (p.options?.length ?? 0) <= 8;
+      return isLegacyInline || activeOptions.length <= 8;
     });
   }, [categoryModifierPools, resolvedItem?.categoryId]);
 
   const toppingPoolOptions = useMemo(() => {
     return visiblePools.flatMap((pool) =>
-      pool.options.map((opt) => ({
+      pool.options.filter((opt) => opt.isActive !== false).map((opt) => ({
         id: opt.id,
         name: opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? '',
         inventoryItemId: opt.inventoryItemId,
@@ -228,19 +241,27 @@ export default function POSProductModal({
   React.useEffect(() => {
     if (isOpen && modifierGroupIds) {
       const initialSelections: Record<string, string[]> = {};
-      const existingMap = new Map(selectedModifiers.map((sm) => [sm.groupId, sm.optionId]));
-      
+      // A group can legitimately persist several selections (multi-select), so
+      // collect all option ids per group instead of a last-wins map.
+      const existingByGroup = new Map<string, string[]>();
+      for (const sm of selectedModifiers) {
+        const list = existingByGroup.get(sm.groupId) ?? [];
+        list.push(sm.optionId);
+        existingByGroup.set(sm.groupId, list);
+      }
+
       for (const group of inlineModifierGroups) {
-        const existingOptionId = existingMap.get(group.id);
-        if (existingOptionId) {
-          initialSelections[group.id] = [existingOptionId];
-        } else {
-          const defaults = group.options
-            .filter((o: ModifierOption) => o.isDefault && o.isActive)
-            .map((o: ModifierOption) => o.id);
-          if (defaults.length > 0) {
-            initialSelections[group.id] = defaults;
-          }
+        const existingOptionIds = (existingByGroup.get(group.id) ?? [])
+          .filter((id) => group.options.some((o: ModifierOption) => o.id === id));
+        if (existingOptionIds.length > 0) {
+          initialSelections[group.id] = existingOptionIds;
+          continue;
+        }
+        const defaults = group.options
+          .filter((o: ModifierOption) => o.isDefault && o.isActive)
+          .map((o: ModifierOption) => o.id);
+        if (defaults.length > 0) {
+          initialSelections[group.id] = defaults;
         }
       }
       setGroupSelections((prev) => { // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize group selections from modifier config; uses prev => updater form which is safe
@@ -259,33 +280,27 @@ export default function POSProductModal({
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    lockBodyScroll();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unlockBodyScroll();
+    };
   }, [isOpen, onClose]);
 
   const groupPriceDelta = useMemo(() => {
-    const priceForSelections = (selections: Record<string, string[]>) => {
-      let price = 0;
-      for (const [groupId, optionIds] of Object.entries(selections)) {
-        const group = inlineModifierGroups.find((g) => g.id === groupId);
-        if (!group || optionIds.length === 0) continue;
-        if (group.maxSelections > 1) {
-          const deltas = group.options
-            .filter((o: ModifierOption) => optionIds.includes(o.id) && !o.isDefault)
-            .map((o: ModifierOption) => o.priceDelta);
-          price += deltas.length > 0 ? Math.max(...deltas) : 0;
-        } else {
-          for (const optionId of optionIds) {
-            const option = group.options.find((o: ModifierOption) => o.id === optionId);
-            if (option && !option.isDefault) price += option.priceDelta;
-          }
-        }
-      }
-      return price;
-    };
-    return priceForSelections(groupSelections);
-  }, [groupSelections, inlineModifierGroups]);
+    let price = 0;
+    // basePrice lets priceMultiplier options (MAXI) scale the item price.
+    const basePrice = isJolly ? customPrice : (resolvedItem?.price ?? 0);
+    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
+      const group = inlineModifierGroups.find((g) => g.id === groupId);
+      if (!group || optionIds.length === 0) continue;
+      price += computeGroupModifierDelta(group, optionIds, basePrice);
+    }
+    return price;
+  }, [groupSelections, inlineModifierGroups, isJolly, customPrice, resolvedItem?.price]);
 
   const inlineModifierPriceDelta = useMemo(() => {
+    const basePrice = isJolly ? customPrice : (resolvedItem?.price ?? 0);
     const existingSelections: Record<string, string[]> = {};
     for (const selected of selectedModifiers) {
       const group = inlineModifierGroups.find((candidate) => candidate.id === selected.groupId);
@@ -295,20 +310,10 @@ export default function POSProductModal({
     for (const [groupId, optionIds] of Object.entries(existingSelections)) {
       const group = inlineModifierGroups.find((candidate) => candidate.id === groupId);
       if (!group || optionIds.length === 0) continue;
-      if (group.maxSelections > 1) {
-        const deltas = group.options
-          .filter((o: ModifierOption) => optionIds.includes(o.id) && !o.isDefault)
-          .map((o: ModifierOption) => o.priceDelta);
-        existingGroupPrice += deltas.length > 0 ? Math.max(...deltas) : 0;
-      } else {
-        for (const optionId of optionIds) {
-          const option = group.options.find((o: ModifierOption) => o.id === optionId);
-          if (option && !option.isDefault) existingGroupPrice += option.priceDelta;
-        }
-      }
+      existingGroupPrice += computeGroupModifierDelta(group, optionIds, basePrice);
     }
     return modifierPriceDelta - existingGroupPrice + groupPriceDelta;
-  }, [groupPriceDelta, inlineModifierGroups, modifierPriceDelta, selectedModifiers]);
+  }, [groupPriceDelta, inlineModifierGroups, modifierPriceDelta, selectedModifiers, isJolly, customPrice, resolvedItem?.price]);
 
   const inlineSelectedModifiers = useMemo(() => {
     const directGroupIds = new Set(inlineModifierGroups.map((group) => group.id));
@@ -316,13 +321,17 @@ export default function POSProductModal({
     // either its own inline groups or a pool option of its category. Stale
     // selections from a previously opened product (e.g. Bun from a burger's
     // "Base" group) are dropped instead of leaking into the cart/order.
-    const mods = selectedModifiers.filter(
-      (selected) => directGroupIds.has(selected.groupId) || categoryPoolOptionIds.has(selected.optionId),
-    );
-    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
-      for (const optionId of optionIds) mods.push({ groupId, optionId });
+    // De-duplicate because persisted inline selections are restored into
+    // groupSelections as well (multi-select groups can hold several options).
+    const byKey = new Map<string, { groupId: string; optionId: string }>();
+    for (const selected of selectedModifiers) {
+      if (!directGroupIds.has(selected.groupId) && !categoryPoolOptionIds.has(selected.optionId)) continue;
+      byKey.set(`${selected.groupId}:${selected.optionId}`, selected);
     }
-    return mods;
+    for (const [groupId, optionIds] of Object.entries(groupSelections)) {
+      for (const optionId of optionIds) byKey.set(`${groupId}:${optionId}`, { groupId, optionId });
+    }
+    return [...byKey.values()];
   }, [groupSelections, inlineModifierGroups, selectedModifiers, categoryPoolOptionIds]);
 
   const cartIngredientOverrides = useMemo(() => {
@@ -379,7 +388,7 @@ export default function POSProductModal({
       if (!group) return prev;
       const current = prev[groupId] ?? [];
 
-      if (group.maxSelections === 1) {
+      if (!isMultiSelectGroup(group)) {
         return { ...prev, [groupId]: [optionId] };
       }
 
@@ -402,7 +411,7 @@ export default function POSProductModal({
     <AnimatePresence>
       {isOpen && (
         <div className="fixed inset-0 z-[1300] flex items-end sm:items-center justify-center">
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/50 backdrop-blur-sm" {...backdropDismiss} />
           <motion.div
             initial={{ opacity: 0, y: 60 }}
             animate={{ opacity: 1, y: 0 }}
@@ -410,10 +419,36 @@ export default function POSProductModal({
             transition={{ type: 'spring', damping: 28, stiffness: 350 }}
             className="relative bg-white w-full sm:max-w-sm md:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[88vh] sm:max-h-[85vh] flex flex-col"
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <div className="flex items-start justify-between px-4 py-3 border-b border-border shrink-0">
               <div className="flex-1 min-w-0 pr-3">
                 <h2 className="text-base sm:text-lg font-bold text-primary leading-tight truncate">{resolvedItem.name}</h2>
                 <p className="text-sm sm:text-base font-extrabold text-accent">{isJolly ? `€${(customPrice || 0).toFixed(2)}` : `€${resolvedItem.price.toFixed(2)}`}</p>
+                {roundsActive && (
+                  <div className="mt-2">
+                    <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Portata">
+                      {courseRoundsConfig.labels.map((label, index) => (
+                        <button
+                          key={label + index}
+                          type="button"
+                          onClick={() => setSelectedRound((current) => (current === index ? null : index))}
+                          aria-label={label}
+                          aria-pressed={selectedRound === index}
+                          className={cn(
+                            'min-h-[36px] min-w-[36px] px-2.5 rounded-lg border text-sm font-bold tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
+                            selectedRound === index
+                              ? 'border-accent bg-accent text-white shadow-sm'
+                              : 'border-border bg-white text-secondary hover:border-accent hover:text-accent',
+                          )}
+                        >
+                          {index + 1}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-1 text-[10px] text-text-muted">
+                      {selectedRound === null ? 'Nessuna portata' : courseRoundsConfig.labels[selectedRound]}
+                    </p>
+                  </div>
+                )}
               </div>
               <button onClick={onClose} className="min-w-[44px] min-h-[44px] flex items-center justify-center p-2 hover:bg-bg rounded-full transition-colors text-text-muted shrink-0"><X size={18} /></button>
             </div>
@@ -426,53 +461,6 @@ export default function POSProductModal({
               </div>
 
               <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (es: senza glutine, ben cotta...)" className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:border-accent focus:outline-none" />
-
-              {roundsActive && (
-                <div className="rounded-xl border border-border bg-bg/40 p-3 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">Portata</h3>
-                      <p className="text-[10px] text-text-muted mt-0.5">{selectedRound === null ? 'Scegli quando servirla' : courseRoundsConfig.labels[selectedRound]}</p>
-                    </div>
-                    {selectedRound !== null && (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedRound(null)}
-                        className="min-h-[44px] px-2 text-[10px] font-bold text-text-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
-                      >
-                        Rimuovi
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {courseRoundsConfig.labels.map((label, index) => (
-                      <button
-                        type="button"
-                        key={label + index}
-                        onClick={() => setSelectedRound(index)}
-                        className={cn(
-                          'min-h-[44px] px-3 rounded-full border text-xs font-bold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                          selectedRound === index ? 'border-accent bg-accent text-white shadow-sm' : 'border-border bg-white text-secondary hover:border-accent hover:text-accent',
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  {courseRoundsConfig.required && selectedRound === null && (
-                    <p className="text-[10px] text-danger font-semibold" role="alert">Seleziona una portata per continuare.</p>
-                  )}
-                  {onOpenRoundReorder && (
-                    <button
-                      type="button"
-                      onClick={onOpenRoundReorder}
-                      className="w-full min-h-[44px] rounded-lg border border-border text-[10px] font-bold uppercase tracking-wider text-text-muted hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                    >
-                      Imposta portate per tutto il carrello
-                    </button>
-                  )}
-                </div>
-              )}
 
               {isJolly && (
                 <div className="space-y-1.5">
@@ -546,11 +534,7 @@ export default function POSProductModal({
                             .filter((o: ModifierOption) => o.isActive)
                             .map((option: ModifierOption) => {
                               const isSelected = selected.includes(option.id);
-                              const badge = option.priceDelta > 0
-                                ? `+€${option.priceDelta.toFixed(2)}`
-                                : option.priceDelta < 0
-                                  ? `-€${Math.abs(option.priceDelta).toFixed(2)}`
-                                  : undefined;
+                              const badge = modifierOptionPriceBadge(option);
                               return (
                                 <button
                                   key={option.id}
@@ -566,7 +550,7 @@ export default function POSProductModal({
                                   <div
                                     className={cn(
                                       'w-5 h-5 flex items-center justify-center shrink-0 border-2 transition-all',
-                                      group.maxSelections > 1 ? 'rounded-md' : 'rounded-full',
+                                      isMultiSelectGroup(group) ? 'rounded-md' : 'rounded-full',
                                       isSelected
                                         ? 'border-accent bg-accent'
                                         : 'border-gray-300 bg-white',

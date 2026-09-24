@@ -64,13 +64,15 @@ export default function TableMoveMergeDialog({
   const targets = useMemo(
     () =>
       [...data.tables]
-        .filter((t) => t.id !== sourceTableId)
+        .filter((t) => t.id !== sourceTableId && !t.isVirtual)
         .sort((a, b) => a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' })),
     [data.tables, sourceTableId],
   );
 
   const isTargetEnabled = (status: string) =>
-    mode === 'move' ? status === 'free' : status === 'occupied';
+    mode === 'move'
+      ? status === 'free'
+      : status === 'occupied' || status === 'suspended';
 
   const selectedTarget = targets.find((t) => t.id === selectedTargetId);
 
@@ -164,7 +166,7 @@ export default function TableMoveMergeDialog({
               >
                 <p className="text-sm font-bold text-primary">Tavolo {table.number}</p>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-text-muted">
-                  {table.status === 'occupied'
+                  {table.status === 'occupied' || table.status === 'suspended'
                     ? summary
                       ? `${summary.items} piatti · €${summary.total.toFixed(2)}`
                       : 'Occupato'

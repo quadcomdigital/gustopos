@@ -21,10 +21,13 @@ export default function TablesManagementView({
   onDeleteTable,
 }: TablesManagementViewProps) {
   const [newTableNumber, setNewTableNumber] = useState('');
+  const [newTableZone, setNewTableZone] = useState('');
   const [bulkCount, setBulkCount] = useState(5);
   const [bulkPrefix, setBulkPrefix] = useState('');
+  const [bulkZone, setBulkZone] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNumber, setEditNumber] = useState('');
+  const [editZone, setEditZone] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<'single' | 'bulk'>('single');
@@ -39,14 +42,20 @@ export default function TablesManagementView({
     return a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' });
   });
 
+  // Existing zone labels, offered as suggestions (datalist) when editing.
+  const existingZones = [...new Set(tables.map((t) => t.zone).filter((z): z is string => !!z))].sort((a, b) =>
+    a.localeCompare(b, 'it', { sensitivity: 'base' })
+  );
+
   const handleCreate = async () => {
     setError('');
     const num = newTableNumber.trim();
     if (!num) { setError('Inserisci un numero tavolo'); return; }
     setBusy(true);
     try {
-      await onCreateTable({ number: num });
+      await onCreateTable({ number: num, ...(newTableZone.trim() ? { zone: newTableZone.trim() } : {}) });
       setNewTableNumber('');
+      // Keep the zone pre-filled: consecutive creations usually share a zone.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Errore creazione tavolo');
     } finally {
@@ -59,9 +68,10 @@ export default function TablesManagementView({
     if (bulkCount < 1 || bulkCount > 100) { setError('Numero tavoli: 1-100'); return; }
     setBusy(true);
     try {
-      await onBulkCreateTables({ count: bulkCount, prefix: bulkPrefix });
+      await onBulkCreateTables({ count: bulkCount, prefix: bulkPrefix, ...(bulkZone.trim() ? { zone: bulkZone.trim() } : {}) });
       setBulkCount(5);
       setBulkPrefix('');
+      setBulkZone('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Errore creazione tavoli');
     } finally {
@@ -72,11 +82,13 @@ export default function TablesManagementView({
   const startEdit = (table: Table) => {
     setEditingId(table.id);
     setEditNumber(table.number);
+    setEditZone(table.zone ?? '');
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditNumber('');
+    setEditZone('');
   };
 
   const saveEdit = async (id: string) => {
@@ -85,7 +97,8 @@ export default function TablesManagementView({
     if (!num) { setError('Il numero tavolo non può essere vuoto'); return; }
     setBusy(true);
     try {
-      await onUpdateTable(id, { number: num });
+      // Empty zone string explicitly clears the zone on the server.
+      await onUpdateTable(id, { number: num, zone: editZone.trim() });
       cancelEdit();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Errore aggiornamento tavolo');
@@ -142,22 +155,31 @@ export default function TablesManagementView({
         </div>
 
         {mode === 'single' ? (
-          <div className="flex gap-2">
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <input
+                value={newTableNumber}
+                onChange={(e) => setNewTableNumber(e.target.value.slice(0, 20))}
+                placeholder="Numero tavolo (es. 13, A1, VIP-1)"
+                className="flex-1 px-3 py-2 rounded border border-border text-sm"
+                onKeyDown={(e) => e.key === 'Enter' && !busy && handleCreate()}
+              />
+              <button
+                onClick={handleCreate}
+                disabled={busy || !newTableNumber.trim()}
+                className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50 flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                Aggiungi
+              </button>
+            </div>
             <input
-              value={newTableNumber}
-              onChange={(e) => setNewTableNumber(e.target.value.slice(0, 20))}
-              placeholder="Numero tavolo (es. 13, A1, VIP-1)"
-              className="flex-1 px-3 py-2 rounded border border-border text-sm"
-              onKeyDown={(e) => e.key === 'Enter' && !busy && handleCreate()}
+              value={newTableZone}
+              onChange={(e) => setNewTableZone(e.target.value.slice(0, 30))}
+              placeholder="Zona (opzionale, es. GAZEBO)"
+              list="table-zone-suggestions"
+              className="w-full px-3 py-2 rounded border border-border text-sm"
             />
-            <button
-              onClick={handleCreate}
-              disabled={busy || !newTableNumber.trim()}
-              className="px-4 py-2 rounded bg-primary text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50 flex items-center gap-1"
-            >
-              <Plus className="w-3 h-3" />
-              Aggiungi
-            </button>
           </div>
         ) : (
           <div className="space-y-3">
@@ -185,12 +207,26 @@ export default function TablesManagementView({
                 Crea
               </button>
             </div>
+            <input
+              value={bulkZone}
+              onChange={(e) => setBulkZone(e.target.value.slice(0, 30))}
+              placeholder="Zona per tutti i tavoli creati (opzionale)"
+              list="table-zone-suggestions"
+              className="w-full px-3 py-2 rounded border border-border text-sm"
+            />
             <p className="text-[10px] text-text-muted">
-              Verranno creati {bulkCount} tavoli con numerazione automatica{bulkPrefix ? ` e prefisso "${bulkPrefix}"` : ''}
+              Verranno creati {bulkCount} tavoli con numerazione automatica{bulkPrefix ? ` e prefisso "${bulkPrefix}"` : ''}{bulkZone.trim() ? ` nella zona "${bulkZone.trim()}"` : ''}
             </p>
           </div>
         )}
       </div>
+
+      {/* Shared zone suggestions for every zone input on this page */}
+      <datalist id="table-zone-suggestions">
+        {existingZones.map((zone) => (
+          <option key={zone} value={zone} />
+        ))}
+      </datalist>
 
       {/* Error */}
       {error && (
@@ -209,6 +245,14 @@ export default function TablesManagementView({
                   value={editNumber}
                   onChange={(e) => setEditNumber(e.target.value.slice(0, 20))}
                   className="flex-1 px-3 py-1.5 rounded border border-border text-sm"
+                  onKeyDown={(e) => e.key === 'Enter' && !busy && saveEdit(table.id)}
+                />
+                <input
+                  value={editZone}
+                  onChange={(e) => setEditZone(e.target.value.slice(0, 30))}
+                  placeholder="Zona (vuoto = nessuna)"
+                  list="table-zone-suggestions"
+                  className="w-40 px-3 py-1.5 rounded border border-border text-sm"
                   onKeyDown={(e) => e.key === 'Enter' && !busy && saveEdit(table.id)}
                 />
                 <button
@@ -234,7 +278,14 @@ export default function TablesManagementView({
                     <span className="text-sm font-bold text-primary">{table.number}</span>
                   </div>
                   <div>
-                    <p className="text-sm font-semibold">Tavolo {table.number}</p>
+                    <p className="text-sm font-semibold">
+                      Tavolo {table.number}
+                      {table.zone && (
+                        <span className="ml-2 inline-block rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-accent align-middle">
+                          {table.zone}
+                        </span>
+                      )}
+                    </p>
                     <p className="text-[10px] text-text-muted uppercase">
                       {table.status === 'free' ? 'Libero' : table.status === 'occupied' ? 'Occupato' : table.status}
                       {table.currentOrderId && ' • Ordine attivo'}

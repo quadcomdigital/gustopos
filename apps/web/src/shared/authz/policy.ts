@@ -32,7 +32,7 @@ export const uiActionPolicyMatrix: Record<UiActionKey, UiActionPolicy> = {
     action: 'ordersUpdate',
     endpoint: 'PATCH /api/orders/:id',
     module: 'kitchen',
-    roles: ['admin', 'chef'],
+    roles: ['admin', 'chef', 'waiter'],
     permission: 'orders:update',
   },
   ordersVoid: {
