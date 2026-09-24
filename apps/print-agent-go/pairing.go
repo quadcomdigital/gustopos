@@ -172,7 +172,7 @@ func (p *PairingServer) handlePair(w http.ResponseWriter, r *http.Request) {
 	if rawServer != "" && server == "" {
 		// Non-empty but unusable — tell the user instead of silently pairing
 		// against the default origin.
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Il campo server non è un indirizzo valido (es. https://test.franksbar.it)."})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Il campo server non è un indirizzo valido (es. %s).", defaultAPIBase)})
 		return
 	}
 	if server != "" {
@@ -299,7 +299,8 @@ func randomUUID() string {
 
 // normalizeServerURL makes a user-typed server value usable: strips trailing
 // slashes and prepends https:// when no scheme is present (so a plain
-// "test.franksbar.it" works). Returns "" when the value is empty, and a
+// the baked-in default origin works too). Returns "" when the value is
+// empty, and a
 // canonical https:// URL otherwise.
 func normalizeServerURL(s string) string {
 	if s == "" {

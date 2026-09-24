@@ -50,6 +50,16 @@ func ensureStartup() error {
 	// install path such as "C:\Program Files\GustoPOS" remains valid. The
 	// -background flag suppresses modal dialogs so an unattended logon run can
 	// never hang on an error box.
+	// A stale task left behind by an earlier install (possibly owned by
+	// another account) makes /Create fail with "Accesso negato" and — worse —
+	// can keep launching the OLD binary at logon, racing this one for the
+	// single-instance mutex. Remove it first (best effort: a foreign-owned
+	// task also refuses deletion, and the Run-key fallback below still works).
+	if output, delErr := exec.Command("schtasks", "/Delete", "/TN", startupTaskName, "/F").CombinedOutput(); delErr == nil {
+		log.Printf("removed pre-existing scheduled task %q before re-registering", startupTaskName)
+	} else {
+		log.Printf("scheduled task %q not removed (%v: %s) — continuing", startupTaskName, delErr, strings.TrimSpace(string(output)))
+	}
 	runCommand := fmt.Sprintf(`"%s" -background`, executable)
 	taskCmd := exec.Command("schtasks", "/Create",
 		"/TN", startupTaskName,

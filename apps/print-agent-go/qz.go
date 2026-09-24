@@ -52,6 +52,24 @@ func NewQZClient(url, certPEM string, signer func(string) (string, error)) *QZCl
 	}
 }
 
+// qzWriteTimeout bounds a single websocket write. gorilla/websocket has no
+// write deadline by default: if QZ Tray stops draining its socket (wedged,
+// restarted, TCP buffer full) WriteMessage blocks forever while holding
+// writeMu, which freezes the whole heartbeat loop and the print claims. A
+// deadline turns that into a normal error so the caller can reconnect.
+const qzWriteTimeout = 10 * time.Second
+
+// write serializes a text frame and bounds it with a deadline so a stalled
+// peer can never block the caller indefinitely.
+func (q *QZClient) write(conn *websocket.Conn, msg string) error {
+	q.writeMu.Lock()
+	defer q.writeMu.Unlock()
+	_ = conn.SetWriteDeadline(time.Now().Add(qzWriteTimeout))
+	err := conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
+}
+
 // Connect dials QZ Tray, performs the certificate handshake and waits for the
 // handshake ack. A 401-style "Connection blocked" error or a timeout (QZ is
 // showing a gateway dialog for a not-yet-trusted cert) is returned so the caller
@@ -94,10 +112,7 @@ func (q *QZClient) Connect() error {
 	q.mu.Unlock()
 	versionMsg := fmt.Sprintf(`{"call":"getVersion","timestamp":%d,"uid":%s}`,
 		time.Now().UnixMilli(), jsonString(versionUID))
-	q.writeMu.Lock()
-	writeErr := conn.WriteMessage(websocket.TextMessage, []byte(versionMsg))
-	q.writeMu.Unlock()
-	if writeErr != nil {
+	if writeErr := q.write(conn, versionMsg); writeErr != nil {
 		q.forget(versionUID)
 		q.Close()
 		return fmt.Errorf("query QZ Tray version: %w", writeErr)
@@ -121,10 +136,7 @@ func (q *QZClient) Connect() error {
 	q.pending[certUID] = certCh
 	q.mu.Unlock()
 	certMsg := fmt.Sprintf(`{"certificate":%s,"uid":%s}`, jsonString(q.certPEM), jsonString(certUID))
-	q.writeMu.Lock()
-	writeErr = conn.WriteMessage(websocket.TextMessage, []byte(certMsg))
-	q.writeMu.Unlock()
-	if writeErr != nil {
+	if writeErr := q.write(conn, certMsg); writeErr != nil {
 		q.forget(certUID)
 		q.Close()
 		return fmt.Errorf("send certificate to QZ Tray: %w", writeErr)
@@ -187,11 +199,7 @@ func (q *QZClient) pingLoop(conn *websocket.Conn, stop chan struct{}) {
 		if closed {
 			return
 		}
-		if err := func() error {
-			q.writeMu.Lock()
-			defer q.writeMu.Unlock()
-			return conn.WriteMessage(websocket.TextMessage, []byte("ping"))
-		}(); err != nil {
+		if err := q.write(conn, "ping"); err != nil {
 			return
 		}
 	}
@@ -275,11 +283,7 @@ func (q *QZClient) FindPrinters(timeout time.Duration) ([]string, error) {
 	}
 	msg := fmt.Sprintf(`{"uid":%s,"call":"printers.find","params":%s,"timestamp":%d,"signature":%s,"signAlgorithm":"SHA512"}`,
 		jsonString(uid), paramsJSON, ts, jsonString(strings.TrimSpace(sigB64)))
-	if err := func() error {
-		q.writeMu.Lock()
-		defer q.writeMu.Unlock()
-		return conn.WriteMessage(websocket.TextMessage, []byte(msg))
-	}(); err != nil {
+	if err := q.write(conn, msg); err != nil {
 		q.forget(uid)
 		return nil, fmt.Errorf("find printers request: %w", err)
 	}
@@ -348,11 +352,7 @@ func (q *QZClient) Print(printerName, payloadB64 string, timeout time.Duration) 
 	conn = q.conn
 	q.mu.Unlock()
 
-	if err := func() error {
-		q.writeMu.Lock()
-		defer q.writeMu.Unlock()
-		return conn.WriteMessage(websocket.TextMessage, []byte(msg))
-	}(); err != nil {
+	if err := q.write(conn, msg); err != nil {
 		q.forget(uid)
 		return fmt.Errorf("write request: %w", err)
 	}

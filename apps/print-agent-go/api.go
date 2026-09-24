@@ -202,10 +202,15 @@ func (a *API) ReportDiscoveredDevices(bridgeID string, devices []DiscoveredDevic
 }
 
 // AckCommand tells the API a one-shot command has been executed so it can be
-// cleared and not delivered again.
-func (a *API) AckCommand(bridgeID, commandID string) error {
-	return a.do(http.MethodPost, "/api/print-bridge/command-ack",
-		map[string]any{"bridgeId": bridgeID, "commandId": commandID}, nil)
+// cleared and not delivered again. ok/error carry the execution outcome so
+// the server can log failures (e.g. test print to an unreachable IP) in the
+// admin-visible diagnostics; older servers ignore the extra fields.
+func (a *API) AckCommand(bridgeID, commandID string, ok bool, errMsg string) error {
+	payload := map[string]any{"bridgeId": bridgeID, "commandId": commandID, "ok": ok}
+	if errMsg != "" {
+		payload["error"] = errMsg
+	}
+	return a.do(http.MethodPost, "/api/print-bridge/command-ack", payload, nil)
 }
 
 // ─── Claim / complete / fail ───────────────────────────────────────────

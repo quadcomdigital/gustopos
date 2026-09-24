@@ -43,6 +43,9 @@ type Agent struct {
 	lastShippedSeq int64
 	// lastHeartbeatUnix lets an external watchdog detect a stalled agent.
 	lastHeartbeatUnix atomic.Int64
+	// discovering is a single-flight guard so LAN/QZ discovery never runs
+	// concurrently and never blocks the heartbeat loop.
+	discovering atomic.Bool
 	// updateReady receives a staged update for main to install and restart.
 	updateReady  chan<- stagedUpdate
 	updateStaged atomic.Bool
@@ -83,15 +86,17 @@ func (a *Agent) LastHeartbeatUnix() int64 {
 // printers found by the last LAN scan so the server always receives the full
 // picture on each heartbeat.
 func (a *Agent) printerCapabilities() []BridgePrinterCapability {
-	caps := make([]BridgePrinterCapability, 0, len(a.discoveredPrinters))
-	for _, name := range a.discoveredPrinters {
+	a.mu.Lock()
+	discovered := append([]string(nil), a.discoveredPrinters...)
+	devices := append([]DiscoveredDevice(nil), a.netDevices...)
+	a.mu.Unlock()
+
+	caps := make([]BridgePrinterCapability, 0, len(discovered))
+	for _, name := range discovered {
 		if name = strings.TrimSpace(name); name != "" {
 			caps = append(caps, BridgePrinterCapability{Name: name, Source: "qz"})
 		}
 	}
-	a.mu.Lock()
-	devices := append([]DiscoveredDevice(nil), a.netDevices...)
-	a.mu.Unlock()
 	for _, device := range devices {
 		name := device.Vendor
 		if name == "" {
@@ -145,17 +150,25 @@ func (a *Agent) maybeExecuteCommand(ctx context.Context, command *BridgeCommand)
 
 	go func() {
 		defer recoverPanic("command")
-		a.executeCommand(ctx, command)
-		if err := a.api.AckCommand(a.cfg.BridgeID, command.ID); err != nil {
+		if cmdErr := a.executeCommand(ctx, command); cmdErr != nil {
+			if err := a.api.AckCommand(a.cfg.BridgeID, command.ID, false, cmdErr.Error()); err != nil {
+				log.Printf("command %s (%s) ack failed: %v", command.ID, command.Type, err)
+			}
+			return
+		}
+		if err := a.api.AckCommand(a.cfg.BridgeID, command.ID, true, ""); err != nil {
 			log.Printf("command %s (%s) ack failed: %v", command.ID, command.Type, err)
 		}
 	}()
 }
 
-func (a *Agent) executeCommand(ctx context.Context, command *BridgeCommand) {
+// executeCommand runs a one-shot command and returns its outcome. Failures
+// are returned (not only logged) so the ack can surface them server-side.
+func (a *Agent) executeCommand(ctx context.Context, command *BridgeCommand) error {
 	switch command.Type {
 	case "scan":
 		a.runDiscovery(ctx)
+		return nil
 	case "test-print":
 		port := command.Port
 		if port <= 0 {
@@ -168,13 +181,19 @@ func (a *Agent) executeCommand(ctx context.Context, command *BridgeCommand) {
 		log.Printf("command: test print to %s:%d", command.IP, port)
 		if err := PrintRawTCP(command.IP, port, escposTestTicket(label), a.printTimeout); err != nil {
 			log.Printf("command: test print to %s:%d failed: %v", command.IP, port, err)
+			return err
 		}
+		return nil
 	case "update":
 		if err := a.checkForUpdate(); err != nil {
 			log.Printf("command: update failed: %v", err)
+			return err
 		}
+		return nil
 	default:
-		log.Printf("command: unknown type %q", command.Type)
+		err := fmt.Errorf("unknown command type %q", command.Type)
+		log.Printf("command: %v", err)
+		return err
 	}
 }
 
@@ -227,7 +246,7 @@ func (a *Agent) ReconnectQZ() {
 	if err := a.ensureQZ(); err != nil {
 		log.Printf("dashboard QZ reconnect failed: %v", err)
 	}
-	a.discoverPrinters()
+	a.discoverAsync()
 }
 
 // TestPrint sends a tiny ESC/POS ticket to the printer mapped to `area`, so an
@@ -288,7 +307,7 @@ func (a *Agent) Run(ctx context.Context) (err error) {
 	// QZ discovery is best-effort: the API heartbeat must still run when QZ
 	// Tray is starting or temporarily unavailable.
 	_ = a.ensureQZ()
-	a.discoverPrinters()
+	a.discoverAsync()
 	if a.runtime != nil {
 		a.runtime.Status.SetConfig(a.cfg)
 	}
@@ -333,7 +352,7 @@ func (a *Agent) Run(ctx context.Context) (err error) {
 			// Liveness is the loop itself, not server reachability: mark the
 			// attempt so a network/server outage never triggers the watchdog.
 			a.lastHeartbeatUnix.Store(time.Now().Unix())
-			a.discoverPrinters()
+			a.discoverAsync()
 			if response, err := a.api.Heartbeat(a.cfg, a.printerCapabilities()); err != nil {
 				if IsDetached(err) {
 					return errDetachedSentinel
@@ -386,7 +405,7 @@ func (a *Agent) discoverPrinters() {
 		return
 	}
 	seen := make(map[string]struct{}, len(printers))
-	a.discoveredPrinters = a.discoveredPrinters[:0]
+	result := make([]string, 0, len(printers))
 	for _, printer := range printers {
 		printer = strings.TrimSpace(printer)
 		if printer == "" {
@@ -396,17 +415,34 @@ func (a *Agent) discoverPrinters() {
 			continue
 		}
 		seen[printer] = struct{}{}
-		a.discoveredPrinters = append(a.discoveredPrinters, printer)
+		result = append(result, printer)
 	}
-	sort.Strings(a.discoveredPrinters)
-	a.cfg.DiscoveredPrinters = append([]string(nil), a.discoveredPrinters...)
+	sort.Strings(result)
+	a.mu.Lock()
+	a.discoveredPrinters = result
+	a.cfg.DiscoveredPrinters = append([]string(nil), result...)
+	a.mu.Unlock()
 	if a.runtime != nil {
-		a.runtime.Status.SetPrinters(a.discoveredPrinters)
+		a.runtime.Status.SetPrinters(result)
 	}
 	if err := a.cfg.Save(); err != nil {
 		log.Printf("could not persist discovered printers: %v", err)
 	}
-	log.Printf("discovered %d local printer(s) via QZ Tray", len(a.discoveredPrinters))
+	log.Printf("discovered %d local printer(s) via QZ Tray", len(result))
+}
+
+// discoverAsync runs printer discovery off the heartbeat goroutine with a
+// single-flight guard. Discovery touches QZ Tray and the LAN, so it must never
+// be able to delay the heartbeat or the print claim loop.
+func (a *Agent) discoverAsync() {
+	if !a.discovering.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer a.discovering.Store(false)
+		defer recoverPanic("discovery")
+		a.discoverPrinters()
+	}()
 }
 
 // markHeartbeat refreshes the dashboard snapshot after an authoritative

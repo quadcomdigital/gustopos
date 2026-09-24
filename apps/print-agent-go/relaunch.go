@@ -54,14 +54,20 @@ func recordRelaunch() {
 	}
 }
 
+// resetRelaunchGuard clears the crash-loop counter. The guard exists only to
+// stop *automatic* crash loops; a user-requested restart must always work.
+func resetRelaunchGuard() {
+	_ = os.Remove(relaunchAttemptPath())
+}
+
 // relaunchAndExit spawns a replacement process and terminates this one. If the
-// restart guard trips (too many recent restarts) it exits without relaunching
-// instead of looping forever.
+// restart guard trips (too many recent restarts), it leaves this process alive
+// and lets the watchdog retry once the window expires, instead of exiting and
+// leaving the POS without an agent until the next logon.
 func relaunchAndExit() {
 	if shouldBlockRelaunch() {
-		log.Printf("watchdog: too many restarts in the last %s; stopping instead of looping", relaunchWindow)
-		writeExitRecord("relaunch-blocked")
-		os.Exit(1)
+		log.Printf("watchdog: too many restarts in the last %s; will retry after the window", relaunchWindow)
+		return
 	}
 	recordRelaunch()
 	writeExitRecord("relaunch")

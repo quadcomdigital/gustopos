@@ -192,6 +192,7 @@ func main() {
 		},
 		Restart: func() {
 			log.Println("restart requested from dashboard")
+			resetRelaunchGuard()
 			relaunchAndExit()
 		},
 	}, cfg.DashboardPort)
@@ -278,7 +279,6 @@ func main() {
 			continue
 		}
 		currentAgent.Store(agent)
-
 		runCtx, cancelAgent := context.WithCancel(baseCtx)
 		errCh := make(chan error, 1)
 		agentRunning.Store(true)
@@ -381,6 +381,13 @@ func pairOnce(apiBase string, prev *Config) *Config {
 	}
 	defer ps.Stop()
 	log.Printf("pairing page: %s", ps.URL())
+	if backgroundMode {
+		// Unattended start (logon task, watchdog relaunch): no dialog may
+		// block, but the operator must KNOW the agent is waiting for a code —
+		// a silent wait looks like a dead POS. The browser is opened below;
+		// this line is what the shipped diagnostics show if nobody is there.
+		log.Printf("background pairing: waiting for the 6-digit code — open %s on this machine if the browser did not appear", ps.URL())
+	}
 	openBrowser(ps.URL())
 	cfg := <-ps.Done()
 	if cfg != nil {
