@@ -16,6 +16,8 @@ coverage/
 
 # API signing secret (provisioned by deployment; never commit or serve publicly):
 /apps/api/signing/
+# Web signing private key: must NEVER be committed or served from public/ (only digital-certificate.txt is public):
+/apps/web/public/signing/private-key.pem
 
 # Print-agent release artifacts (generated — publish via make publish-downloads):
 /apps/print-agent-go/bin/
