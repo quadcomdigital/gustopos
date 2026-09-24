@@ -566,7 +566,9 @@ app.get("/signing/whitelist-entry", (_req, res) => {
     const endLine = execSync(`openssl x509 -in ${tmpCert} -noout -enddate`, { encoding: "utf-8" }).trim();
     fs.unlinkSync(tmpCert);
 
-    // Parse subject: "subject=C = IT, ST = Rome, O = GustoPOS, CN = test.franksbar.it"
+    // Parse subject: "subject=C = IT, ST = Rome, O = GustoPOS, CN = GustoPOS"
+    // (tenant-neutral leaf since 2026-09-24: same shared CA and key, so every
+    // existing install keeps trusting it; only the displayed CN changed).
     const subjectParts = subjectLine.replace(/^subject\s*=\s*/, "").split(",").map((s: string) => s.trim());
     const cn = subjectParts.find((p: string) => p.startsWith("CN = "))?.replace("CN = ", "") || "";
     const org = subjectParts.find((p: string) => p.startsWith("O = "))?.replace("O = ", "") || "";

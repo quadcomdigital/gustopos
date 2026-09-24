@@ -109,15 +109,16 @@ export async function setupQzSecurity(): Promise<void> {
     signUrl = (request) =>
       `${PRINT_BRIDGE_SIGNING_BASE}/signing/sign-message?request=${encodeURIComponent(request)}`;
   } catch {
-    // Fall back to same-origin API signing. NOTE: the API cert (CN=GustoPOS,
-    // self-signed) is NOT whitelisted in QZ Tray's allowed.dat, so this path
-    // degrades to the QZ "Allow" popup — silent printing requires the local
-    // print-bridge to be reachable.
+    // Fall back to same-origin API signing. Use the API-prefixed certificate
+    // route: `/signing/digital-certificate.txt` is shadowed by the web build's
+    // static copy (express.static on web/dist), which can still hold a stale
+    // certificate after a rotation and make QZ Tray reject it. The API route
+    // is registered explicitly and always serves the current cert/key pair.
     if (!fallbackWarningShown) {
       fallbackWarningShown = true;
-      console.warn("[qz-tray] print-bridge signing unreachable at 127.0.0.1:11905 — falling back to API signing (QZ Allow popup will appear)");
+      console.warn("[qz-tray] print-bridge signing unreachable at 127.0.0.1:11905 — falling back to API signing");
     }
-    certUrl = "/signing/digital-certificate.txt";
+    certUrl = "/api/signing/digital-certificate.txt";
     signUrl = (request) => `/api/sign?request=${encodeURIComponent(request)}`;
   }
 

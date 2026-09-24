@@ -40,22 +40,30 @@ if "%QZ_DIR%"=="" (
 )
 echo.
 
-echo [3/6] Checking allowed.dat ...
-set "ALLOW_FILE=%APPDATA%\qz\allowed.dat"
-if exist "%ALLOW_FILE%" (
-    echo   FOUND: %ALLOW_FILE%
-    type "%ALLOW_FILE%"
+echo [3/6] Checking allowed.dat (user + machine + SYSTEM) ...
+call :check_allow "%APPDATA%\qz\allowed.dat" "user"
+call :check_allow "%PROGRAMDATA%\qz\allowed.dat" "machine"
+call :check_allow "%WINDIR%\System32\config\systemprofile\AppData\Roaming\qz\allowed.dat" "SYSTEM"
+echo.
+goto :after_allow
+
+:check_allow
+if exist %1 (
+    echo   FOUND [%2]: %1
+    type %1
     echo.
-    findstr /C:"F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C" "%ALLOW_FILE%" >nul 2>&1
+    findstr /C:"4DBC25886175FDBADCFD734C7C9AE1BA5B9994F0" %1 >nul 2>&1
     if %ERRORLEVEL%==0 (
         echo   Our cert fingerprint: FOUND (good)
     ) else (
         echo   Our cert fingerprint: NOT FOUND
     )
 ) else (
-    echo   NOT FOUND - QZ Tray will prompt for approval
+    echo   NOT FOUND [%2]: %1
 )
-echo.
+exit /b 0
+
+:after_allow
 
 echo [4/6] Checking debug.log ...
 set "LOG_FILE=%APPDATA%\qz\debug.log"
@@ -72,8 +80,9 @@ if exist "%LOG_FILE%" (
 )
 echo.
 
-echo [5/6] Testing print-bridge ...
-powershell -Command "try { $r = Invoke-WebRequest -Uri 'https://test.franksbar.it/signing/digital-certificate.txt' -UseBasicParsing -TimeoutSec 5; Write-Host '  Status:' $r.StatusCode '- Length:' $r.Content.Length 'bytes' } catch { Write-Host '  ERROR:' $_.Exception.Message }"
+echo [5/6] Testing server certificate endpoints ...
+powershell -Command "try { $r = Invoke-WebRequest -Uri 'https://test.franksbar.it/api/signing/digital-certificate.txt' -UseBasicParsing -TimeoutSec 5; $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2([Text.Encoding]::ASCII.GetBytes($r.Content)); Write-Host '  digital-certificate: SHA1' $c.Thumbprint } catch { Write-Host '  digital-certificate ERROR:' $_.Exception.Message }"
+powershell -Command "try { $r = Invoke-WebRequest -Uri 'https://test.franksbar.it/api/signing/override.crt' -UseBasicParsing -TimeoutSec 5; $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2([Text.Encoding]::ASCII.GetBytes($r.Content)); Write-Host '  override.crt (CA):   SHA1' $c.Thumbprint } catch { Write-Host '  override.crt ERROR:' $_.Exception.Message }"
 echo.
 
 echo [6/6] Checking QZ Tray process ...

@@ -75,22 +75,21 @@ mkdir -p "$QZ_DATA"
 ALLOW_FILE="$QZ_DATA/allowed.dat"
 touch "$ALLOW_FILE"
 
-# Remove old entries
-if grep -q "B710176029C2378A4886B22E5D0874A7A4305FBA" "$ALLOW_FILE" 2>/dev/null; then
-    grep -v "B710176029C2378A4886B22E5D0874A7A4305FBA" "$ALLOW_FILE" > "${ALLOW_FILE}.tmp" 2>/dev/null
-    mv "${ALLOW_FILE}.tmp" "$ALLOW_FILE" 2>/dev/null
-fi
-if grep -q "F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C" "$ALLOW_FILE" 2>/dev/null; then
-    grep -v "F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C" "$ALLOW_FILE" > "${ALLOW_FILE}.tmp" 2>/dev/null
-    mv "${ALLOW_FILE}.tmp" "$ALLOW_FILE" 2>/dev/null
-fi
+# Remove superseded entries (older leaf fingerprints, any tenant CN)
+for OLD in "B710176029C2378A4886B22E5D0874A7A4305FBA" "F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C" "4DBC25886175FDBADCFD734C7C9AE1BA5B9994F0"; do
+    if grep -q "$OLD" "$ALLOW_FILE" 2>/dev/null; then
+        grep -v "$OLD" "$ALLOW_FILE" > "${ALLOW_FILE}.tmp" 2>/dev/null
+        mv "${ALLOW_FILE}.tmp" "$ALLOW_FILE" 2>/dev/null
+    fi
+done
 
-# Add new entry (hardcoded)
-printf "F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C\ttest.franksbar.it\tGustoPOS\tJul 22 22:43:36 2026 GMT\tJul 19 22:43:36 2036 GMT\tTrue\n" >> "$ALLOW_FILE"
+# Current leaf certificate (CN=GustoPOS, signed by the GustoPOS CA installed
+# as override.crt — tenant-neutral, valid for every GustoPOS domain).
+printf "4DBC25886175FDBADCFD734C7C9AE1BA5B9994F0\tGustoPOS\tGustoPOS\tSep 24 16:37:58 2026 GMT\tSep 21 16:37:58 2036 GMT\tTrue\n" >> "$ALLOW_FILE"
 echo "  Whitelist updated"
 
 # Verify
-if grep -q "F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C" "$ALLOW_FILE" 2>/dev/null; then
+if grep -q "4DBC25886175FDBADCFD734C7C9AE1BA5B9994F0" "$ALLOW_FILE" 2>/dev/null; then
     echo "  VERIFIED: Fingerprint in whitelist"
 fi
 
