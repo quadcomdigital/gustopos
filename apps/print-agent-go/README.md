@@ -41,6 +41,7 @@ POS machine                    VPS
 | `POST /api/print-bridge/jobs/:id/fail` | mark job failed |
 | `GET /api/print-bridge/sign?request=<sha256hex>` | bridge-authenticated server-side QZ message signing (no key on POS) |
 | `GET /signing/digital-certificate.txt` | fetch the QZ signing certificate |
+| `GET /signing/override.crt` | fetch the tenant's QZ trust anchor (installed as `override.crt`) |
 | `POST /api/fiscal-bridge/claim` | poll for certified fiscal jobs (receipt/chiusura/test) |
 | `POST /api/fiscal-bridge/jobs/:id/complete` | report emitted receipt with the fiscal progressive |
 | `POST /api/fiscal-bridge/jobs/:id/fail` | report emission failure |
@@ -270,5 +271,35 @@ executables do not retain a stale path. Remove it with
 - The 6-digit code becomes a **permanent credential once bound** (the 90s TTL
   only guards unbound codes against brute force). Detaching = revoke the
   secret in Settings; the agent re-pairs automatically.
-- QZ Tray must already be installed and trust the GustoPOS signing certificate
-  (the standard cert installers apply — silent printing).
+- QZ Tray must already be installed and trust **this tenant's** signing
+  certificate: install `https://<tenant>/signing/install-qz-cert.bat` (as
+  Administrator) or `install-qz-cert.sh` (as root). See
+  `docs/qz-certificate-remediation.md`.
+
+## QZ preflight
+
+Before every connection the agent validates the local QZ Tray installation
+(`qzpreflight.go`) instead of dialling blindly: QZ Tray never explains itself,
+it only opens the access dialog and lets the handshake time out.
+
+Checked, in QZ's own terms:
+
+| check | what it catches |
+|---|---|
+| `certificate` | unparsable PEM, blank CN (QZ rejects it outright) |
+| `validity` | clock in front of `notBefore` / behind `notAfter` |
+| `override.crt` | missing, or **not** the anchor the server publishes (another tenant / stale) |
+| `chain` | the PKIX path QZ validates on connect |
+| `allowed.dat` | fingerprint recorded **case-sensitively in lowercase** — an UPPERCASE entry is reported as the reason the dialog keeps coming back |
+| `allowed.dat writable` | unwritable `%PROGRAMDATA%\qz` → QZ cannot remember the approval and prompts forever |
+| `qz debug.log` | QZ's own verdict, when it logged one (informational) |
+
+When the chain is valid but the fingerprint is missing, the preflight heals it
+with QZ's own `--allow` and reports what it did.
+
+* `ensureQZ()` fails fast with the specific reason, which becomes `lastError`
+  and therefore appears in Settings → Stampa (and in the shipped logs).
+* `GET http://127.0.0.1:8183/api/qz/preflight` returns the last report,
+  `POST` runs a fresh one. The dashboard has a **"Verifica QZ Tray"** panel and
+  the diagnostics download includes the full report.
+* Tests: `qzpreflight_test.go`.

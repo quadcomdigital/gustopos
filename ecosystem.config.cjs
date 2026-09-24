@@ -41,6 +41,15 @@ module.exports = {
         // QZ signing is origin-gated: include every origin that can open
         // /print-station, or the browser cannot sign cross-origin.
         PRINT_BRIDGE_ALLOWED_ORIGINS: "http://localhost:11900,http://127.0.0.1:11900,https://test.franksbar.it,https://test.anticocasalericevimenti.it,http://65.108.42.45:11900,http://65.108.42.45:80,http://localhost:80,http://127.0.0.1:80",
+        // Per-tenant QZ signing material (certs/tenants/<slug>/). The bridge
+        // resolves the tenant from the caller's Origin first, so a shared
+        // bridge like this one must NOT set PRINT_BRIDGE_TENANT (it would
+        // answer every caller with the same material). Set it only on a bridge
+        // dedicated to a single tenant whose callers arrive from 127.0.0.1;
+        // PRINT_BRIDGE_ORIGIN is the origin the installer links redirect to
+        // when no tenant can be resolved from the request.
+        // PRINT_BRIDGE_TENANT: "casale",
+        // PRINT_BRIDGE_ORIGIN: "https://test.anticocasalericevimenti.it",
       },
       max_memory_restart: "256M",
       autorestart: true,
