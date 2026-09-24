@@ -58,6 +58,8 @@ export const modifierOptionInputSchema = z.object({
   quantity: z.number().positive().default(1),
   unit: canonicalUnitSchema.default("pz"),
   priceDelta: z.number().default(0),
+  // Multiplicative pricing on the ITEM base price (see category pool options).
+  priceMultiplier: z.number().positive().nullable().optional(),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
@@ -71,6 +73,7 @@ export const modifierGroupInputSchema = z.object({
   required: z.boolean().default(false),
   minSelections: z.number().int().min(0).default(0),
   maxSelections: z.number().int().min(1).default(1),
+  multiSelectPriceMode: z.enum(["max", "sum", "none"]).default("max"),
   sortOrder: z.number().int().default(0),
   options: z.array(modifierOptionInputSchema).default([]),
 });

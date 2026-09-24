@@ -66,6 +66,10 @@ export const closeTableRequestSchema = z.object({
   // configured for the tenant), the API enqueues a fiscal job for the Go
   // agent. Default OFF — fiscal is never mandatory.
   fiscalEmit: z.boolean().optional(),
+  // Per-transaction override for the cashier close receipt. When false the
+  // receipt is NOT printed for this close (the global autoPrintOnClose setting
+  // still applies when absent/true).
+  printReceipt: z.boolean().optional(),
 });
 
 export const closeTableResponseSchema = z.object({

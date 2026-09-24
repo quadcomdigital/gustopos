@@ -26,6 +26,7 @@ import {
   closeTableRequestSchema,
   createOrderRequestSchema,
   courseRoundsConfigSchema,
+  publicMenuTenantEditableSchema,
   ingredientCreateRequestSchema,
   ingredientUpdateRequestSchema,
   ingredientAdjustRequestSchema,
@@ -60,6 +61,8 @@ import {
   printBridgeDiscoveredPrintersRequestSchema,
   printBridgeCommandAckRequestSchema,
   printBridgeTestPrinterRequestSchema,
+  clientDiagnosticsSchema,
+  type ClientDiagnosticsRecord,
   type PrintBridgeOnboardingSecret,
   type PrintBridgeOnboardingSecretCreateRequest,
   type PrintBridgeOnboardingSecretCreateCode6DigitResponse,
@@ -139,6 +142,7 @@ import {
   markShareAsPaidRequestSchema,
   transferTableRequestSchema,
   mergeTableRequestSchema,
+  suspendTableRequestSchema,
   loyaltyRedeemRequestSchema,
   loyaltyEarnRequestSchema,
   couponCreateRequestSchema,
@@ -152,6 +156,7 @@ import {
   type CloseTableRequest,
   type CreateOrderRequest,
   type CourseRoundsConfig,
+  type PublicMenuModuleConfig,
   type IngredientCreateRequest,
   type IngredientUpdateRequest,
   type IngredientAdjustRequest,
@@ -173,6 +178,7 @@ import {
   type DeliverySummary,
   type RefundPaymentRequest,
   type RefundPaymentResponse,
+  type SuspendTableRequest,
   type DispatchPrintJobRequest,
   type Reservation,
   type ReservationsQuery,
@@ -303,6 +309,10 @@ import type { ModuleKey } from "@gustopos/shared";
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, FeatureFlagGuard)
 export class AppController {
   private readonly jwtSecret = getJwtSecret();
+
+  // In-memory, never persisted: latest terminal diagnostics per (tenant, device).
+  // Bounded so a noisy/malicious client cannot grow it unbounded.
+  private readonly clientDiagnostics = new Map<string, ClientDiagnosticsRecord>();
 
   constructor(
     @Inject(RealtimeGateway) private readonly realtimeGateway: RealtimeGateway,
@@ -490,6 +500,35 @@ export class AppController {
     const parsed = courseRoundsConfigSchema.parse(payload);
     await this.tenantService.upsertTenantModuleConfig(tenantId, { moduleKey: "course_rounds", config: parsed });
     return { config: parsed };
+  }
+
+  @Get("public-menu/config")
+  @Roles("admin", "waiter")
+  @RequiresModule("public_menu")
+  async getPublicMenuConfig(@Req() request: AuthenticatedRequest): Promise<{ config: PublicMenuModuleConfig; moduleEnabled: boolean }> {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+    const config = await this.tenantService.getPublicMenuConfig(tenantId);
+    const enabledModules = await this.tenantService.getEnabledModulesForTenant(tenantId);
+    return { config, moduleEnabled: enabledModules.includes("public_menu") };
+  }
+
+  @Put("public-menu/config")
+  @Roles("admin")
+  @RequiresModule("public_menu")
+  async updatePublicMenuConfig(
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: unknown,
+  ): Promise<{ config: PublicMenuModuleConfig }> {
+    const tenantId = request.user?.tenantId;
+    if (!tenantId) {
+      throw new UnauthorizedException("Missing tenant context");
+    }
+    const patch = publicMenuTenantEditableSchema.partial().parse(payload ?? {});
+    const config = await this.tenantService.upsertTenantPublicMenuConfig(tenantId, patch);
+    return { config };
   }
 
   @Get("orders/history")
@@ -1225,6 +1264,45 @@ export class AppController {
       throw new NotFoundException("Fiscal job not found");
     }
     return { job };
+  }
+
+  // ─── Client terminal diagnostics (public, observational, in-memory) ────
+  // The installed PWA reports the viewport/screen/input it detects so an
+  // operator can verify a terminal remotely. No persistence, bounded store.
+
+  @Post("client-diagnostics")
+  @Public()
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  async reportClientDiagnostics(@Body() raw: unknown, @Req() req: any): Promise<{ ok: true }> {
+    const parsed = clientDiagnosticsSchema.parse(raw);
+    const forwarded = req.headers["x-forwarded-for"];
+    const ip =
+      (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : undefined) ||
+      req.ip ||
+      null;
+    const record: ClientDiagnosticsRecord = {
+      ...parsed,
+      ip,
+      receivedAt: new Date().toISOString(),
+    };
+    // Re-insert to keep the most recent terminals at the end, then trim.
+    this.clientDiagnostics.delete(parsed.terminalId);
+    this.clientDiagnostics.set(parsed.terminalId, record);
+    while (this.clientDiagnostics.size > 200) {
+      const oldest = this.clientDiagnostics.keys().next().value;
+      if (oldest === undefined) break;
+      this.clientDiagnostics.delete(oldest);
+    }
+    return { ok: true };
+  }
+
+  @Get("client-diagnostics")
+  @Public()
+  async listClientDiagnostics(): Promise<{ terminals: ClientDiagnosticsRecord[] }> {
+    const terminals = Array.from(this.clientDiagnostics.values()).sort((a, b) =>
+      a.receivedAt < b.receivedAt ? 1 : -1,
+    );
+    return { terminals };
   }
 
   // Agent-facing endpoints (mirror print-bridge: bridge/onboarding auth).
@@ -2116,6 +2194,11 @@ export class AppController {
     }
     if (!updated) throw new NotFoundException("Order not found");
     await this.realtimeGateway.emit(socketEvents.orderUpdate, updated);
+    // Azzerare tutte le righe annulla l'ordine e può liberare il tavolo:
+    // notifica anche tables:update per aggiornare la mappa in tempo reale.
+    if (updated.status === "cancelled") {
+      await this.emitTablesUpdateSafely();
+    }
     return updated;
   }
 
@@ -2196,6 +2279,8 @@ export class AppController {
     }
 
     await this.realtimeGateway.emit(socketEvents.orderUpdate, result.order);
+    // Voiding the last open order releases the table/conto; refresh tables too.
+    await this.emitTablesUpdateSafely();
     const inventory = await this.inventoryRepo.listInventoryItems();
     await this.realtimeGateway.emit(socketEvents.inventoryUpdate, inventory);
     this.auditLogService.log("order.void", {
@@ -2229,6 +2314,7 @@ export class AppController {
       gatewayReference: payload?.gatewayReference,
       paymentStatus: payload?.paymentStatus,
       notes: payload?.notes,
+      printReceipt: payload?.printReceipt,
     });
 
     let result;
@@ -2253,6 +2339,51 @@ export class AppController {
         total: result.payment.total,
         method: result.payment.method,
       },
+    });
+    return result;
+  }
+
+  @Post("tables/:id/suspend")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async suspendTable(
+    @Param("id") id: string,
+    @Body() payload: SuspendTableRequest,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+    const parsed = suspendTableRequestSchema.parse(payload ?? {});
+    const result = await this.tablesRepo.suspendTable(id, parsed);
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+    await this.emitTablesUpdateSafely();
+    this.auditLogService.log("table.suspend", {
+      actorStaffId,
+      targetId: id,
+      details: { printed: result.printed },
+    });
+    return result;
+  }
+
+  @Post("tables/:id/resume")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async resumeTable(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    const actorStaffId = request.user?.sub;
+    const result = await this.tablesRepo.resumeTable(id);
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+    await this.emitTablesUpdateSafely();
+    this.auditLogService.log("table.resume", {
+      actorStaffId,
+      targetId: id,
     });
     return result;
   }
@@ -3409,7 +3540,34 @@ export class AppController {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
     return this.withBridgeTenantContext(auth.tenantId, async () => {
       const payload = printBridgeCommandAckRequestSchema.parse(raw);
+      // Read the command BEFORE clearing it so the log entry can name what
+      // was executed (e.g. "test-print 192.168.0.103:9100").
+      let label = payload.commandId;
+      try {
+        const command = await this.printBridgeRepo.getBridgeCommand(payload.bridgeId, auth.tenantId);
+        if (command) {
+          label = command.ip ? `${command.type} ${command.ip}:${command.port ?? 9100}` : command.type;
+        }
+      } catch {
+        // Label is cosmetic; clearing must not depend on it.
+      }
       const cleared = await this.printBridgeRepo.clearBridgeCommand(payload.bridgeId, payload.commandId, auth.tenantId);
+      // Agents >= 0.14.0 report the execution result. Surface failures in the
+      // diagnostics log so a failed test print is visible to the admin.
+      if (payload.ok !== undefined) {
+        try {
+          await this.printBridgeRepo.appendBridgeCommandLog({
+            tenantId: auth.tenantId,
+            bridgeId: payload.bridgeId,
+            level: payload.ok ? "info" : "error",
+            message: payload.ok
+              ? `command ${label}: eseguito con successo`
+              : `command ${label} fallito: ${payload.error ?? "errore sconosciuto"}`,
+          });
+        } catch {
+          // Diagnostics are best-effort: never fail the ack itself.
+        }
+      }
       return { cleared };
     });
   }

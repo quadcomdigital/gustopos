@@ -56,6 +56,12 @@ export const categoryModifierPoolOptionSchema = z.object({
   quantity: z.number().default(1),
   unit: z.string().default("pz"),
   priceDelta: z.number().default(0),
+  // Multiplicative pricing on the ITEM base price (e.g. 2 = double the pizza).
+  // Applied before the additive deltas: base × multiplier + priceDelta.
+  // Absent/null = legacy additive-only behaviour.
+  priceMultiplier: z.number().positive().nullable().optional(),
+  // Operators can disable an option from Settings without deleting it.
+  isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
 });
 
@@ -97,6 +103,8 @@ export const modifierOptionSchema = z.object({
   quantity: z.number().default(1),
   unit: canonicalUnitSchema.default("pz"),
   priceDelta: z.number().default(0),
+  // Multiplicative pricing on the ITEM base price (see category pool options).
+  priceMultiplier: z.number().positive().nullable().optional(),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
@@ -105,12 +113,23 @@ export const modifierOptionSchema = z.object({
 
 // ─── Modifier Groups ────────────────────────────────────────────────────────
 
+/**
+ * Pricing rule for a multi-select group (maxSelections > 1):
+ *  - "max": charge only the highest selected price delta (legacy default)
+ *  - "sum": add up every selected price delta
+ *  - "none": multi-selection never changes the price
+ * Single-select groups always charge the selected option's delta.
+ */
+export const modifierPriceModeSchema = z.enum(["max", "sum", "none"]);
+export type ModifierPriceMode = z.infer<typeof modifierPriceModeSchema>;
+
 export const modifierGroupSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   required: z.boolean().default(false),
   minSelections: z.number().int().min(0).default(0),
   maxSelections: z.number().int().min(1).default(1),
+  multiSelectPriceMode: modifierPriceModeSchema.default("max"),
   sortOrder: z.number().int().default(0),
   options: z.array(modifierOptionSchema).default([]),
 });

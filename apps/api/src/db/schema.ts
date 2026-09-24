@@ -32,6 +32,13 @@ export const tables = pgTable(
     number: text("number").notNull(),
     status: text("status").notNull(),
     currentOrderId: text("current_order_id"),
+    // Optional physical zone/area label (e.g. "GAZEBO", "SALA OROLOGIO").
+    // Drives the zone filter on the table map; NULL = unzoned tenant.
+    zone: text("zone"),
+    // Virtual "conti" for takeaway/delivery orders. They reuse the table
+    // payment/checkout stack but must never appear in the physical table map,
+    // table management, self-order QR pickers, etc.
+    isVirtual: integer("is_virtual").notNull().default(0),
   },
   (table) => ({
     numberIdx: uniqueIndex("tables_tenant_number_idx").on(table.tenantId, table.number),
@@ -122,6 +129,11 @@ export const menuModifierGroups = pgTable("menu_item_modifier_groups", {
   required: integer("required").notNull().default(0),
   minSelections: integer("min_selections").notNull().default(0),
   maxSelections: integer("max_selections").notNull().default(1),
+  // Pricing rule for multi-select groups (maxSelections > 1):
+  //   "max"  → charge the highest selected price delta (legacy default)
+  //   "sum"  → sum all selected price deltas
+  //   "none" → never add cost, regardless of option deltas
+  multiSelectPriceMode: text("multi_select_price_mode").notNull().default("max"),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -140,6 +152,10 @@ export const menuModifierOptions = pgTable("menu_item_modifier_options", {
   componentType: text("component_type").notNull().default("ingredient"),
   componentId: text("component_id"),
   priceDelta: numeric("price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
+  // Multiplicative pricing on the ITEM base price: the option contributes
+  // `basePrice * (priceMultiplier - 1)`. NULL = legacy additive-only pricing.
+  // Applied BEFORE the additive deltas (base × m + toppings).
+  priceMultiplier: numeric("price_multiplier", { precision: 6, scale: 3 }),
   isDefault: integer("is_default").notNull().default(0),
   isActive: integer("is_active").notNull().default(1),
   sortOrder: integer("sort_order").notNull().default(0),
@@ -183,6 +199,11 @@ export const categoryModifierPoolOptions = pgTable("category_modifier_pool_optio
   quantity: numeric("quantity", { precision: 14, scale: 6 }).notNull().default("1"),
   unit: text("unit").notNull().default("pz"),
   priceDelta: numeric("price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
+  // Multiplicative pricing on the ITEM base price (see menuModifierOptions).
+  // NULL = legacy additive-only pricing.
+  priceMultiplier: numeric("price_multiplier", { precision: 6, scale: 3 }),
+  // Lets an operator disable a pool option from Settings without deleting it.
+  isActive: integer("is_active").notNull().default(1),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -454,6 +475,10 @@ export const printStations = pgTable("print_stations", {
   isDefault: integer("is_default").notNull().default(0),
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: integer("is_active").notNull().default(1),
+  // When 1, the station ticket prints ONLY this station's own items (items with
+  // no station assignment still print everywhere). Used to keep e.g. beverages
+  // off the kitchen comanda and kitchen items off the bar comanda.
+  ownItemsOnly: integer("own_items_only").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

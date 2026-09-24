@@ -73,6 +73,9 @@ export * from "./contracts/bom.schema";
 export * from "./contracts/print.schema";
 export * from "./contracts/fiscal.schema";
 
+// ─── Re-export diagnostics (client terminal reporting) ────────────────────
+export * from "./contracts/diagnostics.schema";
+
 // ─── Re-export misc domains ───────────────────────────────────────────────
 export * from "./contracts/prep.schema";
 export * from "./contracts/inventory-workflow.schema";

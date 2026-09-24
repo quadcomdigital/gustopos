@@ -4,10 +4,11 @@ import {  tables, orders, orderItems, payments, paymentItems,
   reservations, deliveryOrders, printJobs, fiscalJobs, appSettings, menuItems,
   menuModifierGroups, menuModifierOptions, menuModifierOptionOverrides,
   categories, categoryModifierPools, categoryModifierPoolOptions, inventory,
+  printStations,
 } from "../db/schema";
 import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull, type SQL } from "drizzle-orm";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
-import { EscPosBuilder, RECEIPT_WIDTH, padRight, buildCashierReceiptPayload } from "./utils/escpos-builder";
+import { EscPosBuilder, RECEIPT_WIDTH, padRight, buildCashierReceiptPayload, buildPreBillPayload, formatRomeDate } from "./utils/escpos-builder";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { deliveryTransitions } from "./utils/state-machines";
 import { collectCurrentSessionPaymentIds } from "./utils/merge-payments";
@@ -15,6 +16,7 @@ import crypto from "node:crypto";
 import {
   closeTableRequestSchema, closeTableResponseSchema,
   tableCreateRequestSchema, tableUpdateRequestSchema, tableBulkCreateRequestSchema,
+  suspendTableRequestSchema, suspendTableResponseSchema,
   splitBillRequestSchema, splitBillResponseSchema,
   paySelectedItemsRequestSchema, paySelectedItemsResponseSchema,
   markShareAsPaidRequestSchema, markShareAsPaidResponseSchema,
@@ -31,6 +33,7 @@ import {
   type PrintArea, type UiSettings, type ReservationStatus, type DeliveryStatus,
   type PaymentStatus, type Order, defaultUiSettings,
   type Table, type TableCreateRequest, type TableUpdateRequest, type TableBulkCreateRequest,
+  type SuspendTableRequest, type SuspendTableResponse,
   type CloseTableRequest, type CloseTableResponse,
   type SplitBillRequest, type SplitBillResponse,
   type PaySelectedItemsRequest, type PaySelectedItemsResponse,
@@ -230,6 +233,8 @@ export class TablesRepository {
       number: row.number,
       status: row.status as Table["status"],
       currentOrderId: row.currentOrderId ?? undefined,
+      zone: row.zone ?? undefined,
+      isVirtual: row.isVirtual === 1,
     }));
   }
 
@@ -257,6 +262,7 @@ export class TablesRepository {
         number: parsed.number,
         status: "free",
         currentOrderId: null,
+        zone: parsed.zone ?? null,
       })
       .returning();
 
@@ -265,6 +271,7 @@ export class TablesRepository {
       number: created.number,
       status: created.status as Table["status"],
       currentOrderId: created.currentOrderId ?? undefined,
+      zone: created.zone ?? undefined,
     };
   }
 
@@ -308,6 +315,7 @@ export class TablesRepository {
           number: numStr,
           status: "free",
           currentOrderId: null,
+          zone: parsed.zone ?? null,
         })
         .returning();
 
@@ -316,6 +324,7 @@ export class TablesRepository {
         number: row.number,
         status: row.status as Table["status"],
         currentOrderId: row.currentOrderId ?? undefined,
+        zone: row.zone ?? undefined,
       });
     }
 
@@ -353,6 +362,8 @@ export class TablesRepository {
       .update(tables)
       .set({
         ...(parsed.number !== undefined ? { number: parsed.number } : {}),
+        // "" clears the zone, any non-empty string sets it, undefined = unchanged.
+        ...(parsed.zone !== undefined ? { zone: parsed.zone || null } : {}),
       })
       .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id)))
       .returning();
@@ -362,6 +373,8 @@ export class TablesRepository {
       number: updated.number,
       status: updated.status as Table["status"],
       currentOrderId: updated.currentOrderId ?? undefined,
+      zone: updated.zone ?? undefined,
+      isVirtual: updated.isVirtual === 1,
     };
   }
 
@@ -637,28 +650,209 @@ export class TablesRepository {
         });
       }
 
-      // Print failure must never make a committed close look failed.
-      void this
-        .createCashierCloseReceiptJob(
-          receiptItems,
-          {
-            tableNumber: result.payment.tableNumber,
-            subtotal: result.payment.subtotal,
-            discountAmount: result.payment.discountAmount,
-            surchargeAmount: result.payment.surchargeAmount,
-            total: result.payment.total,
-            method: result.payment.method,
-            paidAmount: result.payment.paidAmount,
-            changeAmount: result.payment.changeAmount,
-            notes: result.payment.notes ?? null,
-          },
-        )
-        .catch((err) => {
-          console.error("[print] cashier close receipt failed:", err instanceof Error ? err.message : String(err));
-        });
+      // Print failure must never make a committed close look failed. The
+      // operator can skip the cashier receipt for this transaction.
+      if (parsed.printReceipt !== false) {
+        void this
+          .createCashierCloseReceiptJob(
+            receiptItems,
+            {
+              tableNumber: result.payment.tableNumber,
+              subtotal: result.payment.subtotal,
+              discountAmount: result.payment.discountAmount,
+              surchargeAmount: result.payment.surchargeAmount,
+              total: result.payment.total,
+              method: result.payment.method,
+              paidAmount: result.payment.paidAmount,
+              changeAmount: result.payment.changeAmount,
+              notes: result.payment.notes ?? null,
+            },
+          )
+          .catch((err) => {
+            console.error("[print] cashier close receipt failed:", err instanceof Error ? err.message : String(err));
+          });
+      }
     }
 
     return result;
+  }
+
+  /**
+   * Suspend a table (pre-bill handed out, awaiting payment). This is a virtual
+   * signal state: payments/merge keep working, the map card just switches to
+   * "awaiting payment". Optionally prints the pre-bill on the cashier area.
+   */
+  async suspendTable(tableId: string, payload: SuspendTableRequest): Promise<SuspendTableResponse | null> {
+    const parsed = suspendTableRequestSchema.parse(payload ?? {});
+    const tenantId = getTenantIdOrDefault();
+
+    const tableRows = await db
+      .select()
+      .from(tables)
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)))
+      .limit(1);
+    const table = tableRows[0];
+    if (!table) {
+      return null;
+    }
+
+    const openOrders = await db
+      .select()
+      .from(orders)
+      .where(and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableNumber, table.number),
+        ne(orders.status, "paid"),
+        ne(orders.status, "cancelled"),
+      ));
+    if (openOrders.length === 0) {
+      throw new Error("No open order to suspend for this table");
+    }
+
+    await db
+      .update(tables)
+      .set({ status: "suspended" })
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
+
+    // Pre-bill printing is opt-out and must never make the suspend look failed.
+    let printed = false;
+    if (parsed.printPreBill !== false) {
+      printed = await this.createPreBillPrintJob(table.number);
+    }
+
+    return suspendTableResponseSchema.parse({
+      success: true,
+      tableId,
+      status: "suspended",
+      printed,
+    });
+  }
+
+  /**
+   * Clear the suspended (pre-bill) signal. Back to occupied when orders remain
+   * open, free otherwise.
+   */
+  async resumeTable(tableId: string): Promise<Table | null> {
+    const tenantId = getTenantIdOrDefault();
+
+    const tableRows = await db
+      .select()
+      .from(tables)
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)))
+      .limit(1);
+    const table = tableRows[0];
+    if (!table) {
+      return null;
+    }
+
+    const openOrders = await db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableNumber, table.number),
+        ne(orders.status, "paid"),
+        ne(orders.status, "cancelled"),
+      ))
+      .orderBy(asc(orders.timestamp))
+      .limit(1);
+
+    const nextStatus: Table["status"] = openOrders[0] ? "occupied" : "free";
+    await db
+      .update(tables)
+      .set({ status: nextStatus, currentOrderId: openOrders[0]?.id ?? null })
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
+
+    return {
+      id: table.id,
+      number: table.number,
+      status: nextStatus,
+      currentOrderId: openOrders[0]?.id ?? undefined,
+      zone: table.zone ?? undefined,
+      isVirtual: table.isVirtual === 1,
+    };
+  }
+
+  /**
+   * Print the table's open items as a "preconto" on the cashier area. Gated by
+   * the escpos protocol only (operator-triggered, independent of
+   * autoPrintOnClose). Never throws — returns whether a job was enqueued.
+   */
+  private async createPreBillPrintJob(tableNumber: string): Promise<boolean> {
+    try {
+      const settings = await this.getUiSettings();
+      if (settings.printing.protocol !== "escpos") return false;
+
+      const tenantId = this.currentTenantId();
+      const openOrders = await db
+        .select()
+        .from(orders)
+        .where(and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.tableNumber, tableNumber),
+          ne(orders.status, "paid"),
+          ne(orders.status, "cancelled"),
+        ));
+      if (openOrders.length === 0) return false;
+
+      const orderIds = openOrders.map((o) => o.id);
+      const itemRows = await db
+        .select()
+        .from(orderItems)
+        .where(and(eq(orderItems.tenantId, tenantId), inArray(orderItems.orderId, orderIds)));
+
+      const items = itemRows.map((item) => ({
+        name: item.name,
+        quantity: item.quantity,
+        price: Number(item.price),
+        notes: item.notes ?? null,
+      }));
+      const subtotal = items.reduce((sum, it) => sum + it.price * it.quantity, 0);
+
+      const cashierStationRows = await db
+        .select({ id: printStations.id })
+        .from(printStations)
+        .where(and(
+          eq(printStations.tenantId, tenantId),
+          eq(printStations.kind, "cashier"),
+          eq(printStations.isActive, 1),
+        ))
+        .limit(1);
+      const closeArea = cashierStationRows[0]?.id ?? "cashier";
+
+      const payload = buildPreBillPayload({
+        brandName: settings.brandName,
+        tableNumber,
+        items,
+        subtotal,
+        discountAmount: 0,
+        surchargeAmount: 0,
+        total: subtotal,
+        receiptFooter: settings.printing.receiptFooter,
+        logoMode: settings.printing.logoMode,
+        logoBitmap: settings.printing.logoBitmap,
+        logoWidth: settings.printing.logoWidth,
+        logoThreshold: settings.printing.logoThreshold,
+      });
+
+      await db.insert(printJobs).values({
+        id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        tenantId,
+        orderId: `suspended_${Date.now().toString(36)}`,
+        area: closeArea,
+        protocol: "escpos",
+        status: "pending",
+        payload,
+        error: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        dispatchedAt: null,
+      });
+      return true;
+    } catch (err) {
+      console.error("[print] pre-bill failed:", err instanceof Error ? err.message : String(err));
+      return false;
+    }
   }
 
   /**
@@ -697,7 +891,7 @@ export class TablesRepository {
       discountAmount: payment.discountAmount,
       total: payment.total,
       method: payment.method,
-      businessDate: new Date().toISOString().slice(0, 10),
+      businessDate: formatRomeDate(new Date()),
     });
 
     const now = new Date();
@@ -737,6 +931,21 @@ export class TablesRepository {
     if (!settings.printing.autoPrintOnClose) return;
 
     const tenantId = this.currentTenantId();
+    // Go bridges claim jobs by the tenant's dynamic station ids (the reserved
+    // cashier station), NOT the legacy "cashier" string. Resolve it so the job
+    // is actually routable; fall back to the legacy key only if no station
+    // exists (tenants created before the dynamic registry).
+    const cashierStationRows = await db
+      .select({ id: printStations.id })
+      .from(printStations)
+      .where(and(
+        eq(printStations.tenantId, tenantId),
+        eq(printStations.kind, "cashier"),
+        eq(printStations.isActive, 1),
+      ))
+      .limit(1);
+    const closeArea = cashierStationRows[0]?.id ?? "cashier";
+
     const payload = buildCashierReceiptPayload({
       brandName: settings.brandName,
       tableNumber: ctx.tableNumber,
@@ -760,7 +969,7 @@ export class TablesRepository {
       id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       tenantId,
       orderId: `close_${Date.now().toString(36)}`,
-      area: "cashier",
+      area: closeArea,
       protocol: "escpos",
       status: "pending",
       payload,
@@ -1287,6 +1496,14 @@ export class TablesRepository {
         ne(orders.status, "cancelled"),
       ));
 
+    // Preserve the target's suspended (pre-bill) signal across a merge/transfer.
+    const targetStatusRows = await tx
+      .select({ status: tables.status })
+      .from(tables)
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, targetTableId)))
+      .limit(1);
+    const targetTableStatus = targetStatusRows[0]?.status;
+
     if (openOrders.length === 0) {
       throw new Error("No open orders to relocate");
     }
@@ -1366,7 +1583,12 @@ export class TablesRepository {
 
     await tx
       .update(tables)
-      .set({ status: "occupied", currentOrderId: targetOpenOrder[0]?.id ?? null })
+      .set({
+        status: targetOpenOrder[0]
+          ? (targetTableStatus === "suspended" ? "suspended" : "occupied")
+          : "free",
+        currentOrderId: targetOpenOrder[0]?.id ?? null,
+      })
       .where(and(eq(tables.tenantId, tenantId), eq(tables.id, targetTableId)));
 
     return { movedOrders: openOrders.length, movedPayments };

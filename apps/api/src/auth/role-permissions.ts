@@ -21,6 +21,7 @@ export const permissionsByRole: Record<Role, string[]> = {
     "delivery:manage",
   ],
   waiter: [
+    "orders:update",
     "orders:void",
     "tables:pay",
     "customers:view",

@@ -481,29 +481,71 @@
     {
       "idx": 71,
       "version": "7",
-      "when": 1790553600000,
+      "when": 1790250000000,
       "tag": "0072_print_stations",
       "breakpoints": true
     },
     {
       "idx": 72,
       "version": "7",
-      "when": 1790640000000,
+      "when": 1790251800000,
       "tag": "0073_production_references",
       "breakpoints": true
     },
     {
       "idx": 73,
       "version": "7",
-      "when": 1790726400000,
+      "when": 1790253600000,
       "tag": "0074_fix_bridge_area_mapping",
       "breakpoints": true
     },
     {
       "idx": 74,
       "version": "7",
-      "when": 1790730000000,
+      "when": 1790255400000,
       "tag": "0075_print_bridge_commands",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1790257200000,
+      "tag": "0076_virtual_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1790259000000,
+      "tag": "0077_backfill_virtual_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1790260800000,
+      "tag": "0078_print_station_own_items_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1790262600000,
+      "tag": "0079_modifier_multi_price_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1790268035000,
+      "tag": "0079_late_thunderbolts",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1790268868499,
+      "tag": "0080_little_supreme_intelligence",
       "breakpoints": true
     }
   ]

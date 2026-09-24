@@ -1,10 +1,27 @@
 import type { Category, Ingredient, CategoryModifierPool, BomItem, PrepItem } from '@gustopos/shared';
-import { Trash2, Save, X, Boxes } from 'lucide-react';
+import { Trash2, Save, X, Boxes, Eye, EyeOff } from 'lucide-react';
 import { useState } from 'react';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 import EmptyState from '../../shared/ui/atoms/EmptyState';
 
 const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
+
+/** A pool option as edited in this form. `priceMultiplier` scales the ITEM
+ *  price (2 = double it); `isActive` lets an operator hide it from Settings
+ *  without deleting it. */
+type PoolOptionDraft = {
+  inventoryItemId?: string;
+  componentType: 'ingredient' | 'prep' | 'bom';
+  componentId?: string;
+  name?: string;
+  quantity: number;
+  unit: string;
+  priceDelta: number;
+  priceMultiplier?: number | null;
+  /** Required (Zod `.default(true)`): always set by `addPoolOption`/`startEditing`. */
+  isActive: boolean;
+  sortOrder: number;
+};
 
 interface CategoryPoolEditorProps {
   pools: CategoryModifierPool[];
@@ -12,11 +29,83 @@ interface CategoryPoolEditorProps {
   inventory: Ingredient[];
   prepItems?: PrepItem[];
   bomItems?: BomItem[];
-  onCreatePool: (payload: { categoryIds: string[]; name: string; options: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
-  onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
+  onCreatePool: (payload: { categoryIds: string[]; name: string; options: PoolOptionDraft[] }) => Promise<void>;
+  onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: PoolOptionDraft[] }) => Promise<void>;
   onDeletePool: (id: string) => Promise<void>;
   /** simple_catalog: options are free-text names + price only (no inventory/prep/BoM linking). */
   simpleCatalogMode?: boolean;
+}
+
+const OPTION_FIELDS = [
+  'inventoryItemId',
+  'componentType',
+  'componentId',
+  'priceDelta',
+  'priceMultiplier',
+  'isActive',
+  'name',
+  'quantity',
+  'unit',
+  'sortOrder',
+] as const;
+type OptionField = (typeof OPTION_FIELDS)[number];
+
+/**
+ * Multiplier input + enable/disable switch for one pool option.
+ * `priceMultiplier` scales the ITEM base price (2 = double the pizza); leave
+ * empty for a plain flat-price option. The switch toggles `isActive`, which
+ * removes the option from the POS and the public menu without deleting it.
+ */
+function OptionPricingControls({
+  option,
+  onMultiplierChange,
+  onToggleActive,
+}: {
+  option: PoolOptionDraft;
+  onMultiplierChange: (value: number | null) => void;
+  onToggleActive: () => void;
+}) {
+  const isMultiplier = option.priceMultiplier != null && option.priceMultiplier !== 1;
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-1">
+      <label className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+        Moltiplica prezzo
+        <input
+          type="number"
+          value={option.priceMultiplier ?? ''}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === '') onMultiplierChange(null);
+            else {
+              const parsed = Number(raw);
+              onMultiplierChange(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
+            }
+          }}
+          step="0.5"
+          min="0"
+          placeholder="es. 2"
+          aria-label="Moltiplicatore di prezzo"
+          className={`px-2 py-1.5 rounded border text-xs w-20 tabular-nums ${isMultiplier ? 'border-accent text-accent font-bold' : 'border-border'}`}
+        />
+        {isMultiplier && (
+          <span className="text-[9px] font-bold uppercase tracking-wider text-accent">× raddoppia il prezzo base</span>
+        )}
+      </label>
+      <button
+        type="button"
+        onClick={onToggleActive}
+        aria-pressed={option.isActive !== false}
+        className={`ml-auto inline-flex items-center gap-1 px-3 py-1.5 min-h-[36px] rounded border text-[9px] font-bold uppercase tracking-wider ${
+          option.isActive !== false
+            ? 'border-border text-text-muted bg-bg'
+            : 'border-accent text-accent bg-accent/5'
+        }`}
+      >
+        {option.isActive !== false ? <Eye size={12} /> : <EyeOff size={12} />}
+        {option.isActive !== false ? 'Attiva' : 'Disattiva'}
+      </button>
+    </div>
+  );
 }
 
 export default function CategoryPoolEditor({
@@ -33,13 +122,13 @@ export default function CategoryPoolEditor({
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [newPoolName, setNewPoolName] = useState('');
-  const [newPoolOptions, setNewPoolOptions] = useState<Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }>>([]);
+  const [newPoolOptions, setNewPoolOptions] = useState<PoolOptionDraft[]>([]);
   const [saving, setSaving] = useState(false);
 
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editCategoryIds, setEditCategoryIds] = useState<string[]>([]);
-  const [editOptions, setEditOptions] = useState<Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }>>([]);
+  const [editOptions, setEditOptions] = useState<PoolOptionDraft[]>([]);
   const [editSaving, setEditSaving] = useState(false);
 
   const filteredPools = filterCategoryId
@@ -70,17 +159,31 @@ export default function CategoryPoolEditor({
     );
   };
 
-  const addOptionToNewPool = () => {
-    setNewPoolOptions([...newPoolOptions, { inventoryItemId: undefined, componentType: 'ingredient', componentId: undefined, name: '', quantity: 1, unit: 'pz', priceDelta: 0, sortOrder: newPoolOptions.length }]);
-  };
+  const addOptionToNewPool = () => setNewPoolOptions((prev) => addPoolOption(prev));
 
-  const updateNewPoolOption = (idx: number, field: 'inventoryItemId' | 'componentType' | 'componentId' | 'priceDelta' | 'name' | 'quantity' | 'unit', value: string | number | undefined) => {
+  const updateNewPoolOption = (idx: number, field: OptionField, value: string | number | boolean | undefined | null) => {
     setNewPoolOptions((prev) => prev.map((opt, i) => (i === idx ? { ...opt, [field]: value } : opt)));
   };
 
   const removeNewPoolOption = (idx: number) => {
     setNewPoolOptions((prev) => prev.filter((_, i) => i !== idx));
   };
+
+  const addPoolOption = (list: PoolOptionDraft[]): PoolOptionDraft[] => [
+    ...list,
+    {
+      inventoryItemId: undefined,
+      componentType: 'ingredient',
+      componentId: undefined,
+      name: '',
+      quantity: 1,
+      unit: 'pz',
+      priceDelta: 0,
+      priceMultiplier: null,
+      isActive: true,
+      sortOrder: list.length,
+    },
+  ];
 
   const getCategoryNames = (pool: CategoryModifierPool): string => {
     const catIds = pool.categoryIds?.length ? pool.categoryIds : (pool.categoryId ? [pool.categoryId] : []);
@@ -93,7 +196,18 @@ export default function CategoryPoolEditor({
     setEditingPoolId(pool.id);
     setEditName(pool.name);
     setEditCategoryIds(pool.categoryIds?.length ? pool.categoryIds : (pool.categoryId ? [pool.categoryId] : []));
-    setEditOptions(pool.options.map((o) => ({ inventoryItemId: o.inventoryItemId, componentType: o.componentType ?? 'ingredient', componentId: o.componentId ?? o.inventoryItemId, name: o.name, quantity: 1, unit: 'pz', priceDelta: o.priceDelta, sortOrder: o.sortOrder })));
+    setEditOptions(pool.options.map((o) => ({
+      inventoryItemId: o.inventoryItemId,
+      componentType: o.componentType ?? 'ingredient',
+      componentId: o.componentId ?? o.inventoryItemId,
+      name: o.name,
+      quantity: 1,
+      unit: 'pz',
+      priceDelta: o.priceDelta,
+      priceMultiplier: o.priceMultiplier ?? null,
+      isActive: o.isActive !== false,
+      sortOrder: o.sortOrder,
+    })));
   };
 
   const cancelEditing = () => {
@@ -125,10 +239,10 @@ export default function CategoryPoolEditor({
   };
 
   const addOptionToEditPool = () => {
-    setEditOptions([...editOptions, { inventoryItemId: undefined, componentType: 'ingredient', componentId: undefined, name: '', quantity: 1, unit: 'pz', priceDelta: 0, sortOrder: editOptions.length }]);
+    setEditOptions(addPoolOption(editOptions));
   };
 
-  const updateEditPoolOption = (idx: number, field: 'inventoryItemId' | 'componentType' | 'componentId' | 'priceDelta' | 'name' | 'quantity' | 'unit', value: string | number | undefined) => {
+  const updateEditPoolOption = (idx: number, field: OptionField, value: string | number | boolean | undefined | null) => {
     setEditOptions((prev) => prev.map((opt, i) => (i === idx ? { ...opt, [field]: value } : opt)));
   };
 
@@ -219,6 +333,11 @@ export default function CategoryPoolEditor({
                       <Trash2 size={14} />
                     </button>
                   </div>
+                  <OptionPricingControls
+                    option={opt}
+                    onMultiplierChange={(v) => updateNewPoolOption(idx, 'priceMultiplier', v)}
+                    onToggleActive={() => updateNewPoolOption(idx, 'isActive', !(opt.isActive !== false))}
+                  />
                 </div>
               );
             }
@@ -290,6 +409,11 @@ export default function CategoryPoolEditor({
                       <Trash2 size={14} />
                     </button>
                   </div>
+                  <OptionPricingControls
+                    option={opt}
+                    onMultiplierChange={(v) => updateNewPoolOption(idx, 'priceMultiplier', v)}
+                    onToggleActive={() => updateNewPoolOption(idx, 'isActive', !(opt.isActive !== false))}
+                  />
                 </div>
               </div>
             );
@@ -377,6 +501,11 @@ export default function CategoryPoolEditor({
                                   <Trash2 size={14} />
                                 </button>
                               </div>
+                              <OptionPricingControls
+                                option={opt}
+                                onMultiplierChange={(v) => updateEditPoolOption(idx, 'priceMultiplier', v)}
+                                onToggleActive={() => updateEditPoolOption(idx, 'isActive', !(opt.isActive !== false))}
+                              />
                             </div>
                           );
                         }
@@ -448,6 +577,11 @@ export default function CategoryPoolEditor({
                                   <Trash2 size={14} />
                                 </button>
                               </div>
+                              <OptionPricingControls
+                                option={opt}
+                                onMultiplierChange={(v) => updateEditPoolOption(idx, 'priceMultiplier', v)}
+                                onToggleActive={() => updateEditPoolOption(idx, 'isActive', !(opt.isActive !== false))}
+                              />
                             </div>
                           </div>
                         );
@@ -512,14 +646,25 @@ export default function CategoryPoolEditor({
                   <div className="flex flex-wrap gap-1">
                     {pool.options.map((opt) => {
                       const invItem = inventory.find((i) => i.id === opt.inventoryItemId);
+                      const isMultiplier = opt.priceMultiplier != null && opt.priceMultiplier !== 1;
+                      const disabled = opt.isActive === false;
                       return (
-                        <span key={opt.id} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-bg border border-border">
+                        <span
+                          key={opt.id}
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold bg-bg border ${
+                            disabled ? 'border-border text-text-muted line-through opacity-60' : 'border-border'
+                          }`}
+                        >
                           {opt.name ?? invItem?.name ?? opt.inventoryItemId}
-                          {opt.priceDelta !== 0 && (
+                          {isMultiplier && (
+                            <span className="text-accent"> ×{Number(opt.priceMultiplier!.toFixed(3))}</span>
+                          )}
+                          {!isMultiplier && opt.priceDelta !== 0 && (
                             <span className={opt.priceDelta > 0 ? 'text-success-600' : 'text-danger-600'}>
                               {' '}{opt.priceDelta > 0 ? '+' : ''}€{opt.priceDelta.toFixed(2)}
                             </span>
                           )}
+                          {disabled && <span className="text-text-muted"> · off</span>}
                         </span>
                       );
                     })}

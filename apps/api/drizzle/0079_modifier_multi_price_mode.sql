@@ -1,0 +1,11 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- 0079: Configurable multi-select pricing for modifier groups
+--
+-- Multi-select groups (max_selections > 1) previously always charged the
+-- highest selected price delta. Venues need to choose per group:
+--   "max"  → highest selected delta (legacy default)
+--   "sum"  → sum every selected delta
+--   "none" → selection never changes the price (e.g. a sampler tray)
+-- Single-select groups are unaffected.
+-- ═══════════════════════════════════════════════════════════════════
+ALTER TABLE "menu_item_modifier_groups" ADD COLUMN "multi_select_price_mode" text NOT NULL DEFAULT 'max';

@@ -30,6 +30,7 @@ export class PrintStationsRepository {
       kind: row.kind === "cashier" ? "cashier" : "production",
       isDefault: row.isDefault === 1,
       isActive: row.isActive === 1,
+      ownItemsOnly: row.ownItemsOnly === 1,
       sortOrder: row.sortOrder,
       createdAt: row.createdAt?.toISOString?.() ?? undefined,
       updatedAt: row.updatedAt?.toISOString?.() ?? undefined,
@@ -118,6 +119,7 @@ export class PrintStationsRepository {
         isDefault: makeDefault ? 1 : 0,
         sortOrder,
         isActive: parsed.isActive === false ? 0 : 1,
+        ownItemsOnly: parsed.ownItemsOnly === true ? 1 : 0,
       });
     });
 
@@ -147,6 +149,7 @@ export class PrintStationsRepository {
           ...(parsed.kind !== undefined ? { kind: parsed.kind } : {}),
           ...(parsed.isDefault !== undefined ? { isDefault: parsed.isDefault ? 1 : 0 } : {}),
           ...(parsed.isActive !== undefined ? { isActive: parsed.isActive ? 1 : 0 } : {}),
+          ...(parsed.ownItemsOnly !== undefined ? { ownItemsOnly: parsed.ownItemsOnly ? 1 : 0 } : {}),
           ...(parsed.sortOrder !== undefined ? { sortOrder: parsed.sortOrder } : {}),
           updatedAt: new Date(),
         })

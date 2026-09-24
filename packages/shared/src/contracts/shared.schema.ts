@@ -25,6 +25,10 @@ export const printStationSchema = z.object({
   kind: printStationKindSchema.default("production"),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
+  // When true the station ticket prints only this station's own items (items
+  // without a station assignment still print everywhere). Keeps e.g. beverages
+  // off the kitchen comanda.
+  ownItemsOnly: z.boolean().default(false),
   sortOrder: z.number().int().default(0),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
@@ -37,6 +41,7 @@ export const printStationCreateRequestSchema = z.object({
   kind: printStationKindSchema.default("production"),
   isDefault: z.boolean().optional(),
   isActive: z.boolean().optional(),
+  ownItemsOnly: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -45,6 +50,7 @@ export const printStationUpdateRequestSchema = z.object({
   kind: printStationKindSchema.optional(),
   isDefault: z.boolean().optional(),
   isActive: z.boolean().optional(),
+  ownItemsOnly: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
 });
 

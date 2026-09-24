@@ -119,6 +119,13 @@ export class TenantContextMiddleware implements NestMiddleware {
 
     for (const strategy of configuredOrder) {
       if (strategy === "subdomain") {
+        // Full-host match first: tenants can share a leading label (e.g. both
+        // "test") while being distinguished by their full domain.
+        const byDomain = await this.tenantService.resolveTenantByDomain(host);
+        if (byDomain) {
+          return { tenantId: byDomain.id, tenantSlug: byDomain.slug, source: "subdomain" };
+        }
+
         const subdomainCandidate = host.includes(".") ? host.split(".")[0] : undefined;
         if (subdomainCandidate && subdomainCandidate !== "www" && subdomainCandidate !== "localhost") {
           const bySubdomain = await this.tenantService.resolveTenantBySubdomain(subdomainCandidate);

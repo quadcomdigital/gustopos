@@ -14,6 +14,8 @@ type AuditEvent =
   | "table.pay_items"
   | "table.transfer"
   | "table.merge"
+  | "table.suspend"
+  | "table.resume"
   | "table.updated"
   | "table.deleted"
   | "payment.refund"

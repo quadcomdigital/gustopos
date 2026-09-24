@@ -9,10 +9,13 @@ import type {
   TenantModuleToggleRequest,
   TenantUpdateRequest,
   CourseRoundsConfig,
+  PublicMenuModuleConfig,
 } from "@gustopos/shared";
 import {
   moduleKeySchema,
   courseRoundsConfigSchema,
+  normalizePublicMenuConfig,
+  mergeTenantPublicMenuConfig,
   tenantCreateRequestSchema,
   tenantModuleConfigUpsertRequestSchema,
   tenantModuleToggleRequestSchema,
@@ -251,7 +254,9 @@ export class TenantService {
     const parsed = tenantModuleConfigUpsertRequestSchema.parse(payload);
     const config = parsed.moduleKey === "course_rounds"
       ? courseRoundsConfigSchema.parse(parsed.config)
-      : parsed.config;
+      : parsed.moduleKey === "public_menu"
+        ? normalizePublicMenuConfig(parsed.config)
+        : parsed.config;
     const now = new Date();
 
     const existing = await db
@@ -297,7 +302,9 @@ export class TenantService {
       moduleKey: moduleKeySchema.parse(row.moduleKey),
       config: parsed.moduleKey === "course_rounds"
         ? courseRoundsConfigSchema.parse(JSON.parse(row.config))
-        : JSON.parse(row.config),
+        : parsed.moduleKey === "public_menu"
+          ? normalizePublicMenuConfig(JSON.parse(row.config))
+          : JSON.parse(row.config),
       updatedAt: row.updatedAt.toISOString(),
     };
   }
@@ -305,6 +312,22 @@ export class TenantService {
   async getCourseRoundsConfig(tenantId: string): Promise<CourseRoundsConfig> {
     const config = await this.getTenantModuleConfig(tenantId, "course_rounds");
     return courseRoundsConfigSchema.parse(config?.config ?? {});
+  }
+
+  /**
+   * Tenant-facing update: merges a whitelisted patch onto the stored config and
+   * preserves superadmin-only fields. Used by the backoffice menu editor.
+   */
+  async upsertTenantPublicMenuConfig(tenantId: string, patch: unknown): Promise<PublicMenuModuleConfig> {
+    const existing = await this.getTenantModuleConfig(tenantId, "public_menu");
+    const merged = mergeTenantPublicMenuConfig(existing?.config ?? {}, patch);
+    const saved = await this.upsertTenantModuleConfig(tenantId, { moduleKey: "public_menu", config: merged });
+    return normalizePublicMenuConfig(saved.config);
+  }
+
+  async getPublicMenuConfig(tenantId: string): Promise<PublicMenuModuleConfig> {
+    const config = await this.getTenantModuleConfig(tenantId, "public_menu");
+    return normalizePublicMenuConfig(config?.config ?? {});
   }
 
   async getTenantModuleConfig(tenantId: string, moduleKey: ModuleKey): Promise<TenantModuleConfig | null> {
@@ -325,7 +348,9 @@ export class TenantService {
       moduleKey: moduleKeySchema.parse(row.moduleKey),
       config: moduleKey === "course_rounds"
         ? courseRoundsConfigSchema.parse(JSON.parse(row.config))
-        : JSON.parse(row.config),
+        : moduleKey === "public_menu"
+          ? normalizePublicMenuConfig(JSON.parse(row.config))
+          : JSON.parse(row.config),
       updatedAt: row.updatedAt.toISOString(),
     };
   }
@@ -407,6 +432,25 @@ export class TenantService {
 
   async resolveTenantBySubdomain(subdomain: string): Promise<Tenant | null> {
     const rows = await db.select().from(tenants).where(eq(tenants.subdomain, subdomain)).limit(1);
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return this.mapTenant(rows[0]);
+  }
+
+  /**
+   * Resolve a tenant from the full request host (e.g. "test.acme.it").
+   * Checked before the first-label subdomain strategy so tenants that share a
+   * leading label (both "test") but differ by domain resolve correctly.
+   */
+  async resolveTenantByDomain(host: string): Promise<Tenant | null> {
+    const normalized = host.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    const rows = await db.select().from(tenants).where(eq(tenants.domain, normalized)).limit(1);
     if (rows.length === 0) {
       return null;
     }

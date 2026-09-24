@@ -308,6 +308,31 @@ export class PrintBridgeRepository {
     return true;
   }
 
+  /**
+   * Record the outcome of a one-shot command acked by the agent (Go agent
+   * >= 0.14.0 reports ok/error). The entry lands in the same diagnostics log
+   * admins read in Settings → Diagnostica, so a failed test print shows up
+   * server-side instead of only in the agent's local ring buffer.
+   */
+  async appendBridgeCommandLog(params: {
+    tenantId: string;
+    bridgeId: string;
+    level: "info" | "warn" | "error";
+    component?: string;
+    message: string;
+  }): Promise<void> {
+    await db.insert(printBridgeLogs).values({
+      id: `pbl_${crypto.randomUUID()}`,
+      tenantId: params.tenantId,
+      bridgeId: params.bridgeId,
+      instanceId: null,
+      level: params.level,
+      component: params.component ?? "command",
+      message: params.message.slice(0, 1000),
+      createdAt: new Date(),
+    });
+  }
+
   private parseCommand(raw: string | null): PrintBridgeCommand | null {
     if (!raw) return null;
     try {
@@ -526,7 +551,10 @@ export class PrintBridgeRepository {
         if (!conflict) break;
         if (attempts > 5) throw new Error("Failed to mint a unique 6-digit code after multiple attempts");
       }
-      const shortCodeExpiresAt = new Date(now.getTime() + 90_000);
+      // 5 minutes: long enough for an operator to walk to the remote PC and
+      // type the code without the auto-reissued wizard invalidating it mid
+      // entry (90s proved too tight in the field — codes silently expired).
+      const shortCodeExpiresAt = new Date(now.getTime() + 300_000);
 
       await db.insert(printBridgeOnboardingSecrets).values({
         id,
@@ -555,7 +583,7 @@ export class PrintBridgeRepository {
         secretId: id,
         code,
         qrPayload,
-        ttlSeconds: 90,
+        ttlSeconds: 300,
         expiresAt: shortCodeExpiresAt.toISOString(),
         suggestedBridgeId,
       };
@@ -659,7 +687,7 @@ export class PrintBridgeRepository {
       where: and(
         eq(printBridgeOnboardingSecrets.shortCodeHash, hash),
         isNotNull(printBridgeOnboardingSecrets.shortCodeHash),
-        // Unbound codes expire after the 90s pairing window (brute-force
+        // Unbound codes expire after the 5-minute pairing window (brute-force
         // protection). Once a code is bound to a bridge it becomes that
         // bridge's permanent credential until the secret is revoked (detached).
         or(

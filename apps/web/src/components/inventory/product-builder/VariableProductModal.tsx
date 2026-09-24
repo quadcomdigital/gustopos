@@ -110,6 +110,7 @@ export default function VariableProductModal({
         required: true,
         minSelections: 1,
         maxSelections: 1,
+        multiSelectPriceMode: 'max' as const,
         sortOrder: 0,
         options: variants.map((v, idx) => ({
           name: v.name.trim(),

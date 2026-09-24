@@ -4,6 +4,7 @@ import { generateId } from '../../lib/id';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 import { useProductionReferences } from './useProductionReferences';
 import EmptyState from '../../shared/ui/atoms/EmptyState';
+import { cn } from '../../lib/utils';
 
 const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
 
@@ -25,6 +26,7 @@ function createGroup(): ModifierGroup {
     required: false,
     minSelections: 0,
     maxSelections: 1,
+    multiSelectPriceMode: 'max',
     sortOrder: 0,
     options: [],
   };
@@ -67,6 +69,23 @@ export default function ModifierGroupsEditor({ value, onChange, inventory, prepI
           : entry,
       ),
     );
+
+  // Explicit single/multiple type. Multiple defaults the cap to the number of
+  // options so a brand-new multi group is immediately usable; switching back to
+  // single forces max=1 (the option count is not remembered, by design).
+  const setGroupMode = (groupId: string, multiple: boolean) =>
+    onChange(
+      value.map((entry) =>
+        entry.id === groupId
+          ? multiple
+            ? { ...entry, maxSelections: entry.maxSelections > 1 ? entry.maxSelections : Math.max(entry.options.length, 2) }
+            : { ...entry, maxSelections: 1, minSelections: Math.min(entry.minSelections, 1) }
+          : entry,
+      ),
+    );
+
+  const setGroupField = (groupId: string, patch: Partial<ModifierGroup>) =>
+    onChange(value.map((entry) => (entry.id === groupId ? { ...entry, ...patch } : entry)));
 
   return (
     <div className="space-y-3 tabular-nums">

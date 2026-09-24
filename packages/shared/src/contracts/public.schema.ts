@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { printAreaSchema } from "../contracts/shared.schema";
 import { orderSchema, orderItemSchema } from "../contracts/order.schema";
+import { modifierGroupSchema, categoryModifierPoolSchema } from "../contracts/menu.schema";
 
 // ─── Public Menu ───────────────────────────────────────────────────────
 
@@ -11,18 +12,36 @@ export const publicMenuCategorySchema = z.object({
   printAreas: z.array(printAreaSchema),
 });
 
+/**
+ * Recipe entry exposed on the public menu. Mirrors the POS recipe but is more
+ * lenient on `unit` (BoM/derived components may not carry one).
+ */
+export const publicMenuRecipeComponentSchema = z.object({
+  componentType: z.enum(["ingredient", "prep", "bom"]),
+  componentId: z.string(),
+  componentName: z.string().optional(),
+  quantity: z.number(),
+  unit: z.string().default(""),
+});
+
 export const publicMenuItemSchema = z.object({
   id: z.string(),
   name: z.string(),
   price: z.number().nonnegative(),
   categoryId: z.string().optional(),
   category: z.string(),
+  // Normalised, display-ready ingredient names (no raw ids), matching the POS.
   ingredients: z.array(z.string()),
+  // Full recipe (ingredients + preps + BoM leafs) with resolved names, so the
+  // public card can present exactly what the POS shows.
+  recipe: z.array(publicMenuRecipeComponentSchema).default([]),
   bomIds: z.array(z.string()),
   stationId: z.string().nullable().optional(),
   printAreas: z.array(printAreaSchema),
   isFeatured: z.boolean().default(false),
   isSoldOut: z.boolean().default(false),
+  // Per-item modifier groups (Base, Gusto, …). Empty when the item has none.
+  modifierGroups: z.array(modifierGroupSchema).default([]),
 });
 
 export const publicMenuBrandingSchema = z.object({
@@ -42,16 +61,105 @@ export const publicMenuBrandingSchema = z.object({
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#0f172a"),
 });
 
+// Closed vocabulary of composable layout sections. New section types must be
+// added here AND implemented in the web `menu/sections` registry.
+export const menuSectionIdSchema = z.enum([
+  "hero",
+  "highlights",
+  "categories_nav",
+  "item_grid",
+  "footer_note",
+]);
+export type MenuSectionId = z.infer<typeof menuSectionIdSchema>;
+
+export const menuSectionSchema = z.object({
+  id: menuSectionIdSchema,
+  enabled: z.boolean().default(true),
+  order: z.number().int().min(0).default(0),
+});
+export type MenuSection = z.infer<typeof menuSectionSchema>;
+
+export const DEFAULT_MENU_SECTIONS: MenuSection[] = [
+  { id: "hero", enabled: true, order: 0 },
+  { id: "categories_nav", enabled: true, order: 1 },
+  { id: "item_grid", enabled: true, order: 2 },
+  { id: "footer_note", enabled: true, order: 3 },
+];
+
+export const publicMenuContentSchema = z.object({
+  tagline: z.string().max(160).optional(),
+  footerNote: z.string().max(240).optional(),
+  ctaLabel: z.string().max(40).optional(),
+});
+
 export const publicMenuModuleConfigSchema = publicMenuBrandingSchema.extend({
   categoryOrder: z.array(z.string()).default([]),
   hiddenCategoryIds: z.array(z.string()).default([]),
   featuredItemIds: z.array(z.string()).default([]),
   soldOutItemIds: z.array(z.string()).default([]),
+  sections: z.array(menuSectionSchema).default(DEFAULT_MENU_SECTIONS),
+  content: publicMenuContentSchema.default({}),
 });
+export type PublicMenuModuleConfig = z.infer<typeof publicMenuModuleConfigSchema>;
+
+/**
+ * Subset a tenant owner may edit from the backoffice. Structural/reserved
+ * fields (hiddenCategoryIds, featuredItemIds, soldOutItemIds) stay superadmin
+ * only so the tenant cannot hide items the operator pinned.
+ */
+export const publicMenuTenantEditableSchema = z.object({
+  preset: publicMenuBrandingSchema.shape.preset,
+  logoUrl: publicMenuBrandingSchema.shape.logoUrl,
+  heroImageUrl: publicMenuBrandingSchema.shape.heroImageUrl,
+  brandTagline: publicMenuBrandingSchema.shape.brandTagline,
+  showIngredients: publicMenuBrandingSchema.shape.showIngredients,
+  showPrices: publicMenuBrandingSchema.shape.showPrices,
+  currency: publicMenuBrandingSchema.shape.currency,
+  accentColor: publicMenuBrandingSchema.shape.accentColor,
+  sections: z.array(menuSectionSchema).optional(),
+  content: publicMenuContentSchema.optional(),
+});
+export type PublicMenuTenantEditable = z.infer<typeof publicMenuTenantEditableSchema>;
+
+/**
+ * Merges a tenant-editable patch onto the stored config, preserving the
+ * superadmin-only fields. Returns the full normalised config.
+ */
+export function mergeTenantPublicMenuConfig(
+  stored: unknown,
+  patch: unknown,
+): PublicMenuModuleConfig {
+  const base = normalizePublicMenuConfig(stored);
+  const parsedPatch = publicMenuTenantEditableSchema.partial().parse(patch ?? {});
+  return publicMenuModuleConfigSchema.parse({
+    ...base,
+    ...parsedPatch,
+    // Never let a tenant patch drop operator-pinned fields.
+    hiddenCategoryIds: base.hiddenCategoryIds,
+    featuredItemIds: base.featuredItemIds,
+    soldOutItemIds: base.soldOutItemIds,
+    categoryOrder: base.categoryOrder,
+  });
+}
+
+/**
+ * Best-effort normalizer: accepts the legacy flat branding shape (persisted for
+ * existing tenants such as franks) and fills the new `sections`/`content`
+ * structure without requiring a DB migration.
+ */
+export function normalizePublicMenuConfig(raw: unknown): PublicMenuModuleConfig {
+  const parsed = publicMenuModuleConfigSchema.parse(raw ?? {});
+  const sections = parsed.sections.length > 0 ? parsed.sections : DEFAULT_MENU_SECTIONS;
+  return { ...parsed, sections };
+}
 
 export const publicMenuResponseSchema = z.object({
   tenant: z.object({ id: z.string(), slug: z.string(), name: z.string() }),
   branding: publicMenuBrandingSchema,
+  // Fully normalised module config (defaults applied), safe to drive the UI.
+  config: publicMenuModuleConfigSchema,
+  // Resolved scaffold key for code-side per-tenant overrides (null = default).
+  scaffoldKey: z.string().nullable().default(null),
   capabilities: z.object({
     takeawayOrder: z.boolean().default(false),
     groupOrder: z.boolean().default(false),
@@ -64,6 +172,7 @@ export const publicMenuResponseSchema = z.object({
   }),
   categories: z.array(publicMenuCategorySchema),
   items: z.array(publicMenuItemSchema),
+  categoryModifierPools: z.array(categoryModifierPoolSchema).default([]),
   generatedAt: z.string(),
 });
 
@@ -87,6 +196,31 @@ export const publicTakeawayCreateResponseSchema = z.object({
 export const publicTakeawayTrackingResponseSchema = z.object({
   order: orderSchema,
 });
+
+// ─── Public Self-Service Order (authoritative server pricing) ───────────
+// The client sends identifiers + selections only; the API re-prices each line
+// from the live catalog and recomputes the total. Any client-sent price is
+// ignored. Used by both self-order (dine-in QR) and public takeaway.
+export const publicOrderLineSchema = z.object({
+  menuItemId: z.string().min(1),
+  quantity: z.number().int().positive(),
+  notes: z.string().max(200).optional(),
+  ingredientOverrides: z
+    .array(z.object({ ingredientId: z.string().min(1), action: z.enum(["add", "remove"]) }))
+    .optional(),
+  selectedModifiers: z
+    .array(z.object({ groupId: z.string().min(1), optionId: z.string().min(1) }))
+    .optional(),
+});
+export type PublicOrderLine = z.infer<typeof publicOrderLineSchema>;
+
+export const publicOrderPricedLineSchema = publicOrderLineSchema.extend({
+  name: z.string(),
+  unitPrice: z.number().nonnegative(),
+  modifierPriceDelta: z.number(),
+  lineTotal: z.number().nonnegative(),
+});
+export type PublicOrderPricedLine = z.infer<typeof publicOrderPricedLineSchema>;
 
 // ─── Group Order ───────────────────────────────────────────────────────
 
@@ -314,6 +448,7 @@ export const consumerOrderHistoryResponseSchema = z.array(consumerOrderHistoryIt
 // ─── Types ─────────────────────────────────────────────────────────────
 
 export type PublicMenuResponse = z.infer<typeof publicMenuResponseSchema>;
+export type PublicMenuBranding = z.infer<typeof publicMenuBrandingSchema>;
 export type PublicTakeawayCreateRequest = z.infer<typeof publicTakeawayCreateRequestSchema>;
 export type PublicTakeawayCreateResponse = z.infer<typeof publicTakeawayCreateResponseSchema>;
 export type PublicTakeawayTrackingResponse = z.infer<typeof publicTakeawayTrackingResponseSchema>;

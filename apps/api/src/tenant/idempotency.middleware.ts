@@ -86,7 +86,10 @@ export class IdempotencyMiddleware implements NestMiddleware {
       const releaseLock = () => {
         if (finalized) return;
         finalized = true;
-        if (res.statusCode < 500 && res.writableFinished) {
+        const cacheableStatus = res.statusCode < 500
+          && res.statusCode !== 401
+          && res.statusCode !== 403;
+        if (cacheableStatus && res.writableFinished) {
           void this.redis.set(
             responseKey,
             JSON.stringify({ statusCode: res.statusCode, body: responseBody }),
@@ -94,8 +97,9 @@ export class IdempotencyMiddleware implements NestMiddleware {
             120,
           );
         } else {
-          // A failed or aborted request must not poison a retry with the same
-          // key. The response cache is intentionally not written for 5xx.
+          // A failed, unauthorized or aborted request must not poison a retry
+          // with the same key. The response cache is intentionally not written
+          // for 5xx/401/403.
           void this.redis.del(lockKey);
         }
       };

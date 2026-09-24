@@ -333,8 +333,13 @@ export class InventoryRepository {
     const modifierGroupsByMenuId = new Map<string, any[]>();
     for (const group of modifierGroupRows) {
       const existing = modifierGroupsByMenuId.get(group.menuItemId) ?? [];
-      existing.push({ id: group.id, name: group.name, required: Boolean(group.required), minSelections: group.minSelections, maxSelections: group.maxSelections, sortOrder: group.sortOrder ?? 0, options: optionsByGroupId.get(group.id) ?? [] });
+      existing.push({ id: group.id, name: group.name, required: Boolean(group.required), minSelections: group.minSelections, maxSelections: group.maxSelections, multiSelectPriceMode: (group.multiSelectPriceMode as "max" | "sum" | "none") ?? "max", sortOrder: group.sortOrder ?? 0, options: optionsByGroupId.get(group.id) ?? [] });
       modifierGroupsByMenuId.set(group.menuItemId, existing);
+    }
+    // Respect the per-group sort order (stable for equal orders) so the editor
+    // lists groups the same way the POS does.
+    for (const groups of modifierGroupsByMenuId.values()) {
+      groups.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     }
     return menuItemAdminListResponseSchema.parse(menuRows.map((row) => menuItemAdminSchema.parse({
       id: row.id, name: row.name, price: Number(row.price), category: row.category, categoryId: row.categoryId ?? undefined,
@@ -1423,6 +1428,9 @@ for (const opt of optionRows) {
     quantity: Number(opt.quantity ?? 1),
     unit: opt.unit ?? "pz",
     priceDelta: Number(opt.priceDelta),
+    // Nullable in DB: keep "unset" as undefined so legacy pricing is unchanged.
+    priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+    isActive: opt.isActive !== 0,
     sortOrder: opt.sortOrder ?? 0,
   });
   optionsByPoolId.set(opt.poolId, existing);
@@ -1487,7 +1495,12 @@ if (payload.options.length > 0) {
       referenceId: opt.referenceId ?? null,
       componentType: opt.componentType ?? "ingredient",
       componentId: opt.componentId ?? opt.inventoryItemId ?? null,
+      quantity: String(opt.quantity ?? 1),
+      unit: opt.unit ?? "pz",
       priceDelta: String(opt.priceDelta),
+      // Nullable: null keeps legacy additive-only pricing.
+      priceMultiplier: opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
+      isActive: opt.isActive === false ? 0 : 1,
       sortOrder: idx,
     })),
   );
@@ -1532,13 +1545,21 @@ if (payload.options !== undefined) {
   if (payload.options.length > 0) {
     await db.insert(categoryModifierPoolOptions).values(
       payload.options.map((opt, idx) => ({
+        // The update contract omits `id` (options are replaced wholesale), so a
+        // fresh id is always minted here.
         id: `cmpo_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
         tenantId,
         poolId: id,
         name: opt.name ?? null,
         inventoryItemId: opt.inventoryItemId ?? null,
         referenceId: opt.referenceId ?? null,
+        componentType: opt.componentType ?? "ingredient",
+        componentId: opt.componentId ?? opt.inventoryItemId ?? null,
+        quantity: String(opt.quantity ?? 1),
+        unit: opt.unit ?? "pz",
         priceDelta: String(opt.priceDelta),
+        priceMultiplier: opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
+        isActive: opt.isActive === false ? 0 : 1,
         sortOrder: idx,
       })),
     );

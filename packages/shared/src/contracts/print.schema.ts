@@ -198,6 +198,12 @@ export const printBridgeDiscoveredPrintersRequestSchema = z.object({
 export const printBridgeCommandAckRequestSchema = z.object({
   bridgeId: z.string(),
   commandId: z.string(),
+  // Execution outcome reported by the agent (Go agent >= 0.14.0). `ok=false`
+  // carries the failure reason, which the API records as a bridge log entry
+  // so Settings → Diagnostica shows the test result instead of leaving the
+  // admin guessing. Older agents omit both fields.
+  ok: z.boolean().optional(),
+  error: z.string().max(500).optional(),
 });
 
 // Admin request: direct test print to an arbitrary network printer (used to

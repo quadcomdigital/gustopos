@@ -22,10 +22,18 @@ import {
   printJobsQuerySchema,
   publicMenuBrandingSchema,
   publicMenuModuleConfigSchema,
+  normalizePublicMenuConfig,
+  modifierGroupSchema,
+  modifierOptionSchema,
+  categoryModifierPoolSchema,
   publicTakeawayCreateRequestSchema,
   publicTakeawayCreateResponseSchema,
   publicTakeawayTrackingResponseSchema,
   publicMenuResponseSchema,
+  publicOrderPricedLineSchema,
+  type PublicOrderLine,
+  type PublicOrderPricedLine,
+  computeGroupModifierDelta,
   groupOrderCreateSessionRequestSchema,
   groupOrderCreateSessionResponseSchema,
   groupOrderJoinSessionRequestSchema,
@@ -162,8 +170,9 @@ import { PrintJobsRepository } from "./print-jobs.repository";
 import { PrintStationsRepository } from "./print-stations.repository";
 import { ProductionReferencesRepository } from "./production-references.repository";
 import { buildReferenceTally, resolveItemReference } from "../orders/production-references";
-import { EscPosBuilder, RECEIPT_WIDTH, padRight } from "./utils/escpos-builder";
+import { EscPosBuilder, RECEIPT_WIDTH, padRight, formatRomeTime, formatRomeDateTime, orderStationTicketItems, selectStationTicketItems, isValidLogoRaster } from "./utils/escpos-builder";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
+import { formatIngredientOverrides } from "./utils/order-labels";
 
 
 type InventoryRow = typeof inventory.$inferSelect;
@@ -259,9 +268,22 @@ export function parseIngredientOverrides(raw: string | null | undefined): Array<
   }
 }
 
+/**
+ * Resolves the code-side scaffold key for a tenant's public menu. The web
+ * registry (`apps/web/src/menu/scaffolds`) maps this key to a dedicated
+ * component; unknown/absent keys fall back to the default shell + preset.
+ * Keep this list in sync with the web registry.
+ */
+const PUBLIC_MENU_SCAFFOLD_KEYS: Record<string, string> = {
+  franks: "franks",
+};
+
+function resolvePublicMenuScaffoldKey(slug: string, tenantId: string): string | null {
+  return PUBLIC_MENU_SCAFFOLD_KEYS[slug] ?? PUBLIC_MENU_SCAFFOLD_KEYS[tenantId] ?? null;
+}
+
 @Injectable()
-export class AppRepository {
-  private readonly selfOrderTokenTtlMinutes = Number(process.env.SELF_ORDER_TOKEN_TTL_MINUTES ?? 30);
+export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number(process.env.SELF_ORDER_TOKEN_TTL_MINUTES ?? 30);
   private readonly takeawayTrackingTtlMinutes = Number(process.env.PUBLIC_TAKEAWAY_TRACKING_TTL_MINUTES ?? 360);
 
   private readonly settingsKey = "global_ui_settings";
@@ -608,6 +630,10 @@ export class AppRepository {
     const ep = new EscPosBuilder();
 
     ep.init();
+    // Pin the base font (Font A) so different printer models don't fall back
+    // to their own default glyph set. Own-area items stay 2xl; other areas
+    // print at the normal Font A size.
+    ep.font("a");
 
     // The logo is intentionally NOT printed on station tickets: it renders
     // only on the cashier scontrino (buildCashierReceiptPayload).
@@ -623,7 +649,7 @@ export class AppRepository {
       : `Cliente: ${order.customerName ?? "-"}`;
     const orderTime = (() => {
       try {
-        return new Date(order.timestamp).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+        return formatRomeTime(new Date(order.timestamp));
       } catch {
         return "--:--";
       }
@@ -640,15 +666,20 @@ export class AppRepository {
     }
     if (order.scheduledFor) {
       const scheduledDate = new Date(order.scheduledFor);
-      const time = scheduledDate.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
-      ep.bold(true).line(`Consegna: ${time}`).bold(false);
+      const time = formatRomeTime(scheduledDate);
+      // Delivery/pickup time is the single most time-critical element for
+      // asporto/delivery: print it at "GRANDE x2" (double width + height).
+      ep.doubleSize(true).line(`Consegna ${time}`).doubleSize(false);
     }
     ep.line();
 
     const hasRoundPresentation = !showPrice && items.some((item) => item.round !== undefined && item.round !== null);
-    const printItems = hasRoundPresentation
-      ? [...items].sort((left, right) => (left.round ?? Number.MAX_SAFE_INTEGER) - (right.round ?? Number.MAX_SAFE_INTEGER))
-      : items;
+    // Station tickets group the recipient station's own items first (2xl) and
+    // the other stations' items after them (small). Rounds stay the primary
+    // key when portate are in use, so each section header stays unique.
+    const printItems = showPrice
+      ? items
+      : orderStationTicketItems(items, station.id, { groupByRound: hasRoundPresentation });
 
     let printedRound: number | null | undefined = undefined;
     for (const item of printItems) {
@@ -679,11 +710,13 @@ export class AppRepository {
           const pd = priceDeltaByOptionId.get(optId) ?? 0;
           ep.line(pd > 0 ? `  ${modName} +EUR ${pd.toFixed(2)}` : `  ${modName}`);
         } else {
-          ep.line(`  ${modName}`);
+          // Sandwich customizations: 2x1 + bold so the kitchen can't miss them.
+          ep.charSize(2, 1).bold(true).line(`  ${modName}`).bold(false).charSize(1, 1);
         }
       }
       for (const ovr of item.overrides) {
-        ep.line(`  ${ovr}`);
+        // All sandwich modifications (additions AND removals): 2x1 + bold.
+        ep.charSize(2, 1).bold(true).line(`  ${ovr}`).bold(false).charSize(1, 1);
       }
       if (item.notes) {
         ep.line(`  * ${item.notes}`);
@@ -745,6 +778,26 @@ export class AppRepository {
         : [];
     const inventoryNameById = new Map(ingredientRows.map((row) => [row.id, row.name]));
 
+    // Overrides can reference an inventory item, a prep item or a BoM (e.g.
+    // "- Smash" / "- Cartoccio pronto"). Resolve all three so the ticket never
+    // prints an opaque id such as `prep_…`.
+    const overrideNameById = new Map<string, string>(inventoryNameById);
+    if (allIngredientIds.size > 0) {
+      const overrideIds = [...allIngredientIds];
+      const [prepNameRows, bomNameRows] = await Promise.all([
+        db
+          .select({ id: prepItems.id, name: prepItems.name })
+          .from(prepItems)
+          .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, overrideIds))),
+        db
+          .select({ id: bomItems.id, name: bomItems.name })
+          .from(bomItems)
+          .where(and(eq(bomItems.tenantId, tenantId), inArray(bomItems.id, overrideIds))),
+      ]);
+      for (const row of prepNameRows) overrideNameById.set(row.id, row.name);
+      for (const row of bomNameRows) overrideNameById.set(row.id, row.name);
+    }
+
     const allOptionIds = new Set<string>();
     for (const item of order.items) {
       for (const mod of item.selectedModifiers ?? []) {
@@ -754,7 +807,6 @@ export class AppRepository {
 
     let optionNameByOptionId = new Map<string, string>();
     let priceDeltaByOptionId = new Map<string, number>();
-    let inventoryItemIdByOptionId = new Map<string, string>();
     if (allOptionIds.size > 0) {
       const optionRows = await db
         .select({ id: menuModifierOptions.id, name: menuModifierOptions.name, priceDelta: menuModifierOptions.priceDelta, inventoryItemId: menuModifierOptions.inventoryItemId })
@@ -763,44 +815,61 @@ export class AppRepository {
       for (const row of optionRows) {
         optionNameByOptionId.set(row.id, row.name);
         priceDeltaByOptionId.set(row.id, Number(row.priceDelta));
-        if (row.inventoryItemId) {
-          inventoryItemIdByOptionId.set(row.id, row.inventoryItemId);
-        }
       }
 
       const poolOptionRows = await db
-        .select({ id: categoryModifierPoolOptions.id, name: categoryModifierPoolOptions.name, priceDelta: categoryModifierPoolOptions.priceDelta, inventoryItemId: categoryModifierPoolOptions.inventoryItemId })
+        .select({
+          id: categoryModifierPoolOptions.id,
+          name: categoryModifierPoolOptions.name,
+          priceDelta: categoryModifierPoolOptions.priceDelta,
+          inventoryItemId: categoryModifierPoolOptions.inventoryItemId,
+          componentId: categoryModifierPoolOptions.componentId,
+        })
         .from(categoryModifierPoolOptions)
         .where(and(eq(categoryModifierPoolOptions.tenantId, tenantId), inArray(categoryModifierPoolOptions.id, [...allOptionIds])));
+
       for (const row of poolOptionRows) {
         if (!priceDeltaByOptionId.has(row.id)) {
           priceDeltaByOptionId.set(row.id, Number(row.priceDelta));
         }
-        if (!optionNameByOptionId.has(row.id)) {
-          // Pool options may carry an explicit name, otherwise fall back to
-          // the referenced inventory ingredient (e.g. "Tanqueray" added from
-          // the Gin pool must print its name, not the cmpo_… id).
-          if (row.name) {
-            optionNameByOptionId.set(row.id, row.name);
-          } else if (row.inventoryItemId) {
-            const invName = inventoryNameById.get(row.inventoryItemId);
-            if (invName) optionNameByOptionId.set(row.id, invName);
-          }
-        }
-        if (row.inventoryItemId) {
-          inventoryItemIdByOptionId.set(row.id, row.inventoryItemId);
-        }
       }
-    }
 
-    const poolInventoryIds = [...new Set([...inventoryItemIdByOptionId.values()])];
-    if (poolInventoryIds.length > 0) {
-      const poolInvRows = await db
-        .select({ id: inventory.id, name: inventory.name })
-        .from(inventory)
-        .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, poolInventoryIds)));
-      for (const row of poolInvRows) {
-        inventoryNameById.set(row.id, row.name);
+      // Resolve the referenced inventory / prep / BoM names, then label the
+      // options. Pool options without an explicit name used to print the raw
+      // `cmpo_…` id (e.g. "Tanqueray" added from the Gin pool).
+      const poolInventoryIds = [...new Set(poolOptionRows.map((row) => row.inventoryItemId).filter((value): value is string => Boolean(value)))];
+      const poolComponentIds = [...new Set(poolOptionRows.map((row) => row.componentId).filter((value): value is string => Boolean(value)))];
+      const poolInvNameRows = poolInventoryIds.length > 0
+        ? await db
+            .select({ id: inventory.id, name: inventory.name })
+            .from(inventory)
+            .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, poolInventoryIds)))
+        : [];
+      const poolPrepNameRows = poolComponentIds.length > 0
+        ? await db
+            .select({ id: prepItems.id, name: prepItems.name })
+            .from(prepItems)
+            .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, poolComponentIds)))
+        : [];
+      const poolBomNameRows = poolComponentIds.length > 0
+        ? await db
+            .select({ id: bomItems.id, name: bomItems.name })
+            .from(bomItems)
+            .where(and(eq(bomItems.tenantId, tenantId), inArray(bomItems.id, poolComponentIds)))
+        : [];
+      for (const row of poolInvNameRows) inventoryNameById.set(row.id, row.name);
+      const poolComponentNameById = new Map<string, string>();
+      for (const row of poolPrepNameRows) poolComponentNameById.set(row.id, row.name);
+      for (const row of poolBomNameRows) poolComponentNameById.set(row.id, row.name);
+
+      for (const row of poolOptionRows) {
+        if (optionNameByOptionId.has(row.id)) continue;
+        const resolvedName = row.name
+          || (row.inventoryItemId ? inventoryNameById.get(row.inventoryItemId) : undefined)
+          || (row.componentId ? poolComponentNameById.get(row.componentId) : undefined)
+          || row.componentId
+          || row.id;
+        optionNameByOptionId.set(row.id, resolvedName);
       }
     }
 
@@ -819,6 +888,7 @@ export class AppRepository {
     const stationByMenuId = await this.resolveStationForMenuIds(menuIds);
     const activeStations = await this.printStationsRepo.listActiveStations();
     const activeStationIds = new Set(activeStations.map((station) => station.id));
+    const stationKindById = new Map(activeStations.map((station) => [station.id, station.kind]));
     const allowedFilter = settings.printing.activeStationIds;
     const isAllowed = (id: string) => activeStationIds.has(id) && (allowedFilter.length === 0 || allowedFilter.includes(id));
 
@@ -859,12 +929,11 @@ export class AppRepository {
         if (row.referenceId && !optionRefById.has(row.id)) optionRefById.set(row.id, { referenceId: row.referenceId, sortOrder: row.sortOrder ?? 0 });
       }
     }
-    const referenceRows: Array<{ referenceId: string | null; quantity: number }> = [];
-
     const richItems: Array<{
       name: string; quantity: number; price: number; notes: string;
       modifiers: string[]; modifierOptionIds: string[]; overrides: string[];
-      stationId: string | null; round?: number | null;
+      stationId: string | null; referenceId: string | null; round?: number | null;
+      skipKitchenPrint?: boolean;
     }> = [];
     const involvedStationIds = new Set<string>();
 
@@ -879,11 +948,7 @@ export class AppRepository {
         modOptionIds.push(mod.optionId);
       }
 
-      const ovrStrings: string[] = [];
-      for (const entry of item.ingredientOverrides ?? []) {
-        const ingName = inventoryNameById.get(entry.ingredientId) ?? entry.ingredientId;
-        ovrStrings.push(entry.action === "remove" ? `- ${ingName}` : `+ ${ingName}`);
-      }
+      const ovrStrings: string[] = formatIngredientOverrides(item.ingredientOverrides ?? [], overrideNameById);
 
       const menuRef = refMenuById.get(item.id);
       const categoryRef = menuRef?.categoryId ? refCategoryById.get(menuRef.categoryId) : null;
@@ -895,7 +960,6 @@ export class AppRepository {
         itemRef: menuRef?.referenceId ?? null,
         categoryRef: categoryRef ?? null,
       });
-      referenceRows.push({ referenceId: resolvedReferenceId, quantity: item.quantity });
 
       richItems.push({
         name: item.name,
@@ -906,10 +970,19 @@ export class AppRepository {
         modifierOptionIds: modOptionIds,
         overrides: ovrStrings,
         stationId,
+        referenceId: resolvedReferenceId,
+        ...(item.skipKitchenPrint ? { skipKitchenPrint: true } : {}),
         ...(roundsPresentationEnabled ? { round: item.round ?? null } : {}),
       });
 
-      if (stationId && isAllowed(stationId)) {
+      // "Salta stampa cucina" is a spot, production-only exclusion: skip the
+      // item from its station ticket (and don't let it pull a station in).
+      const skippedForProduction =
+        item.skipKitchenPrint === true &&
+        stationId !== null &&
+        stationKindById.get(stationId) === "production";
+
+      if (stationId && isAllowed(stationId) && !skippedForProduction) {
         involvedStationIds.add(stationId);
       }
     }
@@ -921,38 +994,60 @@ export class AppRepository {
       return;
     }
 
-    const tally = buildReferenceTally(referenceRows);
-    const referenceSummary = activeReferences
-      .filter((reference) => tally.has(reference.id))
-      .map((reference) => ({ name: reference.name, count: tally.get(reference.id) ?? 0 }));
-    const totalItems = referenceSummary.reduce((sum, row) => sum + row.count, 0);
+    // The RIEPILOGO is computed per station from the items actually printed on
+    // that station's ticket, so with `ownItemsOnly` beverages never count as
+    // containers on the kitchen comanda.
+    const buildReferenceSummary = (stationItems: typeof richItems) => {
+      const tally = buildReferenceTally(stationItems.map((item) => ({ referenceId: item.referenceId, quantity: item.quantity })));
+      const summary = activeReferences
+        .filter((reference) => tally.has(reference.id))
+        .map((reference) => ({ name: reference.name, count: tally.get(reference.id) ?? 0 }));
+      const total = summary.reduce((sum, row) => sum + row.count, 0);
+      return { summary, total };
+    };
 
     const waiterName = await this.resolveWaiterName(tenantId, order.staffId);
 
     const now = new Date();
-    const jobs = recipientStations.map((station) => ({
-      id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-      tenantId,
-      orderId: order.id,
-      area: station.id,
-      protocol: settings.printing.protocol,
-      status: "pending" as const,
-      payload: this.buildStationTicketPayload({
-        order,
-        waiterName,
-        station,
-        items: richItems,
-        summary: referenceSummary,
-        totalItems,
-        settings,
-        priceDeltaByOptionId,
-        roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
-      }),
-      error: null,
-      createdAt: now,
-      updatedAt: now,
-      dispatchedAt: null,
-    }));
+    const jobs = recipientStations.flatMap((station) => {
+      const selectedItems = selectStationTicketItems(
+        richItems,
+        station.id,
+        station.kind === "production" && station.ownItemsOnly,
+      );
+      // Items flagged "Salta stampa cucina" are dropped from production
+      // tickets only; the cashier station ticket still lists them.
+      const stationItems = station.kind === "production"
+        ? selectedItems.filter((item) => item.skipKitchenPrint !== true)
+        : selectedItems;
+      if (stationItems.length === 0) return [];
+      const { summary: referenceSummary, total: totalItems } = buildReferenceSummary(stationItems);
+      return [{
+        id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        tenantId,
+        orderId: order.id,
+        area: station.id,
+        protocol: settings.printing.protocol,
+        status: "pending" as const,
+        payload: this.buildStationTicketPayload({
+          order,
+          waiterName,
+          station,
+          items: stationItems,
+          summary: referenceSummary,
+          totalItems,
+          settings,
+          priceDeltaByOptionId,
+          roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
+        }),
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        dispatchedAt: null,
+      }];
+    });
+
+    if (jobs.length === 0) return;
 
     await withTenantTx(async (tx) => {
       await tx.insert(printJobs).values(jobs);
@@ -1218,6 +1313,59 @@ export class AppRepository {
     return { ingredients, preps };
   }
 
+  /**
+   * Display-only recipe expansion. A `prep` component materialized from a BoM
+   * (`sourceType === "bom"`) is exploded into its leaf ingredients so the POS
+   * "Togli" modal and the public menu expose the removable ingredients instead
+   * of the opaque prep name (e.g. "Cartoccio pronto" → Prosciutto + Mozzarella).
+   * The stock pipeline is unaffected: it consumes the prep through
+   * `canonicalMenuComponents`. Falls back to the prep entry when the BoM is
+   * missing/inactive/cyclic so the read path can never fail on display.
+   */
+  private expandPrepBomForDisplay(params: {
+    componentType: string;
+    componentId: string;
+    quantity: number;
+    fallbackName: string;
+    fallbackUnit: string;
+    prepSourceById: Map<string, { sourceType: string; sourceId: string }>;
+    bomById: Map<string, BomRow>;
+    componentsByBomId: Map<string, BomComponentRow[]>;
+    ingredientNameById: Map<string, string>;
+    ingredientUnitById: Map<string, string>;
+  }): Array<{ componentType: "ingredient" | "bom" | "prep"; componentId: string; componentName: string; quantity: number; unit: string }> {
+    if (params.componentType === "prep") {
+      const source = params.prepSourceById.get(params.componentId);
+      if (source?.sourceType === "bom") {
+        try {
+          const exploded = this.explodeBomRequirements({
+            bomId: source.sourceId,
+            multiplier: params.quantity,
+            bomById: params.bomById,
+            componentsByBomId: params.componentsByBomId,
+          });
+          const entries = [...exploded.ingredients.entries()].map(([ingredientId, qty]) => ({
+            componentType: "ingredient" as const,
+            componentId: ingredientId,
+            componentName: params.ingredientNameById.get(ingredientId) ?? ingredientId,
+            quantity: qty,
+            unit: params.ingredientUnitById.get(ingredientId) ?? "",
+          }));
+          if (entries.length > 0) return entries;
+        } catch {
+          // Defensive: display must never fail on a broken/cyclic BoM.
+        }
+      }
+    }
+    return [{
+      componentType: params.componentType as "ingredient" | "bom" | "prep",
+      componentId: params.componentId,
+      componentName: params.fallbackName,
+      quantity: params.quantity,
+      unit: params.fallbackUnit,
+    }];
+  }
+
   private async mapBomItems(executor: typeof db = db): Promise<BomItem[]> {
     const tenantId = getTenantIdOrDefault();
     const [bomRows, componentRows] = await Promise.all([
@@ -1350,6 +1498,8 @@ export class AppRepository {
         number: row.number,
         status: row.status as Table["status"],
         currentOrderId: row.currentOrderId ?? undefined,
+        zone: row.zone ?? undefined,
+        isVirtual: row.isVirtual === 1,
       }))
       .sort((a, b) => {
         const aNum = Number(a.number);
@@ -1371,14 +1521,32 @@ export class AppRepository {
     const prepNameById = new Map(prepRows.map((row) => [row.id, row.name]));
     const prepUnitById = new Map(prepRows.map((row) => [row.id, row.outputUnit]));
     const bomNameById = new Map(mappedBomItems.map((item) => [item.id, item.name]));
-
-    const ingredientsByMenuId = new Map<string, string[]>();
-    for (const component of canonicalMenuComponents) {
-      if (component.componentType !== "ingredient") continue;
-      const existing = ingredientsByMenuId.get(component.menuItemId) ?? [];
-      existing.push(component.componentId);
-      ingredientsByMenuId.set(component.menuItemId, existing);
-    }
+    const bomById = new Map<string, BomRow>(
+      mappedBomItems.map((item) => [item.id, {
+        id: item.id,
+        tenantId,
+        name: item.name,
+        outputUnit: item.outputUnit,
+        yieldQuantity: String(item.yieldQuantity),
+        categoryId: item.categoryId ?? null,
+        isActive: item.isActive ? 1 : 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as BomRow]),
+    );
+    const componentsByBomId = new Map<string, BomComponentRow[]>(
+      mappedBomItems.map((item) => [item.id, item.components.map((component) => ({
+        id: Number(component.id),
+        tenantId,
+        bomId: item.id,
+        componentType: component.componentType,
+        componentId: component.componentId,
+        quantity: String(component.quantity),
+        unit: component.unit,
+        createdAt: new Date(),
+      } as BomComponentRow))]),
+    );
+    const prepSourceById = new Map(prepRows.map((row) => [row.id, { sourceType: row.sourceType, sourceId: row.sourceId }]));
 
     const recipeByMenuId = new Map<string, Array<{ componentType: "ingredient" | "bom" | "prep"; componentId: string; componentName: string; quantity: number; unit: string }>>();
     for (const component of canonicalMenuComponents) {
@@ -1450,7 +1618,7 @@ export class AppRepository {
       optionsByGroupId.set(opt.groupId, existing);
     }
 
-    const modifierGroupsByMenuId = new Map<string, Array<{ id: string; name: string; required: boolean; minSelections: number; maxSelections: number; sortOrder: number; options: Array<{ id: string; name: string; inventoryItemId?: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: "mg" | "g" | "kg" | "ml" | "L" | "pz"; priceDelta: number; isDefault: boolean; isActive: boolean; sortOrder: number; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }> }>>();
+    const modifierGroupsByMenuId = new Map<string, Array<{ id: string; name: string; required: boolean; minSelections: number; maxSelections: number; multiSelectPriceMode: "max" | "sum" | "none"; sortOrder: number; options: Array<{ id: string; name: string; inventoryItemId?: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: "mg" | "g" | "kg" | "ml" | "L" | "pz"; priceDelta: number; isDefault: boolean; isActive: boolean; sortOrder: number; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }> }>>();
     for (const group of modifierGroupRows) {
       const existing = modifierGroupsByMenuId.get(group.menuItemId) ?? [];
       existing.push({
@@ -1459,18 +1627,29 @@ export class AppRepository {
         required: Boolean(group.required),
         minSelections: group.minSelections,
         maxSelections: group.maxSelections,
+        multiSelectPriceMode: (group.multiSelectPriceMode as "max" | "sum" | "none") ?? "max",
         sortOrder: group.sortOrder ?? 0,
         options: optionsByGroupId.get(group.id) ?? [],
       });
       modifierGroupsByMenuId.set(group.menuItemId, existing);
     }
+    // Respect the per-group sort order. Array.sort is stable, so groups that
+    // share a sort order keep their previous relative order.
+    for (const groups of modifierGroupsByMenuId.values()) {
+      groups.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    }
 
     const inventoryNameById = new Map(inventoryRows.map((row) => [row.id, row.name]));
 
-    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: string; priceDelta: number; isDefault: boolean; isActive: boolean; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
+    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: string; priceDelta: number; priceMultiplier?: number | null; isDefault: boolean; isActive: boolean; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
     for (const opt of catPoolOptionRows) {
       const existing = catPoolOptionsByPoolId.get(opt.poolId) ?? [];
-      const optionName = opt.name ?? (opt.inventoryItemId ? inventoryNameById.get(opt.inventoryItemId) : undefined) ?? opt.componentId ?? opt.inventoryItemId ?? '';
+      const optionName = opt.name
+        ?? (opt.inventoryItemId ? inventoryNameById.get(opt.inventoryItemId) : undefined)
+        ?? (opt.componentId ? prepNameById.get(opt.componentId) ?? bomNameById.get(opt.componentId) : undefined)
+        ?? opt.componentId
+        ?? opt.inventoryItemId
+        ?? '';
       existing.push({
         id: opt.id,
         name: optionName,
@@ -1479,8 +1658,9 @@ export class AppRepository {
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
         isDefault: false,
-        isActive: true,
+        isActive: opt.isActive !== 0,
         ingredientOverrides: opt.inventoryItemId ? [{ ingredientId: opt.inventoryItemId, action: "add" as const }] : [],
       });
       catPoolOptionsByPoolId.set(opt.poolId, existing);
@@ -1586,13 +1766,20 @@ export class AppRepository {
       const existing = catPoolOptionsByPoolIdForResponse.get(opt.poolId) ?? [];
       existing.push({
         id: opt.id,
-        name: opt.name ?? undefined,
+        name: opt.name
+          ?? (opt.inventoryItemId ? inventoryNameById.get(opt.inventoryItemId) : undefined)
+          ?? (opt.componentId ? prepNameById.get(opt.componentId) ?? bomNameById.get(opt.componentId) : undefined)
+          ?? opt.componentId
+          ?? opt.inventoryItemId
+          ?? undefined,
         inventoryItemId: opt.inventoryItemId ?? undefined,
         componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
         componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        isActive: opt.isActive !== 0,
         sortOrder: opt.sortOrder ?? 0,
       });
       catPoolOptionsByPoolIdForResponse.set(opt.poolId, existing);
@@ -1636,7 +1823,7 @@ export class AppRepository {
       throw new Error("Public menu module is disabled for this tenant");
     }
 
-    const [categoryRows, menuRows, componentRows, moduleConfigRows, takeawayConfigRows] = await Promise.all([
+    const [categoryRows, menuRows, componentRows, moduleConfigRows, takeawayConfigRows, modifierGroupRows, modifierOptionRows, modifierOptionOverrideRows, catPoolRows, catPoolOptionRows, catPoolCategoryRows, inventoryRows, prepRows, bomRows, bomComponentRows] = await Promise.all([
       db
         .select()
         .from(categories)
@@ -1656,6 +1843,19 @@ export class AppRepository {
         .from(tenantModuleConfigs)
         .where(and(eq(tenantModuleConfigs.tenantId, tenant.id), eq(tenantModuleConfigs.moduleKey, "public_takeaway")))
         .limit(1),
+      db.select().from(menuModifierGroups).where(eq(menuModifierGroups.tenantId, tenant.id)),
+      db
+        .select()
+        .from(menuModifierOptions)
+        .where(and(eq(menuModifierOptions.tenantId, tenant.id), eq(menuModifierOptions.isActive, 1))),
+      db.select().from(menuModifierOptionOverrides).where(eq(menuModifierOptionOverrides.tenantId, tenant.id)),
+      db.select().from(categoryModifierPools).where(eq(categoryModifierPools.tenantId, tenant.id)),
+      db.select().from(categoryModifierPoolOptions).where(eq(categoryModifierPoolOptions.tenantId, tenant.id)),
+      db.select().from(categoryModifierPoolCategories).where(eq(categoryModifierPoolCategories.tenantId, tenant.id)),
+      db.select({ id: inventory.id, name: inventory.name, unit: inventory.unit }).from(inventory).where(eq(inventory.tenantId, tenant.id)),
+      db.select({ id: prepItems.id, name: prepItems.name, outputUnit: prepItems.outputUnit, sourceType: prepItems.sourceType, sourceId: prepItems.sourceId }).from(prepItems).where(eq(prepItems.tenantId, tenant.id)),
+      db.select().from(bomItems).where(eq(bomItems.tenantId, tenant.id)),
+      db.select().from(bomComponents).where(eq(bomComponents.tenantId, tenant.id)),
     ]);
 
     const moduleConfigRaw = moduleConfigRows[0]?.config;
@@ -1668,7 +1868,7 @@ export class AppRepository {
       }
     }
 
-    const menuConfig = publicMenuModuleConfigSchema.parse(moduleConfig);
+    const menuConfig = normalizePublicMenuConfig(moduleConfig);
     const branding = publicMenuBrandingSchema.parse(menuConfig);
 
     const takeawayConfigRaw = takeawayConfigRows[0]?.config;
@@ -1799,7 +1999,7 @@ export class AppRepository {
       groups.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     }
 
-    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }>>();
+    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: string; priceDelta: number; priceMultiplier?: number | null; isActive: boolean; sortOrder: number }>>();
     for (const opt of catPoolOptionRows) {
       const existing = catPoolOptionsByPoolId.get(opt.poolId) ?? [];
       existing.push({
@@ -1810,6 +2010,8 @@ export class AppRepository {
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        isActive: opt.isActive !== 0,
         sortOrder: opt.sortOrder ?? 0,
       });
       catPoolOptionsByPoolId.set(opt.poolId, existing);
@@ -1846,6 +2048,36 @@ export class AppRepository {
 
     const visibleCategoryIds = new Set(visibleCategories.map((row) => row.id));
 
+    const catPoolsByCategoryCache = new Map<string, Array<z.infer<typeof categoryModifierPoolSchema>>>();
+    const categoryPoolsFor = (categoryId: string): Array<z.infer<typeof categoryModifierPoolSchema>> => {
+      const cached = catPoolsByCategoryCache.get(categoryId);
+      if (cached) return cached;
+      const pools = catPoolIdsForCategory(categoryId).map((poolId) => {
+        const pool = catPoolById.get(poolId)!;
+        return {
+          id: pool.id,
+          categoryId: pool.categoryId ?? undefined,
+          categoryIds: catPoolCategoriesByPoolId.get(pool.id) ?? (pool.categoryId ? [pool.categoryId] : []),
+          name: pool.name,
+          sortOrder: pool.sortOrder ?? 0,
+          options: catPoolOptionsByPoolId.get(pool.id) ?? [],
+        };
+      });
+      catPoolsByCategoryCache.set(categoryId, pools);
+      return pools;
+    };
+    const allCategoryPools: Array<z.infer<typeof categoryModifierPoolSchema>> = [];
+    const seenPoolIds = new Set<string>();
+    for (const row of menuRows) {
+      const categoryId = row.categoryId;
+      if (!categoryId) continue;
+      for (const pool of categoryPoolsFor(categoryId)) {
+        if (seenPoolIds.has(pool.id)) continue;
+        seenPoolIds.add(pool.id);
+        allCategoryPools.push(pool);
+      }
+    }
+
     const publicItems = menuRows
       .filter((row) => !row.categoryId || visibleCategoryIds.has(row.categoryId))
       .map((row) => ({
@@ -1855,12 +2087,14 @@ export class AppRepository {
         categoryId: row.categoryId ?? undefined,
         category: row.category,
         ingredients: ingredientsByMenuId.get(row.id) ?? [],
+        recipe: recipeByMenuId.get(row.id) ?? [],
         bomIds: bomByMenuId.get(row.id) ?? [],
         stationId: row.stationId,
         referenceId: row.referenceId,
         printAreas: parsePrintAreas(row.printAreas),
         isFeatured: featuredItems.has(row.id),
         isSoldOut: soldOutItems.has(row.id),
+        modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
       }))
       .sort((a, b) => Number(b.isFeatured) - Number(a.isFeatured) || a.name.localeCompare(b.name));
 
@@ -1871,6 +2105,8 @@ export class AppRepository {
         name: tenant.name,
       },
       branding,
+      config: menuConfig,
+      scaffoldKey: resolvePublicMenuScaffoldKey(tenant.slug, tenant.id),
       capabilities: {
         takeawayOrder:
           enabledModules.includes("public_takeaway") &&
@@ -1895,6 +2131,7 @@ export class AppRepository {
         printAreas: parsePrintAreas(row.printAreas),
       })),
       items: publicItems,
+      categoryModifierPools: allCategoryPools,
       generatedAt: new Date().toISOString(),
     });
   }
@@ -2312,6 +2549,150 @@ export class AppRepository {
     return groupOrderSubmitResponseSchema.parse({ session: mapped, order: created.order });
   }
 
+  /**
+   * Authoritative server-side pricing for PUBLIC orders (self-order/takeaway).
+   *
+   * The client only supplies identifiers and selections. Here we resolve every
+   * line against the live catalog (base price), validate modifier selections
+   * (they must belong to the item's own groups or its category pools) and
+   * recompute the price delta with the shared rules. Sold-out/inactive items
+   * and unknown options are rejected. Returns priced `orderItemSchema`-shaped
+   * lines plus the recomputed total — client-sent prices are never trusted.
+   */
+  private async pricePublicOrderLines(
+    tenantId: string,
+    lines: PublicOrderLine[],
+  ): Promise<{ items: CreateOrderRequest["items"]; total: number; lines: PublicOrderPricedLine[] }> {
+    const menu = await this.getPublicMenuForTenantId(tenantId);
+    const itemById = new Map(menu.items.map((item) => [item.id, item]));
+    const poolsByCategoryId = new Map<string, typeof menu.categoryModifierPools>();
+    for (const pool of menu.categoryModifierPools) {
+      const categoryIds = pool.categoryIds.length > 0 ? pool.categoryIds : pool.categoryId ? [pool.categoryId] : [];
+      for (const categoryId of categoryIds) {
+        const existing = poolsByCategoryId.get(categoryId) ?? [];
+        existing.push(pool);
+        poolsByCategoryId.set(categoryId, existing);
+      }
+    }
+
+    const pricedLines: PublicOrderPricedLine[] = [];
+    const items: CreateOrderRequest["items"] = [];
+
+    for (const line of lines) {
+      const menuItem = itemById.get(line.menuItemId);
+      if (!menuItem) {
+        throw new Error(`Public order item '${line.menuItemId}' not found in menu`);
+      }
+      if (menuItem.isSoldOut) {
+        throw new Error(`Public order item '${menuItem.name}' is sold out`);
+      }
+
+      const categoryPools = menuItem.categoryId ? poolsByCategoryId.get(menuItem.categoryId) ?? [] : [];
+      const groupsById = new Map<string, z.infer<typeof modifierGroupSchema>>();
+      for (const group of menuItem.modifierGroups) groupsById.set(group.id, group);
+      for (const pool of categoryPools) {
+        groupsById.set(pool.id, {
+          id: pool.id,
+          name: pool.name,
+          required: false,
+          minSelections: 0,
+          maxSelections: Math.max(1, pool.options.length),
+          multiSelectPriceMode: "sum",
+          sortOrder: pool.sortOrder,
+          options: pool.options
+            // Disabled options are not purchasable, server side too.
+            .filter((option) => option.isActive !== false)
+            .map((option) => ({
+            id: option.id,
+            name: option.name || option.componentId || option.id,
+            inventoryItemId: option.inventoryItemId,
+            referenceId: option.referenceId ?? undefined,
+            componentType: option.componentType,
+            componentId: option.componentId,
+            quantity: option.quantity ?? 1,
+            unit: (option.unit as z.infer<typeof modifierOptionSchema>["unit"]) ?? "pz",
+            priceDelta: option.priceDelta ?? 0,
+            priceMultiplier: option.priceMultiplier ?? undefined,
+            isDefault: false,
+            isActive: true,
+            sortOrder: option.sortOrder ?? 0,
+            ingredientOverrides: [],
+          })),
+        });
+      }
+
+      let modifierDelta = 0;
+      const selectedModifiers: Array<{ groupId: string; optionId: string }> = [];
+      const derivedOverrides: Array<{ ingredientId: string; action: "add" | "remove" }> = [];
+      const perGroupSelections = new Map<string, string[]>();
+      for (const selection of line.selectedModifiers ?? []) {
+        const group = groupsById.get(selection.groupId);
+        if (!group) {
+          throw new Error(`Modifier group '${selection.groupId}' does not apply to '${menuItem.name}'`);
+        }
+        const option = group.options.find((candidate) => candidate.id === selection.optionId);
+        if (!option) {
+          throw new Error(`Modifier option '${selection.optionId}' does not belong to group '${group.name}'`);
+        }
+        selectedModifiers.push({ groupId: selection.groupId, optionId: selection.optionId });
+        const list = perGroupSelections.get(selection.groupId) ?? [];
+        list.push(selection.optionId);
+        perGroupSelections.set(selection.groupId, list);
+        for (const override of option.ingredientOverrides ?? []) {
+          if (override.action === "add" || override.action === "replace") {
+            derivedOverrides.push({ ingredientId: override.ingredientId, action: "add" });
+          } else if (override.action === "remove") {
+            derivedOverrides.push({ ingredientId: override.ingredientId, action: "remove" });
+          }
+        }
+      }
+      for (const [groupId, optionIds] of perGroupSelections) {
+        const group = groupsById.get(groupId)!;
+        // basePrice is required for priceMultiplier options (MAXI): without it
+        // a "double the price" modifier would silently price at 0 extra.
+        modifierDelta += computeGroupModifierDelta(group, optionIds, menuItem.price);
+      }
+
+      const declaredOverrides = line.ingredientOverrides ?? [];
+      const mergedOverrides = [...declaredOverrides, ...derivedOverrides].filter(
+        (entry, index, all) =>
+          all.findIndex((candidate) => candidate.ingredientId === entry.ingredientId && candidate.action === entry.action) === index,
+      );
+
+      const unitPrice = menuItem.price + modifierDelta;
+      const lineTotal = Number((unitPrice * line.quantity).toFixed(2));
+      pricedLines.push({
+        ...line,
+        name: menuItem.name,
+        unitPrice,
+        modifierPriceDelta: modifierDelta,
+        lineTotal,
+      });
+      items.push({
+        id: menuItem.id,
+        name: menuItem.name,
+        price: unitPrice,
+        quantity: line.quantity,
+        notes: line.notes,
+        ingredientOverrides: mergedOverrides.length > 0 ? mergedOverrides : undefined,
+        selectedModifiers: selectedModifiers.length > 0 ? selectedModifiers : undefined,
+      });
+    }
+
+    const total = Number(pricedLines.reduce((sum, line) => sum + line.lineTotal, 0).toFixed(2));
+    return { items, total, lines: pricedLines };
+  }
+
+  /** Public menu for a tenant resolved by its id (used by the pricing helper). */
+  private async getPublicMenuForTenantId(tenantId: string): Promise<PublicMenuResponse> {
+    const tenantRows = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const tenant = tenantRows[0];
+    if (!tenant) {
+      throw new Error("Tenant not found for public menu");
+    }
+    return this.getPublicMenu(tenant.slug);
+  }
+
   async createPublicTakeawayOrder(
     tenantSlug: string,
     payload: PublicTakeawayCreateRequest,
@@ -2351,10 +2732,6 @@ export class AppRepository {
       }
     }
 
-    if (typeof config.minOrderAmount === "number" && parsed.total < config.minOrderAmount) {
-      throw new Error(`Takeaway minimum order is ${config.minOrderAmount.toFixed(2)}`);
-    }
-
     if (typeof config.maxItems === "number") {
       const itemCount = parsed.items.reduce((sum, item) => sum + item.quantity, 0);
       if (itemCount > config.maxItems) {
@@ -2371,10 +2748,23 @@ export class AppRepository {
     }
 
     const staffId = await this.resolveSelfOrderStaffId(tenant.id);
+    const requestedLines: PublicOrderLine[] = parsed.items.map((item) => ({
+      menuItemId: item.id,
+      quantity: item.quantity,
+      notes: item.notes,
+      ingredientOverrides: item.ingredientOverrides,
+      selectedModifiers: item.selectedModifiers,
+    }));
+    const priced = await this.pricePublicOrderLines(tenant.id, requestedLines);
+
+    if (typeof config.minOrderAmount === "number" && priced.total < config.minOrderAmount) {
+      throw new Error(`Takeaway minimum order is ${config.minOrderAmount.toFixed(2)}`);
+    }
+
     const created = await this.createOrder({
       orderType: "takeaway",
-      items: parsed.items,
-      total: parsed.total,
+      items: priced.items,
+      total: priced.total,
       customerName: parsed.customerName,
       customerPhone: parsed.customerPhone,
       pickupEta: parsed.pickupEta,
@@ -2657,12 +3047,21 @@ export class AppRepository {
 
     const selfOrderStaffId = await this.resolveSelfOrderStaffId(tenant.id);
 
+    const requestedLines: PublicOrderLine[] = parsed.items.map((item) => ({
+      menuItemId: item.id,
+      quantity: item.quantity,
+      notes: item.notes,
+      ingredientOverrides: item.ingredientOverrides,
+      selectedModifiers: item.selectedModifiers,
+    }));
+    const priced = await this.pricePublicOrderLines(tenant.id, requestedLines);
+
     const tableKey = table.number;
     const order = await this.createOrder({
       orderType: "dine_in",
       table: tableKey,
-      items: parsed.items,
-      total: parsed.total,
+      items: priced.items,
+      total: priced.total,
       customerName: parsed.customerName,
       customerPhone: parsed.customerPhone,
       staffId: selfOrderStaffId,
@@ -2763,16 +3162,30 @@ export class AppRepository {
       }
     }
 
+    const isVirtualOrder = orderType === "takeaway" || orderType === "delivery";
     const ticketNumber =
       orderType === "takeaway"
         ? `TA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`
-        : undefined;
+        : orderType === "delivery"
+          ? `DL-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`
+          : undefined;
+
+    // Non-dine-in orders attach to a hidden virtual "conto" table so the table
+    // payment stack (closeTable / split / pay-items) can settle them. When the
+    // caller passes an existing virtual table number we reuse it (adding items
+    // to an open asporto/delivery); otherwise we open a new one keyed by ticket.
+    const requestedVirtualTable = isVirtualOrder ? parsed.table?.trim() : undefined;
+    const virtualTableNumber = isVirtualOrder
+      ? requestedVirtualTable && requestedVirtualTable.length > 0
+        ? requestedVirtualTable
+        : ticketNumber
+      : undefined;
 
     const order: Order = orderSchema.parse({
       ...parsed,
       id: crypto.randomUUID(),
       orderType,
-      table: orderType === "dine_in" ? parsed.table : undefined,
+      table: orderType === "dine_in" ? parsed.table : virtualTableNumber,
       ticketNumber,
       customerName: customerRecord?.fullName ?? parsed.customerName,
       customerId: customerRecord?.id ?? parsed.customerId,
@@ -2822,6 +3235,30 @@ export class AppRepository {
           .update(tables)
           .set({ status: "occupied" })
           .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.table)));
+      } else if (isVirtualOrder && virtualTableNumber) {
+        const existingVirtual = await tx
+          .select()
+          .from(tables)
+          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, virtualTableNumber)))
+          .limit(1);
+        if (existingVirtual.length > 0) {
+          if (existingVirtual[0].isVirtual !== 1) {
+            throw new Error(`Table "${virtualTableNumber}" is not an open takeaway/delivery conto`);
+          }
+          await tx
+            .update(tables)
+            .set({ status: "occupied", currentOrderId: order.id })
+            .where(and(eq(tables.tenantId, tenantId), eq(tables.id, existingVirtual[0].id)));
+        } else {
+          await tx.insert(tables).values({
+            id: `tbl_${crypto.randomUUID()}`,
+            tenantId,
+            number: virtualTableNumber,
+            status: "occupied",
+            currentOrderId: order.id,
+            isVirtual: 1,
+          });
+        }
       }
 
       const menuIds = [...new Set(order.items.map((item) => item.id))];
@@ -3367,7 +3804,7 @@ export class AppRepository {
 
     await withTenantTx(async (tx) => {
       const orderRows = await tx
-        .select({ id: orders.id, status: orders.status, staffId: orders.staffId, total: orders.total })
+        .select({ id: orders.id, status: orders.status, staffId: orders.staffId, total: orders.total, tableNumber: orders.tableNumber })
         .from(orders)
         .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
         .limit(1)
@@ -3377,7 +3814,6 @@ export class AppRepository {
       if (order.status === "paid" || order.status === "cancelled") {
         throw new Error(`Cannot change quantity for a ${order.status} order`);
       }
-
       const itemRows = await tx
         .select({ id: orderItems.id, menuItemId: orderItems.menuItemId, quantity: orderItems.quantity, price: orderItems.price })
         .from(orderItems)
@@ -3505,6 +3941,43 @@ export class AppRepository {
         .update(orders)
         .set({ total: String(Number(order.total) + (quantity - item.quantity) * Number(item.price)) })
         .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+
+      // Removing the last line leaves an empty, unpayable order behind: it
+      // would keep its status and hold the table "occupied", making it
+      // impossible to close ("No payable balance"). Cancel it and, when no
+      // other open order shares the table, free the table.
+      if (quantity === 0) {
+        const remainingItem = await tx
+          .select({ id: orderItems.id })
+          .from(orderItems)
+          .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)))
+          .limit(1);
+        if (remainingItem.length === 0) {
+          await tx
+            .update(orders)
+            .set({ status: "cancelled" })
+            .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+
+          if (order.tableNumber) {
+            const otherOpenOrder = await tx
+              .select({ id: orders.id })
+              .from(orders)
+              .where(and(
+                eq(orders.tenantId, tenantId),
+                eq(orders.tableNumber, order.tableNumber),
+                ne(orders.status, "paid"),
+                ne(orders.status, "cancelled"),
+              ))
+              .limit(1);
+            if (otherOpenOrder.length === 0) {
+              await tx
+                .update(tables)
+                .set({ status: "free", currentOrderId: null })
+                .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber)));
+            }
+          }
+        }
+      }
 
       if (impacts.length > 0 && quantity > 0) {
         await tx
@@ -3678,6 +4151,28 @@ export class AppRepository {
           cancelledByStaffId: actorStaffId,
         })
         .where(and(eq(orders.tenantId, tenantId), eq(orders.id, id)));
+
+      // If no open orders remain on the table/conto, release it. Otherwise a
+      // cancelled dine-in order (or the last line of an asporto/delivery conto)
+      // would leave the table stuck as "occupied" with nothing on it.
+      if (order.tableNumber) {
+        const remaining = await tx
+          .select({ id: orders.id })
+          .from(orders)
+          .where(and(
+            eq(orders.tenantId, tenantId),
+            eq(orders.tableNumber, order.tableNumber),
+            ne(orders.status, "paid"),
+            ne(orders.status, "cancelled"),
+          ))
+          .limit(1);
+        if (remaining.length === 0) {
+          await tx
+            .update(tables)
+            .set({ status: "free", currentOrderId: null })
+            .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber)));
+        }
+      }
 
       const cancelled = orderSchema.parse({
         id: order.id,
@@ -3955,15 +4450,34 @@ export class AppRepository {
     if (!bridgeRow) throw new Error(`Bridge ${bridgeId} not found`);
 
     // Build ESC/POS receipt for a "test stampa" using the existing EscPosBuilder.
+    const settings = await this.getUiSettings();
+    // Cashier test prints include the receipt logo (when configured) so the
+    // operator can validate the bitmap without closing a real bill. Station
+    // tickets never show the logo, matching the real receipt builders.
+    const isCashierArea = area === "cashier"
+      || (await this.printStationsRepo.getStation(area))?.kind === "cashier";
+    const logoBitmap = settings.printing.logoBitmap;
+
+    const hasTestLogo = isCashierArea && settings.printing.logoMode === "bitmap" && isValidLogoRaster(logoBitmap);
     const now = new Date();
     const ep = new EscPosBuilder();
     ep.init();
-    ep.align("center").doubleSize(true).bold(true).line("*** GUSTOPOS ***").doubleSize(false).bold(false);
-    ep.line("TEST STAMPA").line();
+    ep.font("a");
+    if (hasTestLogo) {
+      const raster = Buffer.from(logoBitmap as string, "base64");
+      ep.align("center");
+      ep.raw(0x1B, 0x33, 0x0A);
+      ep.bytes(raster);
+      ep.raw(0x1B, 0x32);
+      ep.line();
+    } else {
+      ep.align("center").doubleSize(true).bold(true).line(settings.brandName.toUpperCase()).doubleSize(false).bold(false);
+    }
+    ep.align("center").line("TEST STAMPA").line();
     ep.line(`Bridge: ${bridgeRow.name}${bridgeRow.host ? ` @ ${bridgeRow.host}` : ""}`);
     ep.line(`Area: ${area.toUpperCase()}`);
     if (message) ep.line(`Note: ${message}`);
-    ep.line(`Quando: ${now.toLocaleString("it-IT")}`);
+    ep.line(`Quando: ${formatRomeDateTime(now)}`);
     ep.line(`Job ID: (assegnato dopo claim)`);
     ep.line();
     ep.line("Se leggi questo messaggio,");
