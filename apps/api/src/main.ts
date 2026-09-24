@@ -92,6 +92,40 @@ async function bootstrap() {
   httpAdapter.get('/signing/digital-certificate.txt', sendSigningCertificate);
   httpAdapter.get('/api/signing/digital-certificate.txt', sendSigningCertificate);
 
+  // Same-origin download of the GustoPOS CA used as QZ Tray's trusted root
+  // (override.crt). nginx routes /signing/* to the API, so the API must serve
+  // it: the installer/diagnostics fetch it from the web origin. Additive and
+  // safe — no existing route (static or Nest) serves these paths.
+  const sendSigningCaCertificate = (_req: unknown, res: { setHeader: (name: string, value: string) => void; send: (body: string) => void; status: (code: number) => { type: (contentType: string) => { send: (body: string) => void } } }) => {
+    const caPaths = [
+      join(__dirname, '..', '..', 'print-bridge', 'certs', 'override.crt'),
+      join(__dirname, '..', '..', 'print-bridge', 'certs', 'ca-cert.pem'),
+    ];
+    try {
+      const ca = caPaths
+        .map((caPath) => {
+          try {
+            return readFileSync(caPath, 'utf8');
+          } catch {
+            return null;
+          }
+        })
+        .find((value): value is string => value !== null);
+      if (ca === undefined) {
+        res.status(404).type('text/plain').send('CA certificate not found');
+        return;
+      }
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename=override.crt');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.send(ca);
+    } catch {
+      res.status(404).type('text/plain').send('CA certificate not found');
+    }
+  };
+  httpAdapter.get('/signing/override.crt', sendSigningCaCertificate);
+  httpAdapter.get('/api/signing/override.crt', sendSigningCaCertificate);
+
   // Now that the explicit signing routes are registered, mount the SPA static
   // assets. Requests for /signing/* are already handled above, so express.static
   // can no longer shadow the freshly provisioned certificate.

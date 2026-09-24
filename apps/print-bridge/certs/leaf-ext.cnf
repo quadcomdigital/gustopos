@@ -2,5 +2,5 @@
 basicConstraints = CA:FALSE
 keyUsage = critical, digitalSignature
 extendedKeyUsage = serverAuth, clientAuth
-subjectAltName = DNS:test.franksbar.it
+subjectAltName = DNS:test.franksbar.it, DNS:test.anticocasalericevimenti.it, DNS:localhost, IP:127.0.0.1
 subjectKeyIdentifier = hash

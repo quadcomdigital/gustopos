@@ -59,20 +59,25 @@ if ($qzDir) {
 }
 Write-Host ""
 
-# 3. Check allowed.dat
+# 3. Check allowed.dat (user + machine + SYSTEM)
 Write-Host "[3/5] allowed.dat (whitelist) ..." -ForegroundColor Yellow
-$allowFile = Join-Path $env:APPDATA "qz\allowed.dat"
-if (Test-Path $allowFile) {
-    Write-Host "  Found: $allowFile" -ForegroundColor Green
-    Write-Host "  Contents:"
-    Get-Content $allowFile | ForEach-Object { Write-Host "    $_" }
-    if (Select-String -Path $allowFile -Pattern "F4E2BF9339DBF7A80EBCDEB1071FEFB0E47FED4C") {
-        Write-Host "  Our cert fingerprint: FOUND" -ForegroundColor Green
+$allowFiles = @(
+    (Join-Path $env:APPDATA "qz\allowed.dat"),
+    (Join-Path $env:PROGRAMDATA "qz\allowed.dat"),
+    (Join-Path $env:WINDIR "System32\config\systemprofile\AppData\Roaming\qz\allowed.dat")
+)
+foreach ($af in $allowFiles) {
+    if (Test-Path $af) {
+        Write-Host "  FOUND: $af" -ForegroundColor Green
+        Get-Content $af | ForEach-Object { Write-Host "    $_" }
+        if (Select-String -Path $af -Pattern "4DBC25886175FDBADCFD734C7C9AE1BA5B9994F0" -Quiet) {
+            Write-Host "  Our cert fingerprint: FOUND" -ForegroundColor Green
+        } else {
+            Write-Host "  Our cert fingerprint: NOT FOUND" -ForegroundColor Red
+        }
     } else {
-        Write-Host "  Our cert fingerprint: NOT FOUND" -ForegroundColor Red
+        Write-Host "  NOT FOUND: $af" -ForegroundColor DarkYellow
     }
-} else {
-    Write-Host "  NOT FOUND" -ForegroundColor Red
 }
 Write-Host ""
 
@@ -95,18 +100,18 @@ Write-Host ""
 # 5. Test server
 Write-Host "[5/5] Server connectivity ..." -ForegroundColor Yellow
 try {
-    $r = Invoke-WebRequest -Uri "https://test.franksbar.it/signing/digital-certificate.txt" -UseBasicParsing -TimeoutSec 5
-    Write-Host "  Digital certificate: OK ($($r.Content.Length) bytes)" -ForegroundColor Green
-    # Verify chain
-    $leafPem = $r.Content
-    try {
-        $overrideCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2([System.Text.Encoding]::ASCII.GetBytes((Get-Content (Join-Path $qzDir "override.crt") -Raw)))
-        Write-Host "  Can read override.crt: YES" -ForegroundColor Green
-    } catch {
-        Write-Host "  Can read override.crt: NO - $($_.Exception.Message)" -ForegroundColor Red
-    }
+    $r = Invoke-WebRequest -Uri "https://test.franksbar.it/api/signing/digital-certificate.txt" -UseBasicParsing -TimeoutSec 5
+    $leaf = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2([System.Text.Encoding]::ASCII.GetBytes($r.Content))
+    Write-Host "  digital-certificate: SHA1 $($leaf.Thumbprint)" -ForegroundColor Green
 } catch {
-    Write-Host "  ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  digital-certificate ERROR: $($_.Exception.Message)" -ForegroundColor Red
+}
+try {
+    $r2 = Invoke-WebRequest -Uri "https://test.franksbar.it/api/signing/override.crt" -UseBasicParsing -TimeoutSec 5
+    $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2([System.Text.Encoding]::ASCII.GetBytes($r2.Content))
+    Write-Host "  override.crt (CA):   SHA1 $($ca.Thumbprint)" -ForegroundColor Green
+} catch {
+    Write-Host "  override.crt ERROR: $($_.Exception.Message)" -ForegroundColor Red
 }
 Write-Host ""
 
@@ -115,10 +120,12 @@ Write-Host "  SUMMARY" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  If override.crt shows MISMATCH or NOT FOUND,"
-Write-Host "  run this command to fix it:"
+Write-Host "  run install-qz-cert.bat (as Administrator),"
+Write-Host "  or fix it manually with:"
 Write-Host ""
 Write-Host '  Stop-Process -Name "qz-tray" -Force -ErrorAction SilentlyContinue' -ForegroundColor Yellow
 Write-Host '  Start-Sleep -Seconds 3' -ForegroundColor Yellow
-Write-Host '  Invoke-WebRequest -Uri "https://test.franksbar.it/signing/override.crt" -OutFile "C:\Program Files\QZ Tray\override.crt" -UseBasicParsing' -ForegroundColor Yellow
+Write-Host '  Invoke-WebRequest -Uri "https://test.franksbar.it/api/signing/override.crt" -OutFile "C:\Program Files\QZ Tray\override.crt" -UseBasicParsing' -ForegroundColor Yellow
+Write-Host '  & "C:\Program Files\QZ Tray\qz-tray-console.exe" --allow "$env:TEMP\digital-certificate.txt"' -ForegroundColor Yellow
 Write-Host '  Start-Process "C:\Program Files\QZ Tray\qz-tray.exe"' -ForegroundColor Yellow
 Write-Host ""
