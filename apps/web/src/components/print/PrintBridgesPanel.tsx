@@ -185,7 +185,7 @@ export default function PrintBridgesPanel() {
               {sorted.length} bridge nel pool
               {sorted.some((b) => isLocalBridge(b.host)) && " · questo PC è già nel pool"}
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
               {sorted.map((bridge) => {
                 const cooldownFor = (area: string): boolean => {
                   const exp = cooldownExpiryByKey[`${bridge.id}|${area}`];

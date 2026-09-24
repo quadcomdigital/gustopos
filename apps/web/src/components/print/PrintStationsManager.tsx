@@ -55,7 +55,7 @@ export default function PrintStationsManager() {
     }
   };
 
-  const patch = async (id: string, payload: { name?: string; isActive?: boolean; isDefault?: boolean; kind?: PrintStationKind }) => {
+  const patch = async (id: string, payload: { name?: string; isActive?: boolean; isDefault?: boolean; kind?: PrintStationKind; ownItemsOnly?: boolean }) => {
     setSaving(true);
     setError('');
     try {
@@ -151,6 +151,20 @@ export default function PrintStationsManager() {
               >
                 {station.isActive ? 'Attiva' : 'Inattiva'}
               </button>
+              {station.kind === 'production' && (
+                <button
+                  type="button"
+                  onClick={() => void patch(station.id, { ownItemsOnly: !station.ownItemsOnly })}
+                  title={
+                    station.ownItemsOnly
+                      ? 'Stampa solo gli articoli di questa stazione'
+                      : 'Stampa l\u2019intero ordine (articoli del reparto in grande)'
+                  }
+                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border ${station.ownItemsOnly ? 'border-accent/50 text-accent' : 'border-border text-text-muted'}`}
+                >
+                  {station.ownItemsOnly ? 'Solo reparto' : 'Intero ordine'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void remove(station.id)}

@@ -4,6 +4,14 @@ import { useAppStore } from '../../store/app-store';
 import { uploadPrintLogo, retryPrintJob, type QzTrayConfig } from '../../shared/api/client';
 import PrintDiagnosticsPanel from './PrintDiagnosticsPanel';
 
+// Legacy print-area keys still stored in settings.activeAreas; the real routing
+// now uses the dynamic print stations, but this toggle is kept for validation.
+const PRINT_AREA_LABELS: Record<string, string> = {
+  kitchen: 'Cucina',
+  bar: 'Bar',
+  cashier: 'Cassa',
+};
+
 interface PrintSettingsSectionProps {
   draft: UiSettings;
   printingSuccess: string;
@@ -267,10 +275,13 @@ export default function PrintSettingsSection({
                     : 'bg-white text-secondary border-border'
                 }`}
               >
-                {area}
+                {PRINT_AREA_LABELS[area] ?? area}
               </button>
             ))}
           </div>
+          <p className="mt-2 text-[11px] text-text-muted">
+            Aree legacy: il routing reale delle comande usa le stazioni dinamiche configurate in Magazzino → Stazioni.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

@@ -9,6 +9,12 @@ interface Props {
 
 const AREAS: LocalBridgeArea[] = ["kitchen", "bar", "cashier"];
 
+const AREA_LABELS: Record<LocalBridgeArea, string> = {
+  kitchen: "Cucina",
+  bar: "Bar",
+  cashier: "Cassa",
+};
+
 /**
  * Phase E "Register this PC as a bridge" modal — v2 fixes:
  * - Save button requires EVERY active area to have a printer mapped
@@ -197,7 +203,7 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
                       }`}
                       onClick={() => toggleArea(a)}
                     >
-                      {a}
+                      {AREA_LABELS[a] ?? a}
                     </button>
                   );
                 })}
@@ -211,7 +217,7 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
                 return (
                   <div key={area} className="block text-[11px] border border-border rounded p-2 space-y-1.5">
                     <label className="flex items-center">
-                      <span className="inline-block min-w-20 uppercase font-bold">{area}</span>
+                      <span className="inline-block min-w-20 uppercase font-bold">{AREA_LABELS[area] ?? area}</span>
                       <select
                         className={`ml-2 flex-1 border rounded px-2 py-1 text-xs font-mono ${mapped ? "" : "border-red-300 bg-red-50"}`}
                         value={printersPerArea[area]}

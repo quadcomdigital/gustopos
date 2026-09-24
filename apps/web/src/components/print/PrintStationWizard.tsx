@@ -22,7 +22,7 @@ interface PairingState {
 
 /**
  * PrintStationWizard — admin-side modal that mints a 6-digit pairing code
- * (90s TTL, qrcode.react SVG render), counts down, regenerates on expiry,
+ * (5 min TTL, qrcode.react SVG render), counts down, regenerates on expiry,
  * copies the code to clipboard, and detects when the remote kitchen PC
  * completes its first heartbeat via print-bridge polling.
  *
@@ -206,7 +206,7 @@ export default function PrintStationWizard({ onClose }: { onClose: () => void })
               Collega una stampante remota
             </h2>
             <p className="text-[11px] text-text-muted mt-0.5">
-              Genera un codice a 6 cifre (valido 90 secondi) da inserire sul PC con la
+              Genera un codice a 6 cifre (valido 5 minuti) da inserire sul PC con la
               stampante. Una volta confermato, la connessione è automatica e permanente.
             </p>
           </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { PrintBridge } from '@gustopos/shared';
 import { filterLegacyAreas } from './legacy-areas';
 import { usePrintStations } from '../inventory/usePrintStations';
+import { fetchBridgeLogs } from '../../shared/api/client';
 
 type Freshness = 'fresh' | 'slow' | 'offline';
 
@@ -93,7 +94,34 @@ export default function BridgeCard({
     setFeedback('');
     try {
       await onTestDevice(bridge.id, { ip, port: port ?? undefined, label });
-      setFeedback(`Test inviato a ${ip}.`);
+      setFeedback(`Test inviato a ${ip} — in attesa dell'esito (fino a ~10s)…`);
+      // The agent acks the command with its result, which lands in the
+      // bridge diagnostics log. Watch that log so the admin sees success or
+      // the concrete failure (e.g. connection refused) right here.
+      const startedAt = Date.now() - 2000; // small slack for clock skew
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          const recent = await fetchBridgeLogs(bridge.id, { limit: 10 });
+          const hit = recent.find(
+            (entry) =>
+              new Date(entry.createdAt ?? entry.timestamp).getTime() >= startedAt &&
+              entry.component === 'command' &&
+              entry.message.includes(ip),
+          );
+          if (hit) {
+            setFeedback(
+              hit.level === 'error'
+                ? `❌ Test ${ip} fallito: ${hit.message.replace(/^command .*?fallito: /, '')}`
+                : `✅ Test ${ip}: ${hit.message}`,
+            );
+            return;
+          }
+        } catch {
+          // Log polling is best-effort; keep trying until the loop ends.
+        }
+      }
+      setFeedback(`Test inviato a ${ip}: nessun esito entro 10s (agente offline o esito nei Log → Diagnostica).`);
     } catch (e) {
       setFeedback(e instanceof Error ? e.message : 'Test fallito');
     } finally {
