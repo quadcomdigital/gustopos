@@ -20,6 +20,9 @@ $TenantSlug      = "{{SLUG}}"
 $ExpectedRootSha = "{{ROOT_SHA1}}"
 $ExpectedLeafSha = "{{LEAF_SHA1}}"
 $ExpectedCn      = "{{CN}}"
+# QZ stores/matches the SHA-1 in allowed.dat in LOWERCASE, case-sensitively
+# (qz/utils/ByteUtilities.toHexString(digest, upperCase=false)).
+$ExpectedLeafShaLc = $ExpectedLeafSha.ToLowerInvariant()
 
 $issues = New-Object System.Collections.Generic.List[string]
 
@@ -123,9 +126,11 @@ $foundAllow = $false
 foreach ($path in $allowPaths) {
   if (Test-Path $path) {
     $content = [IO.File]::ReadAllText($path)
-    if ($content -match [regex]::Escape($ExpectedLeafSha)) {
-      Ok "$path — fingerprint present"
+    if ($content -cmatch [regex]::Escape($ExpectedLeafShaLc)) {
+      Ok "$path — fingerprint present (lowercase, QZ accepts it)"
       $foundAllow = $true
+    } elseif ($content -cmatch [regex]::Escape($ExpectedLeafSha)) {
+      Warn "$path — fingerprint present but written in UPPERCASE: QZ matches the SHA-1 case-sensitively and ignores it (this is why the dialog keeps coming back). Re-run the installer."
     } else {
       Warn "$path — exists but the current fingerprint is missing (expected $ExpectedLeafSha)"
     }

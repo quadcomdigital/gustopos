@@ -18,6 +18,9 @@ type dashboardCallbacks struct {
 	TestPrint   func(area string) error
 	Config      func() *Config
 	Restart     func()
+	// Preflight runs a fresh local QZ Tray validation (certificate, anchor,
+	// chain, validity, allowed.dat) without opening a connection.
+	Preflight func() PreflightReport
 }
 
 // dashboardServer is a loopback-only HTTP server exposing local diagnostics for
@@ -54,6 +57,27 @@ func StartDashboard(rt *AgentRuntime, cb dashboardCallbacks, preferredPort int) 
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
 	}))
+	// GET returns the last report, POST runs a fresh one. The report is what
+	// explains a silent-printing failure (QZ Tray itself never says why).
+	mux.HandleFunc("/api/qz/preflight", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			if cb.Preflight == nil {
+				writeJSON(w, 501, map[string]any{"ok": false, "error": "preflight not available"})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "report": cb.Preflight()})
+		case http.MethodGet:
+			report := ds.runtime.Status.GetPreflight()
+			if report == nil {
+				writeJSON(w, 404, map[string]any{"ok": false, "error": "preflight not run yet"})
+				return
+			}
+			writeJSON(w, 200, report)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 	mux.HandleFunc("/api/pair", ds.guardPost(func(w http.ResponseWriter, _ *http.Request) {
 		if cb.RequestPair != nil {
 			cb.RequestPair()
@@ -180,6 +204,35 @@ func (d *dashboardServer) handleDiagnosticsDownload(w http.ResponseWriter, _ *ht
 	fmt.Fprintf(&b, "counters: claimed=%d printed=%d failed=%d\n", status.Claimed, status.Printed, status.Failed)
 	fmt.Fprintf(&b, "lastError: %s\n\n", status.LastError)
 
+	if preflight := status.Preflight; preflight != nil {
+		fmt.Fprintf(&b, "== QZ PREFLIGHT ==\n")
+		fmt.Fprintf(&b, "ok: %v  checked: %s\n", preflight.OK, preflight.CheckedAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(&b, "certificate: %s  sha1: %s\n", preflight.Subject, preflight.Fingerprint)
+		fmt.Fprintf(&b, "anchor: %s  sha1: %s\n", preflight.AnchorPath, preflight.AnchorSHA1)
+		if preflight.Whitelisted != "" {
+			fmt.Fprintf(&b, "allowed.dat: %s\n", preflight.Whitelisted)
+		}
+		if preflight.Healed != "" {
+			fmt.Fprintf(&b, "auto-heal: %s\n", preflight.Healed)
+		}
+		if preflight.Blocking != "" {
+			fmt.Fprintf(&b, "blocking: %s\n", preflight.Blocking)
+		}
+		for _, check := range preflight.Checks {
+			mark := "OK  "
+			if !check.OK {
+				mark = "FAIL"
+			}
+			fmt.Fprintf(&b, "  [%s] %s: %s\n", mark, check.Name, check.Detail)
+			if check.Fix != "" {
+				fmt.Fprintf(&b, "         fix: %s\n", check.Fix)
+			}
+		}
+		fmt.Fprintln(&b)
+	} else {
+		fmt.Fprintf(&b, "== QZ PREFLIGHT ==\n  not run yet\n\n")
+	}
+
 	fmt.Fprintf(&b, "== JOB HISTORY (newest first) ==\n")
 	for _, job := range d.runtime.Jobs.Snapshot() {
 		fmt.Fprintf(&b, "%s %s %-8s %-8s %dms %s\n", job.Timestamp, job.Area, job.Status, job.JobID, job.DurationMs, job.Error)
@@ -263,6 +316,17 @@ const dashboardHTML = `<!doctype html>
     <p class="muted" style="margin:10px 0 0">Associazione: usa "Riconfigura associazione" per reinserire il codice a 6 cifre da Settings → Configurazioni Stampa.</p>
   </section>
   <section>
+    <h2>Verifica QZ Tray <span class="muted" style="font-size:12px;font-weight:400">preflight locale</span></h2>
+    <div class="grid" id="preflight"></div>
+    <div class="actions" style="margin-top:10px">
+      <button class="secondary" onclick="post('/api/qz/preflight')">Esegui verifica</button>
+    </div>
+    <p class="muted" style="margin:10px 0 0">
+      Controlla override.crt, catena di fiducia, validità, orologio e allowed.dat senza aprire nessun dialog.
+      E' la stessa verifica che l'agente esegue prima di connettersi a QZ Tray.
+    </p>
+  </section>
+  <section>
     <h2>Job recenti</h2>
     <div class="scroller"><table id="jobs"><tbody></tbody></table></div>
   </section>
@@ -296,6 +360,23 @@ function render(state){
     kv('Ultima claim', s.lastClaimAt || '—') +
     kv('Contatori', 'claim '+ (s.claimed||0) +' · stampati '+ (s.printed||0) +' · falliti '+ (s.failed||0)) +
     kv('Ultimo errore', s.lastError || '—');
+  var pf = s.preflight;
+  var pfEl = document.getElementById('preflight');
+  if (!pf) {
+    pfEl.innerHTML = kv('Esito', 'non eseguito — premi "Esegui verifica"');
+  } else {
+    var pfRows = kv('Esito', pf.ok ? 'OK — la stampa silenziosa dovrebbe funzionare' : ('BLOCCATO: ' + (pf.blocking || '')));
+    pfRows += kv('Certificato', (pf.subject || '—') + (pf.fingerprint ? '  ·  SHA1 ' + pf.fingerprint : ''));
+    pfRows += kv('override.crt', (pf.anchorPath || 'assente') + (pf.anchorSha1 ? '  ·  SHA1 ' + pf.anchorSha1 : ''));
+    if (pf.whitelistedIn) pfRows += kv('allowed.dat', pf.whitelistedIn);
+    if (pf.healed) pfRows += kv('Auto-heal', pf.healed);
+    (pf.checks || []).forEach(function(c){
+      if (c.ok) return;
+      pfRows += kv((c.blocking ? '✗ ' : '· ') + c.name, c.detail + (c.fix ? '   → ' + c.fix : ''));
+    });
+    pfRows += kv('Aggiornato', pf.checkedAt ? new Date(pf.checkedAt).toLocaleString() : '—');
+    pfEl.innerHTML = pfRows;
+  }
   var jobs = state.jobs || [];
   document.querySelector('#jobs tbody').innerHTML = jobs.map(function(j){
     return '<tr><td>'+esc(j.timestamp)+'</td><td>'+esc(j.area)+'</td><td class="lv-'+(j.status==='failed'?'error':(j.status==='printed'?'info':''))+'">'+esc(j.status)+'</td><td>'+esc(j.jobId)+'</td><td>'+esc(j.durationMs)+'ms</td><td class="lv-error">'+esc(j.error||'')+'</td></tr>';

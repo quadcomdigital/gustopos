@@ -185,7 +185,10 @@ foreach ($dir in $allowDirs) {
     $allowFile = Join-Path $dir "allowed.dat"
     $existing = ""
     if (Test-Path $allowFile) { $existing = [IO.File]::ReadAllText($allowFile) }
-    if ($existing -notmatch [regex]::Escape($ExpectedLeafSha)) {
+    # Case-sensitive on purpose: QZ matches the SHA-1 with String.equals
+    # against its lowercase value, so a legacy UPPERCASE entry must not stop us
+    # from writing the line QZ actually accepts.
+    if (-not ($existing -clike ("*" + $ExpectedLeafShaLc + "*"))) {
       [IO.File]::WriteAllText($allowFile, ($existing + $line + "`r`n"), (New-Object Text.UTF8Encoding $false))
     }
     if (Test-Path $allowFile) { Ok "$allowFile" }

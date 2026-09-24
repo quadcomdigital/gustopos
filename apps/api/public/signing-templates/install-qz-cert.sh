@@ -139,12 +139,14 @@ NOT_BEFORE="$(qz_date "$(openssl x509 -in "$LEAF_PEM" -noout -startdate | cut -d
 NOT_AFTER="$(qz_date "$(openssl x509 -in "$LEAF_PEM" -noout -enddate | cut -d= -f2-)")"
 LINE="$(printf '%s\t%s\t%s\t%s\t%s\tTrue' "$LEAF_LC" "$CN_VALUE" "$OR_VALUE" "$NOT_BEFORE" "$NOT_AFTER")"
 
+# The presence check below is case-sensitive on purpose: a legacy UPPERCASE
+# entry must not stop us from writing the lowercase one QZ actually matches.
 append_allow() {
   local file="$1" dir
   dir="$(dirname "$file")"
   mkdir -p "$dir"
   touch "$file"
-  if ! grep -qi "$LEAF_LC" "$file" 2>/dev/null; then
+  if ! grep -q "$LEAF_LC" "$file" 2>/dev/null; then
     printf '%s\n' "$LINE" >> "$file"
   fi
   chmod 666 "$file" 2>/dev/null || true

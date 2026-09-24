@@ -181,6 +181,11 @@ func (a *Agent) executeCommand(ctx context.Context, command *BridgeCommand) {
 // ensureQZ connects to QZ Tray, fetching the signing certificate on first use.
 // If the connection was dropped (QZ Tray restarted, PC woke up, ...) it
 // recreates the client so printing keeps working without a process restart.
+//
+// Before dialling it runs the local preflight: QZ Tray never explains itself
+// (it just opens the access dialog and our handshake times out after 15s with
+// a generic message), while every reason is readable on this machine. Failing
+// fast turns "non scrivibile / non valido" into a specific instruction.
 func (a *Agent) ensureQZ() error {
 	if a.qz != nil && a.qz.Connected() {
 		a.setQZ(true)
@@ -191,16 +196,16 @@ func (a *Agent) ensureQZ() error {
 		a.qz.Close()
 		a.qz = nil
 	}
-	cert, err := a.api.FetchCertificate()
-	if err != nil {
+	report := a.RunPreflight()
+	if !report.OK {
 		a.setQZ(false)
-		return fmt.Errorf("fetch signing certificate: %w", err)
+		return fmt.Errorf("QZ preflight: %s", report.Blocking)
 	}
 	url := fmt.Sprintf("ws://localhost:%d", a.cfg.QZPort)
 	if a.cfg.QZSecure {
 		url = fmt.Sprintf("wss://localhost:%d", a.cfg.QZPort)
 	}
-	qz := NewQZClient(url, cert, a.api.SignQzMessage)
+	qz := NewQZClient(url, report.CertPEM, a.api.SignQzMessage)
 	if err := qz.Connect(); err != nil {
 		a.setQZ(false)
 		return err
@@ -209,6 +214,65 @@ func (a *Agent) ensureQZ() error {
 	a.setQZ(true)
 	log.Printf("connected to QZ Tray at %s", url)
 	return nil
+}
+
+// RunPreflight validates the tenant's certificate against this machine's QZ
+// Tray installation without opening a connection, and publishes the report to
+// the dashboard and the server-side diagnostics (Settings → Stampa).
+func (a *Agent) RunPreflight() PreflightReport {
+	cert, certErr := a.api.FetchCertificate()
+	if certErr != nil {
+		report := PreflightReport{
+			OK:        false,
+			CheckedAt: time.Now(),
+			Blocking:  "fetch signing certificate: " + certErr.Error(),
+			Checks: []PreflightCheck{{
+				Name: checkCertificate, OK: false, Blocking: true,
+				Detail: "cannot fetch /signing/digital-certificate.txt: " + certErr.Error(),
+				Fix:    "check the server URL in the pairing page and the network",
+			}},
+		}
+		a.setPreflight(report)
+		log.Printf("QZ preflight FAILED: %s", report.Blocking)
+		return report
+	}
+
+	// The anchor is best effort: when it cannot be fetched the preflight still
+	// validates the local override.crt on its own.
+	rootPEM, _ := a.api.FetchRootCA()
+	report := newPreflight(cert, rootPEM).Run()
+	a.setPreflight(report)
+	if !report.OK {
+		// The ring log is the stdlib log sink, so these lines reach the
+		// server's diagnostics (Settings → Stampa) with the next push.
+		log.Printf("QZ preflight FAILED: %s", report.Blocking)
+		for _, check := range report.Checks {
+			if check.OK || !check.Blocking {
+				continue
+			}
+			log.Printf("  - %s: %s", check.Name, check.Detail)
+			if check.Fix != "" {
+				log.Printf("    fix: %s", check.Fix)
+			}
+		}
+	} else if report.Healed != "" {
+		log.Printf("QZ preflight: %s", report.Healed)
+	}
+	return report
+}
+
+// LastPreflight returns the last report (nil when never run).
+func (a *Agent) LastPreflight() *PreflightReport {
+	if a.runtime == nil {
+		return nil
+	}
+	return a.runtime.Status.GetPreflight()
+}
+
+func (a *Agent) setPreflight(report PreflightReport) {
+	if a.runtime != nil {
+		a.runtime.Status.SetPreflight(report)
+	}
 }
 
 func (a *Agent) setQZ(connected bool) {

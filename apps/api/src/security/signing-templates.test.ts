@@ -100,12 +100,18 @@ test("the installers speak QZ's own allowed.dat format (lowercase fingerprint)",
     posix.includes("printf '%s\\t%s\\t%s\\t%s\\t%s\\tTrue'"),
     "allowed.dat line must keep QZ's tab-separated format",
   );
-  assert.ok(posix.includes("grep -qi"), "the presence check must be case-insensitive");
+  assert.ok(
+    posix.includes("grep -q \"$LEAF_LC\""),
+    "the presence check must be case-sensitive: a legacy UPPERCASE entry " +
+      "would otherwise block writing the lowercase line QZ matches",
+  );
+  assert.ok(!/grep -qi/.test(posix), "case-insensitive matching treats a legacy entry as valid");
   assert.ok(posix.includes("pkill -x"), "QZ must be stopped by exact process name");
   assert.ok(!/^\s*pkill\s+-f/m.test(posix), "pkill -f kills any command line that mentions the path");
 
   const windows = renderSigningTemplate("install-qz-cert.ps1", CTX);
   assert.ok(windows.includes("ExpectedLeafShaLc"), "Windows installer must lowercase the fingerprint");
+  assert.ok(windows.includes("-clike"), "the presence check must be case-sensitive");
   assert.ok(windows.includes("ToLowerInvariant()"));
 });
 
