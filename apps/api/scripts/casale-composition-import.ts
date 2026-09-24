@@ -28,6 +28,8 @@ import { categories, menuItems, menuItemComponents, tenants } from "../src/db/sc
 const TENANT_SLUG = "casale";
 const HOME_URL = "https://anticocasalericevimenti.it/wp-json/wp/v2/pages/8?_fields=content";
 const DRY_RUN = process.argv.includes("--dry-run");
+/** Max edit distance for the spelling-drift matching pass (Buonagrazia/Bonagrazia). */
+const MAX_EDIT_DISTANCE = 2;
 
 // Accordion section title (lowercased, contains…) → catalog categories allowed
 // as match candidates. Sections not listed here match against every item.
@@ -176,7 +178,53 @@ function matchDish(
 
   if (fuzzy.length === 1) return { kind: "fuzzy", item: fuzzy[0] };
   if (fuzzy.length > 1) return { kind: "ambiguous", items: fuzzy };
+
+  // Third pass: edit distance for spelling drift between the site and the
+  // catalog (e.g. site "Maccheroni Buonagrazia" vs catalog "MACCHERONI
+  // BONAGRAZIA"). Accepts ONLY a unique candidate within MAX_EDIT_DISTANCE;
+  // two+ candidates at the same distance are reported as ambiguous.
+  let best: { item: CatalogItem; distance: number } | null = null;
+  let bestCount = 0;
+  for (const item of pool) {
+    const candidate = normalize(item.name);
+    const distance = editDistance(target, candidate, MAX_EDIT_DISTANCE);
+    if (distance === null) continue;
+    if (!best || distance < best.distance) {
+      best = { item, distance };
+      bestCount = 1;
+    } else if (best && distance === best.distance) {
+      bestCount++;
+    }
+  }
+  if (best && bestCount === 1 && best.distance > 0) {
+    return { kind: "fuzzy", item: best.item };
+  }
+  if (best && bestCount > 1 && best.distance > 0) {
+    return { kind: "ambiguous", items: pool.filter((item) => editDistance(target, normalize(item.name), MAX_EDIT_DISTANCE) === best!.distance) };
+  }
   return null;
+}
+
+/** Bounded Levenshtein distance; returns null when above `max` (early exit). */
+function editDistance(a: string, b: string, max: number): number | null {
+  if (Math.abs(a.length - b.length) > max) return null;
+  const width = b.length + 1;
+  let prev = new Array<number>(width);
+  let curr = new Array<number>(width);
+  for (let j = 0; j < width; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    let rowMin = curr[0];
+    for (let j = 1; j < width; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      if (curr[j] < rowMin) rowMin = curr[j];
+    }
+    if (rowMin > max) return null;
+    [prev, curr] = [curr, prev];
+  }
+  const distance = prev[width - 1];
+  return distance <= max ? distance : null;
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
