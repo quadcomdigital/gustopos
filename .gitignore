@@ -18,6 +18,15 @@ coverage/
 /apps/api/signing/
 # Web signing private key: must NEVER be committed or served from public/ (only digital-certificate.txt is public):
 /apps/web/public/signing/private-key.pem
+/public/signing/private-key.pem
+
+# QZ signing private keys (shared legacy + per tenant) are generated on the
+# server by apps/print-bridge/scripts/gen-tenant-pki.sh and must never be
+# committed: they are the credentials that authorise silent printing.
+/apps/print-bridge/certs/private-key.pem
+/apps/print-bridge/certs/ca-key.pem
+/apps/print-bridge/certs/tenants/*/private-key.pem
+/apps/print-bridge/certs/tenants/*/ca-key.pem
 
 # Print-agent release artifacts (generated — publish via make publish-downloads):
 /apps/print-agent-go/bin/

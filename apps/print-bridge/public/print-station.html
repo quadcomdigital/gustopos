@@ -576,12 +576,14 @@
             </p>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               <a href="/install-qz-cert.bat" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Windows (.bat)</a>
-              <a href="/debug-qz-cert.bat" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Debug (.bat)</a>
+              <a href="/install-qz-cert.ps1" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">PowerShell (.ps1)</a>
+              <a href="/debug-qz-cert.ps1" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Debug (.ps1)</a>
               <a href="/install-qz-cert.sh" class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Linux/Mac (.sh)</a>
               <a href="/signing/override.crt" download class="btn btn-sm" style="padding: 6px 12px; font-size: 11px; text-decoration: none;">Certificate only (.crt)</a>
             </div>
             <p style="font-size: 10px; color: var(--text-muted); margin: 6px 0 0;">
-              Install cert for silent printing. Use Debug script to diagnose issues.
+              Installers are rendered by the server with this tenant's certificate — download them from the tenant
+              domain, run as administrator, no dialog should appear. Use Debug to diagnose an existing machine.
             </p>
           </div>
 

@@ -1,0 +1,19 @@
+{
+  "slug": "franks",
+  "cn": "GustoPOS Franks",
+  "domains": ["test.franksbar.it","franksbar.it"],
+  "generatedAt": "2026-09-24T20:18:02Z",
+  "root": {
+    "fingerprintSha1": "F3ED097219AE012C5982F9C57D7CD11F26823742",
+    "subject": "C = IT, ST = Rome, L = Rome, O = GustoPOS, CN = GustoPOS franks CA",
+    "notBefore": "Sep 24 20:18:01 2026 GMT",
+    "notAfter": "Sep 19 20:18:01 2046 GMT"
+  },
+  "leaf": {
+    "fingerprintSha1": "B08ECDDE25748DB70F8B16E58A32FEA7970D7A4A",
+    "subject": "C = IT, ST = Rome, L = Rome, O = GustoPOS, CN = GustoPOS Franks",
+    "notBefore": "Sep 24 20:18:02 2026 GMT",
+    "notAfter": "Sep 23 20:18:02 2028 GMT",
+    "renewalOf": ""
+  }
+}

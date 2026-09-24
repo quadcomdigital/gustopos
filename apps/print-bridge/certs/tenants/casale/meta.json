@@ -1,0 +1,19 @@
+{
+  "slug": "casale",
+  "cn": "GustoPOS Casale",
+  "domains": ["test.anticocasalericevimenti.it","anticocasalericevimenti.it"],
+  "generatedAt": "2026-09-24T20:18:01Z",
+  "root": {
+    "fingerprintSha1": "D8EED2FDDDDA821ED56A38E7266F849EB0B830A4",
+    "subject": "C = IT, ST = Rome, L = Rome, O = GustoPOS, CN = GustoPOS casale CA",
+    "notBefore": "Sep 24 20:18:01 2026 GMT",
+    "notAfter": "Sep 19 20:18:01 2046 GMT"
+  },
+  "leaf": {
+    "fingerprintSha1": "C4205A30E3CE04CCE28EEE0A2670F02DB7A1EB5B",
+    "subject": "C = IT, ST = Rome, L = Rome, O = GustoPOS, CN = GustoPOS Casale",
+    "notBefore": "Sep 24 20:18:01 2026 GMT",
+    "notAfter": "Sep 23 20:18:01 2028 GMT",
+    "renewalOf": ""
+  }
+}

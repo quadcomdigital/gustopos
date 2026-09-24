@@ -4,8 +4,43 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
+import { resolveTenantForRequest, tenantOrigin } from "./signing-tenants";
 
 const app = express();
+
+// Installer/diagnostics links on the print-station page point at this local
+// bridge. The scripts themselves are rendered by the API from the tenant's
+// origin (with that tenant's current certificate fingerprints), so redirect
+// instead of shipping a copy that goes stale the moment the certificate
+// rotates — a stale script whitelists a fingerprint the server no longer
+// serves, which is exactly what made QZ Tray reject the certificate on site.
+const SIGNING_INSTALLER_FILES = [
+  "install-qz-cert.bat",
+  "install-qz-cert.ps1",
+  "install-qz-cert.sh",
+  "debug-qz-cert.bat",
+  "debug-qz-cert.ps1",
+] as const;
+
+for (const installerFile of SIGNING_INSTALLER_FILES) {
+  app.get(`/${installerFile}`, (req, res) => {
+    const tenant = resolveTenantForRequest(req);
+    const origin =
+      (tenant ? tenantOrigin(tenant) : null) || process.env.PRINT_BRIDGE_ORIGIN?.trim().replace(/\/$/, "");
+    if (!origin) {
+      res
+        .status(404)
+        .type("text/plain")
+        .send(
+          `This bridge does not know which tenant it serves. Set PRINT_BRIDGE_TENANT=<slug> ` +
+            `(or PRINT_BRIDGE_ORIGIN=https://tenant-domain) in the environment, or open ` +
+            `https://<tenant-domain>/signing/${installerFile} directly.`,
+        );
+      return;
+    }
+    res.redirect(302, `${origin}/signing/${installerFile}`);
+  });
+}
 
 // Serve static files (print-station.html, qz-tray.js) from public/
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -313,28 +348,56 @@ app.use("/signing", (req, res, next) => {
 });
 
 const CERTS_DIR = path.resolve(__dirname, "..", "certs");
+// Legacy (pre-tenant) material. Per-tenant material lives in
+// certs/tenants/<slug>/ and wins whenever the request resolves a tenant.
 const PRIVATE_KEY_PATH = path.join(CERTS_DIR, "private-key.pem");
 const CERT_PATH = path.join(CERTS_DIR, "digital-certificate.pem");
 const CA_CERT_PATH = path.join(CERTS_DIR, "ca-cert.pem");
 
-// Cache cert/key content to avoid blocking the event loop on every request
-let _cachedCert: string | null = null;
-let _cachedKey: string | null = null;
-let _cachedCaCert: string | null = null;
-let _cacheModified = 0;
+interface CertBundle {
+  cert: string;
+  key: string;
+  caCert: string;
+  mtimeMs: number;
+}
 
-function getCerts() {
+// Cache per certificate path: a bridge can serve several tenants, and a
+// rotation for one of them must not invalidate (or overwrite) another's.
+const certCache = new Map<string, CertBundle>();
+
+function readBundle(certPath: string, keyPath: string, caCertPath: string): CertBundle {
+  const cached = certCache.get(certPath);
+  const mtimeMs = fs.statSync(certPath).mtimeMs;
+  if (cached && cached.mtimeMs === mtimeMs) return cached;
+
+  const bundle: CertBundle = {
+    cert: fs.readFileSync(certPath, "utf-8"),
+    key: fs.readFileSync(keyPath, "utf-8"),
+    caCert: fs.readFileSync(caCertPath, "utf-8"),
+    mtimeMs,
+  };
+  certCache.set(certPath, bundle);
+  console.log(`[print-bridge] Reloaded cert/key from disk (${certPath})`);
+  return bundle;
+}
+
+type SigningRequest = Parameters<typeof resolveTenantForRequest>[0];
+
+/**
+ * Signing material for this request: per-tenant first (signing-tenants.ts),
+ * legacy shared pair as fallback. The certificate, its key and the CA always
+ * come from the same source — mixing tenants would make QZ Tray log
+ * "Bad signature on request" and show the access dialog.
+ */
+function getCerts(req?: SigningRequest) {
+  const tenant = resolveTenantForRequest(req);
   try {
-    const stat = fs.statSync(CERT_PATH);
-    const mtimeMs = stat.mtimeMs;
-    if (mtimeMs !== _cacheModified || _cachedCert === null) {
-      _cachedCert = fs.readFileSync(CERT_PATH, "utf-8");
-      _cachedKey = fs.readFileSync(PRIVATE_KEY_PATH, "utf-8");
-      _cachedCaCert = fs.readFileSync(CA_CERT_PATH, "utf-8");
-      _cacheModified = mtimeMs;
-      console.log("[print-bridge] Reloaded cert/key from disk (mtime changed)");
-    }
-    return { cert: _cachedCert!, key: _cachedKey!, caCert: _cachedCaCert! };
+    const bundle = readBundle(
+      tenant ? tenant.certPath : CERT_PATH,
+      tenant ? tenant.keyPath : PRIVATE_KEY_PATH,
+      tenant ? tenant.rootCertPath : CA_CERT_PATH,
+    );
+    return { cert: bundle.cert, key: bundle.key, caCert: bundle.caCert, tenant };
   } catch (err) {
     console.error("[print-bridge] Failed to load certs:", err);
     throw err;
@@ -342,9 +405,9 @@ function getCerts() {
 }
 
 // Serve the private key (authenticated — only the agent should have this)
-app.get("/signing/private-key.pem", authMiddleware, (_req, res) => {
+app.get("/signing/private-key.pem", authMiddleware, (req, res) => {
   try {
-    const { key } = getCerts();
+    const { key } = getCerts(req);
     res.setHeader("Content-Type", "text/plain");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.send(key);
@@ -354,9 +417,9 @@ app.get("/signing/private-key.pem", authMiddleware, (_req, res) => {
 });
 
 // Serve the public certificate (public material — readable cross-origin)
-app.get("/signing/digital-certificate.txt", (_req, res) => {
+app.get("/signing/digital-certificate.txt", (req, res) => {
   try {
-    const { cert } = getCerts();
+    const { cert } = getCerts(req);
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Content-Type", "text/plain");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -397,7 +460,7 @@ app.get("/signing/sign-message", (req, res) => {
   }
 
   try {
-    const { key } = getCerts();
+    const { key } = getCerts(req);
     const sign = crypto.createSign("SHA512");
     sign.update(request);
     const signature = sign.sign(key, "base64");
@@ -411,9 +474,9 @@ app.get("/signing/sign-message", (req, res) => {
 });
 
 // Serve the root CA certificate for download (for QZ Tray override.crt)
-app.get("/signing/override.crt", (_req, res) => {
+app.get("/signing/override.crt", (req, res) => {
   try {
-    const { caCert } = getCerts();
+    const { caCert } = getCerts(req);
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Content-Type", "application/x-x509-ca-cert");
     res.setHeader("Content-Disposition", "attachment; filename=override.crt");
@@ -425,9 +488,9 @@ app.get("/signing/override.crt", (_req, res) => {
 });
 
 // Debug endpoint: validate the certificate chain and return diagnostic info
-app.get("/signing/debug", (_req, res) => {
+app.get("/signing/debug", (req, res) => {
   try {
-    const { cert, caCert } = getCerts();
+    const { cert, caCert } = getCerts(req);
     const { execSync } = require("node:child_process");
 
     // Parse the leaf cert
@@ -459,7 +522,7 @@ app.get("/signing/debug", (_req, res) => {
     // Check if private key matches the certificate
     let keyMatch = "N/A";
     try {
-      const { key } = getCerts();
+      const { key } = getCerts(req);
       const tmpKey = "/tmp/gustopos-key.pem";
       const tmpCert2 = "/tmp/gustopos-cert2.pem";
       fs.writeFileSync(tmpKey, key);
@@ -501,7 +564,7 @@ app.get("/signing/debug", (_req, res) => {
 //   -> SHA256(jsonString) -> feeds to SHA512withRSA verifier -> verify
 app.get("/signing/verify-test", (req, res) => {
   try {
-    const { cert, key } = getCerts();
+    const { cert, key } = getCerts(req);
 
     // Simulate a typical QZ Tray call payload
     const testPayload = JSON.stringify({
@@ -547,10 +610,10 @@ app.get("/signing/verify-test", (req, res) => {
 });
 
 // Returns the exact line to add to QZ Tray's allowed.dat for whitelist pre-population
-app.get("/signing/whitelist-entry", (_req, res) => {
+app.get("/signing/whitelist-entry", (req, res) => {
   try {
     const { execSync } = require("node:child_process");
-    const { cert } = getCerts();
+    const { cert } = getCerts(req);
 
     // Write cert to temp file for openssl processing
     const tmpCert = "/tmp/gustopos-wl-cert.pem";
@@ -598,10 +661,10 @@ app.get("/signing/whitelist-entry", (_req, res) => {
 });
 
 // Plain-text whitelist entry for installer scripts (actual tab characters)
-app.get("/signing/whitelist-entry.txt", (_req, res) => {
+app.get("/signing/whitelist-entry.txt", (req, res) => {
   try {
     const { execSync } = require("node:child_process");
-    const { cert } = getCerts();
+    const { cert } = getCerts(req);
 
     const tmpCert = "/tmp/gustopos-wl-cert.pem";
     fs.writeFileSync(tmpCert, cert);
@@ -629,7 +692,7 @@ app.get("/signing/whitelist-entry.txt", (_req, res) => {
   }
 });
 
-app.get("/health", (_req, res) => {
+app.get("/health", (req, res) => {
   res.json({ ok: true, port });
 });
 
