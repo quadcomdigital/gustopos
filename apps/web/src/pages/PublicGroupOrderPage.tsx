@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, type Socket } from 'socket.io-client';
 import { socketEvents, onSocketEvent, type GroupOrderSession, type PublicMenuResponse } from '@gustopos/shared';
 import {
@@ -9,6 +9,8 @@ import {
   patchPublicGroupOrderCart,
   submitPublicGroupOrder,
 } from '../shared/api/client';
+import { BrandFooter, BrandHeader, resolvePublicBrand } from '../menu/brand';
+import { formatPrice } from '../menu/lib/display';
 
 type LocalIdentity = {
   sessionId: string;
@@ -137,57 +139,141 @@ export default function PublicGroupOrderPage() {
     }
   };
 
+  const brand = useMemo(() => (menu ? resolvePublicBrand(menu) : null), [menu]);
+  const currency = brand?.currency ?? 'EUR';
+  const surfaceStyle = {
+    backgroundColor: brand?.surface ?? '#ffffff',
+    borderColor: brand?.border ?? '#e2e8f0',
+    color: brand?.ink ?? '#0f172a',
+  } as const;
+
   return (
-    <main className="min-h-screen bg-slate-100 p-4 space-y-4">
-      <h1 className="text-xl font-bold">Ordine condiviso</h1>
-      {!session && (
-        <div className="bg-white rounded border border-slate-200 p-4 space-y-2 max-w-md">
-          <input
-            value={displayName}
-            onChange={(event) => setDisplayName(event.target.value)}
-            placeholder="Il tuo nome"
-            className="w-full px-3 py-2 rounded border border-slate-300 text-sm"
-          />
-          <button onClick={() => void createOrJoin()} className="px-3 py-2 rounded bg-slate-900 text-white text-xs font-bold">
-            {joinCode === 'new' ? 'Crea sessione' : 'Entra nella sessione'}
-          </button>
-        </div>
-      )}
-      {session && (
-        <div className="space-y-3">
-          <div className="bg-white rounded border border-slate-200 p-3 text-sm">
-            <p>Codice: <strong>{session.joinCode}</strong></p>
-            <p>Partecipanti: {session.participants.length}</p>
-            <p>Totale: EUR {session.total.toFixed(2)}</p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {(menu?.items ?? []).map((item) => {
-              const current = session.items.find((entry) => entry.menuItemId === item.id)?.quantity ?? 0;
-              return (
-                <div key={item.id} className="bg-white rounded border border-slate-200 p-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-semibold">{item.name}</p>
-                    <p className="text-xs text-slate-500">EUR {item.price.toFixed(2)}</p>
-                  </div>
-                  <div className="flex gap-1">
-                    <button onClick={() => void upsertQty(item.id, Math.max(0, current - 1))} className="px-2 py-1 border rounded">-</button>
-                    <span className="px-2 py-1 text-sm">{current}</span>
-                    <button onClick={() => void upsertQty(item.id, current + 1)} className="px-2 py-1 border rounded">+</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <button
-            onClick={() => void submit()}
-            disabled={!isMaster || submitting || session.status !== 'open'}
-            className="px-4 py-2 rounded bg-emerald-600 text-white text-xs font-bold disabled:opacity-50"
+    <main
+      className="menu-brand min-h-[100dvh]"
+      style={{ backgroundColor: brand?.pageBg ?? '#f8fafc', color: brand?.ink ?? '#0f172a' }}
+    >
+      <BrandHeader
+        brand={brand}
+        name={menu?.tenant.name ?? tenantSlug}
+        action={
+          <Link
+            to={`/${tenantSlug}/menu`}
+            className="min-h-[36px] rounded-full border border-white/25 px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-white/85 transition hover:bg-white/10"
           >
-            {isMaster ? 'Conferma ordine' : 'Solo master puo confermare'}
-          </button>
+            Menu
+          </Link>
+        }
+      />
+
+      <div className="mx-auto max-w-3xl space-y-4 px-4 py-6">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.2em]" style={{ color: brand?.muted ?? '#64748b' }}>
+            Ordine condiviso
+          </p>
+          <h1 className="display mt-1 text-3xl font-extrabold">Ordina insieme</h1>
+          <p className="mt-2 text-sm" style={{ color: brand?.muted ?? '#64748b' }}>
+            Ogni partecipante aggiunge i propri piatti: il totale si aggiorna in tempo reale.
+          </p>
         </div>
-      )}
-      {error && <p className="text-sm text-rose-600">{error}</p>}
+
+        {!session && (
+          <div className="space-y-3 rounded-2xl border p-4 shadow-sm" style={surfaceStyle}>
+            <label className="block">
+              <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: brand?.muted ?? '#64748b' }}>
+                Il tuo nome
+              </span>
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="Nome"
+                className="mt-1.5 min-h-[48px] w-full rounded-xl border px-3 text-sm outline-none focus:ring-2"
+                style={{ backgroundColor: brand?.pageBg ?? '#f8fafc', borderColor: brand?.border ?? '#e2e8f0', color: brand?.ink ?? '#0f172a' }}
+              />
+            </label>
+            <button
+              onClick={() => void createOrJoin()}
+              disabled={displayName.trim().length < 2}
+              className="min-h-[48px] w-full rounded-xl text-xs font-extrabold uppercase tracking-[0.16em] transition active:scale-[0.99] disabled:opacity-50"
+              style={{ backgroundColor: brand?.accent ?? '#0f172a', color: brand?.accentForeground ?? '#ffffff' }}
+            >
+              {joinCode === 'new' ? 'Crea sessione' : 'Entra nella sessione'}
+            </button>
+          </div>
+        )}
+
+        {session && (
+          <div className="space-y-3">
+            <div className="rounded-2xl border p-4 text-sm shadow-sm" style={surfaceStyle}>
+              <div className="flex items-baseline justify-between gap-3">
+                <span style={{ color: brand?.muted ?? '#64748b' }}>Codice</span>
+                <strong className="display text-lg font-extrabold tracking-tight">{session.joinCode}</strong>
+              </div>
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span style={{ color: brand?.muted ?? '#64748b' }}>Partecipanti</span>
+                <strong className="tabular-nums">{session.participants.length}</strong>
+              </div>
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span style={{ color: brand?.muted ?? '#64748b' }}>Totale</span>
+                <strong className="tabular-nums">{formatPrice(currency, session.total)}</strong>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              {(menu?.items ?? []).map((item) => {
+                const current = session.items.find((entry) => entry.menuItemId === item.id)?.quantity ?? 0;
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl border p-3 shadow-sm"
+                    style={surfaceStyle}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold">{item.name}</p>
+                      <p className="text-xs tabular-nums" style={{ color: brand?.muted ?? '#64748b' }}>
+                        {formatPrice(currency, item.price)}
+                      </p>
+                    </div>
+                    <div className="flex flex-none items-center gap-1">
+                      <button
+                        onClick={() => void upsertQty(item.id, Math.max(0, current - 1))}
+                        aria-label={`Riduci ${item.name}`}
+                        className="flex h-11 w-11 items-center justify-center rounded-xl border font-bold"
+                        style={{ borderColor: brand?.border ?? '#e2e8f0' }}
+                      >
+                        −
+                      </button>
+                      <span className="w-8 text-center text-sm font-bold tabular-nums">{current}</span>
+                      <button
+                        onClick={() => void upsertQty(item.id, current + 1)}
+                        aria-label={`Aumenta ${item.name}`}
+                        className="flex h-11 w-11 items-center justify-center rounded-xl border font-bold"
+                        style={{ borderColor: brand?.border ?? '#e2e8f0' }}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={() => void submit()}
+              disabled={!isMaster || submitting || session.status !== 'open'}
+              className="min-h-[48px] w-full rounded-xl text-xs font-extrabold uppercase tracking-[0.16em] transition active:scale-[0.99] disabled:opacity-50"
+              style={{ backgroundColor: brand?.accent ?? '#0f172a', color: brand?.accentForeground ?? '#ffffff' }}
+            >
+              {isMaster ? 'Conferma ordine' : 'Solo il master può confermare'}
+            </button>
+          </div>
+        )}
+
+        {error && (
+          <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>
+        )}
+      </div>
+
+      <BrandFooter brand={brand} name={menu?.tenant.name ?? tenantSlug} />
     </main>
   );
 }

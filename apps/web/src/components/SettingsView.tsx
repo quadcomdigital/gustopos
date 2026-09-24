@@ -20,9 +20,11 @@ import TablesManagementView from './TablesManagementView';
 import PrintBridgesPanel from './print/PrintBridgesPanel';
 import PrintStationsManager from './print/PrintStationsManager';
 import PrintSettingsSection from './print/PrintSettingsSection';
+import PublicMenuDesignEditor from './PublicMenuDesignEditor';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';
 import { fetchQzTrayConfig, updateQzTrayConfig, type QzTrayConfig } from '../shared/api/client';
+import { useTerminalProfile } from '../hooks/useTerminalProfile';
 
 interface SettingsViewProps {
   settings: UiSettings;
@@ -108,7 +110,8 @@ export default function SettingsView({
   const enabledModules = useAppStore((state) => state.enabledModules);
   const storeError = useAppStore((state) => state.error);
   const { can } = usePermission();
-  const [activeTab, setActiveTab] = useState<'theme' | 'staff' | 'printing' | 'tables'>('theme');
+  const terminal = useTerminalProfile();
+  const [activeTab, setActiveTab] = useState<'theme' | 'staff' | 'printing' | 'tables' | 'menu'>('theme');
   const [draft, setDraftInternal] = useState<UiSettings>(settings);
   const isDirtyRef = useRef(false);
   const setDraft = useCallback<typeof setDraftInternal>((value) => {
@@ -137,6 +140,7 @@ export default function SettingsView({
   const tablesEnabled = hasModule('kitchen');
   const printingEnabled = hasModule('printing');
   const analyticsEnabled = hasModule('analytics');
+  const publicMenuEnabled = hasModule('public_menu');
 
   useEffect(() => {
     if (activeTab === 'printing' && printingEnabled && !qzConfig) {
@@ -302,6 +306,20 @@ export default function SettingsView({
 
   return (
     <div className="space-y-8">
+      <div className="bg-white border border-border rounded-xl p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-bold text-primary uppercase tracking-wider">Terminale</h3>
+          <span className={`badge ${terminal.isTouchTerminal ? 'badge-info' : 'badge-success'}`}>
+            {terminal.isTouchTerminal ? 'touch' : 'mouse'}
+          </span>
+        </div>
+        <p className="text-text-muted text-xs font-medium mt-1 tabular-nums">
+          Schermo {terminal.screenWidth}×{terminal.screenHeight} · finestra {terminal.innerWidth}×{terminal.innerHeight} ·
+          DPR {terminal.devicePixelRatio} · {terminal.monitorClass}
+          {terminal.standalonePwa ? ' · PWA' : ''}
+        </p>
+      </div>
+
       <div className="bg-white border border-border rounded-xl p-5 space-y-4">
         <div>
           <h2 className="text-2xl font-bold text-primary tracking-tight uppercase">Impostazioni Globali</h2>
@@ -346,6 +364,16 @@ export default function SettingsView({
             title={printingEnabled ? undefined : 'Modulo printing disabilitato'}
           >
             Configurazioni Stampa
+          </button>
+          <button
+            onClick={() => setActiveTab('menu')}
+            disabled={!publicMenuEnabled}
+            className={`px-3 py-2 rounded text-xs font-bold uppercase tracking-wider ${
+              activeTab === 'menu' ? 'bg-primary text-white' : 'border border-border'
+            } ${!publicMenuEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={publicMenuEnabled ? undefined : 'Modulo public_menu disabilitato'}
+          >
+            Menu Digitale
           </button>
         </div>
 
@@ -496,8 +524,13 @@ export default function SettingsView({
           </div>
         )}
 
-        {activeTab === 'tables' && tablesEnabled && (
-          <div className="space-y-8">
+        {activeTab === 'menu' && publicMenuEnabled && (
+          <div className="space-y-6">
+            <PublicMenuDesignEditor />
+          </div>
+        )}
+
+        {activeTab === 'tables' && tablesEnabled && (          <div className="space-y-8">
             <TablesManagementView
               tables={tables}
               loading={loading}
