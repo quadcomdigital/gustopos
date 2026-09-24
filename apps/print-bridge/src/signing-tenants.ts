@@ -5,11 +5,14 @@
  * cannot rely on the request Host to know which tenant it serves (its pages
  * are opened from 127.0.0.1). Resolution order:
  *
- *   1. `PRINT_BRIDGE_TENANT` — slug of the tenant this bridge belongs to
- *      (set it in ecosystem.config.cjs for every tenant deployment);
+ *   1. `?tenant=<slug>` — explicit, used by scripts;
  *   2. the `Origin`/`Host` of the caller, matched against `meta.json`
- *      `domains[]` — covers browsers opened from a tenant domain;
- *   3. null → the legacy shared certificate (pre-tenant installs keep working).
+ *      `domains[]` — a browser opened from a tenant domain always sends it,
+ *      and it must win over the configured default so one bridge can serve
+ *      several tenants;
+ *   3. `PRINT_BRIDGE_TENANT` — the tenant this bridge belongs to, used when
+ *      the caller is loopback (direct http://127.0.0.1:11905 usage);
+ *   4. null → the legacy shared certificate (pre-tenant installs keep working).
  *
  * This mirrors `apps/api/src/security/signing-tenants.ts`; the two cannot be
  * shared because the API must not compile print-bridge sources and the bridge
@@ -151,15 +154,22 @@ export function resolveTenantForRequest(req?: {
   }
 
   const configured = process.env.PRINT_BRIDGE_TENANT?.trim();
+
+  // A browser opened from a tenant domain always announces it — that answer
+  // must beat the configured default, otherwise a bridge shared by several
+  // tenants would answer every caller with the same material.
+  const fromOrigin = resolveTenantByHost(originToHost(header("origin")));
+  if (fromOrigin) return fromOrigin;
+
+  const fromHost = resolveTenantByHost(header("host"));
+  if (fromHost) return fromHost;
+
   if (configured) {
     const byEnv = resolveTenantBySlug(configured);
     if (byEnv) return byEnv;
   }
 
-  const fromOrigin = resolveTenantByHost(originToHost(header("origin")));
-  if (fromOrigin) return fromOrigin;
-
-  return resolveTenantByHost(header("host"));
+  return null;
 }
 
 /** Public origin a tenant is served from (used to redirect installer links). */

@@ -26,32 +26,38 @@ const newPrivateKey = () =>
     .toString();
 
 mkdirSync(path.join(TEST_CERTS_DIR, "tenants", "demo"), { recursive: true });
+mkdirSync(path.join(TEST_CERTS_DIR, "tenants", "other"), { recursive: true });
 copyFileSync(path.join(REPO_CERTS_DIR, "digital-certificate.pem"), path.join(TEST_CERTS_DIR, "digital-certificate.pem"));
 copyFileSync(path.join(REPO_CERTS_DIR, "ca-cert.pem"), path.join(TEST_CERTS_DIR, "ca-cert.pem"));
 writeFileSync(path.join(TEST_CERTS_DIR, "private-key.pem"), newPrivateKey());
-copyFileSync(
-  path.join(REPO_CERTS_DIR, "tenants", "casale", "digital-certificate.pem"),
-  path.join(TEST_CERTS_DIR, "tenants", "demo", "digital-certificate.pem"),
-);
-copyFileSync(
-  path.join(REPO_CERTS_DIR, "tenants", "casale", "ca-cert.pem"),
-  path.join(TEST_CERTS_DIR, "tenants", "demo", "ca-cert.pem"),
-);
-writeFileSync(path.join(TEST_CERTS_DIR, "tenants", "demo", "private-key.pem"), newPrivateKey());
-writeFileSync(
-  path.join(TEST_CERTS_DIR, "tenants", "demo", "meta.json"),
-  JSON.stringify(
-    {
-      slug: "demo",
-      cn: "GustoPOS demo",
-      domains: ["test.example.test"],
-      root: { fingerprintSha1: "ROOTSHA1DEMO" },
-      leaf: { fingerprintSha1: "LEAFSHA1DEMO" },
-    },
-    null,
-    2,
-  ),
-);
+for (const [slug, domain] of [
+  ["demo", "test.example.test"],
+  ["other", "test.other.example"],
+] as const) {
+  copyFileSync(
+    path.join(REPO_CERTS_DIR, "tenants", "casale", "digital-certificate.pem"),
+    path.join(TEST_CERTS_DIR, "tenants", slug, "digital-certificate.pem"),
+  );
+  copyFileSync(
+    path.join(REPO_CERTS_DIR, "tenants", "casale", "ca-cert.pem"),
+    path.join(TEST_CERTS_DIR, "tenants", slug, "ca-cert.pem"),
+  );
+  writeFileSync(path.join(TEST_CERTS_DIR, "tenants", slug, "private-key.pem"), newPrivateKey());
+  writeFileSync(
+    path.join(TEST_CERTS_DIR, "tenants", slug, "meta.json"),
+    JSON.stringify(
+      {
+        slug,
+        cn: `GustoPOS ${slug}`,
+        domains: [domain],
+        root: { fingerprintSha1: `ROOT${slug.toUpperCase()}` },
+        leaf: { fingerprintSha1: `LEAF${slug.toUpperCase()}` },
+      },
+      null,
+      2,
+    ),
+  );
+}
 process.env.QZ_CERTS_DIR = TEST_CERTS_DIR;
 
 // Import app after env setup
@@ -285,6 +291,23 @@ describe("Print Bridge Server", () => {
           "utf-8",
         );
         assert.strictEqual(res.text, tenantCert);
+      } finally {
+        delete process.env.PRINT_BRIDGE_TENANT;
+      }
+    });
+
+    it("lets the caller's Origin win over PRINT_BRIDGE_TENANT (shared bridge)", async () => {
+      process.env.PRINT_BRIDGE_TENANT = "demo";
+      try {
+        const res = await request(app)
+          .get("/signing/digital-certificate.txt")
+          .set("Origin", "https://test.other.example");
+        assert.strictEqual(res.status, 200);
+        const otherCert = await fs.readFile(
+          path.join(TEST_CERTS_DIR, "tenants", "other", "digital-certificate.pem"),
+          "utf-8",
+        );
+        assert.strictEqual(res.text, otherCert, "the Origin's tenant must win over the configured default");
       } finally {
         delete process.env.PRINT_BRIDGE_TENANT;
       }

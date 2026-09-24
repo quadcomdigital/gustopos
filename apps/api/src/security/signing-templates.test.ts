@@ -89,6 +89,26 @@ test("the diagnostics report every location QZ reads", () => {
   assert.ok(rendered.includes("clock"), "must check the clock (VALID_SIGNING_PERIOD is 15 min)");
 });
 
+test("the installers speak QZ's own allowed.dat format (lowercase fingerprint)", () => {
+  // qz/utils/ByteUtilities.toHexString(digest, upperCase=false): QZ writes and
+  // matches the SHA-1 in LOWERCASE, case-sensitively. An uppercase entry — the
+  // way openssl and .NET print it — is invisible to QZ, so the dialog keeps
+  // coming back even though the file "contains" the fingerprint.
+  const posix = renderSigningTemplate("install-qz-cert.sh", CTX);
+  assert.ok(posix.includes("tr 'A-F' 'a-f'"), "POSIX installer must lowercase the fingerprint");
+  assert.ok(
+    posix.includes("printf '%s\\t%s\\t%s\\t%s\\t%s\\tTrue'"),
+    "allowed.dat line must keep QZ's tab-separated format",
+  );
+  assert.ok(posix.includes("grep -qi"), "the presence check must be case-insensitive");
+  assert.ok(posix.includes("pkill -x"), "QZ must be stopped by exact process name");
+  assert.ok(!/^\s*pkill\s+-f/m.test(posix), "pkill -f kills any command line that mentions the path");
+
+  const windows = renderSigningTemplate("install-qz-cert.ps1", CTX);
+  assert.ok(windows.includes("ExpectedLeafShaLc"), "Windows installer must lowercase the fingerprint");
+  assert.ok(windows.includes("ToLowerInvariant()"));
+});
+
 test("refuses to render with an empty value instead of shipping a broken script", () => {
   assert.throws(
     () => renderSigningTemplate("install-qz-cert.sh", { ...CTX, origin: "" }),
