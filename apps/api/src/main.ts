@@ -48,8 +48,11 @@ async function bootstrap() {
     }),
   );
 
+  // NOTE: register the signing routes BEFORE app.useStaticAssets below. The web
+  // build ships its own copy of signing/digital-certificate.txt (apps/web/dist/
+  // signing/…) and express.static would otherwise shadow the explicit route and
+  // serve a stale certificate after a rotation — which makes QZ Tray reject it.
   const frontendPath = join(__dirname, '..', '..', 'web', 'dist');
-  app.useStaticAssets(frontendPath);
 
   // The Go print agent fetches the public QZ certificate from the API origin.
   // Do not statically mount apps/api/public: it also contains private-key.pem.
@@ -88,6 +91,11 @@ async function bootstrap() {
   const httpAdapter = app.getHttpAdapter().getInstance();
   httpAdapter.get('/signing/digital-certificate.txt', sendSigningCertificate);
   httpAdapter.get('/api/signing/digital-certificate.txt', sendSigningCertificate);
+
+  // Now that the explicit signing routes are registered, mount the SPA static
+  // assets. Requests for /signing/* are already handled above, so express.static
+  // can no longer shadow the freshly provisioned certificate.
+  app.useStaticAssets(frontendPath);
 
   app.enableShutdownHooks();
 
