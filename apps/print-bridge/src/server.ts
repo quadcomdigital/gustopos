@@ -347,9 +347,12 @@ app.use("/signing", (req, res, next) => {
   next();
 });
 
-const CERTS_DIR = path.resolve(__dirname, "..", "certs");
 // Legacy (pre-tenant) material. Per-tenant material lives in
 // certs/tenants/<slug>/ and wins whenever the request resolves a tenant.
+// QZ_CERTS_DIR is the same override signing-tenants.ts honours: it points the
+// bridge at an alternate directory (tests build a throwaway PKI there, a
+// deployment may keep the material outside the repo). Unset → ./certs.
+const CERTS_DIR = process.env.QZ_CERTS_DIR?.trim() || path.resolve(__dirname, "..", "certs");
 const PRIVATE_KEY_PATH = path.join(CERTS_DIR, "private-key.pem");
 const CERT_PATH = path.join(CERTS_DIR, "digital-certificate.pem");
 const CA_CERT_PATH = path.join(CERTS_DIR, "ca-cert.pem");
