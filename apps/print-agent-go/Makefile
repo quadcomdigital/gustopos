@@ -1,9 +1,21 @@
-BINARY := gustopos-print-agent
-VERSION ?= 0.13.8
+VERSION ?= 0.13.9
 # Default server origin baked into the binary (pre-filled in the pairing page).
 # Override per deployment, e.g. make linux API_BASE=https://pos.franksbar.it
 API_BASE ?= https://test.franksbar.it
-LDFLAGS := -s -w -X main.version=$(VERSION) -X main.defaultAPIBase=$(API_BASE)
+# FLAVOR tags a tenant-specific build: when set, artifacts are published as
+# gustopos-print-agent-<flavor>-<os>-<arch> so several default origins can
+# coexist in the shared /downloads folder (each agent self-updates onto its
+# own artifact — see artifactName() in updater.go).
+# Usage: make linux windows darwin API_BASE=https://test.anticocasalericevimenti.it FLAVOR=casale
+FLAVOR ?=
+ifeq ($(FLAVOR),)
+BINARY := gustopos-print-agent
+FLAVOR_LDFLAG :=
+else
+BINARY := gustopos-print-agent-$(FLAVOR)
+FLAVOR_LDFLAG := -X main.flavor=$(FLAVOR)
+endif
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.defaultAPIBase=$(API_BASE) $(FLAVOR_LDFLAG)
 # -H=windowsgui marks the PE subsystem as GUI so double-clicking the agent does
 # not spawn a console window: it runs silently in the notification tray.
 WINDOWS_LDFLAGS := $(LDFLAGS) -H=windowsgui

@@ -115,17 +115,26 @@ for i in "${!ARTIFACTS[@]}"; do
     *darwin-arm64)      label="macOS";   arch="arm64 (Apple Silicon)";;
     *)                  label="?";       arch="?";;
   esac
-  ROWS+=("$label|$arch|$name|$sha|$human")
+  # Tenant-flavored builds (gustopos-print-agent-<flavor>-<os>-<arch>) get a
+  # tag so the shared download page can show which server they pair with.
+  # Flavorless names (gustopos-print-agent-<os>-<arch>) are left untagged.
+  flavor=""
+  if [[ "$name" =~ ^gustopos-print-agent-([A-Za-z0-9]+)-(windows|linux|darwin)- ]]; then
+    flavor="${BASH_REMATCH[1]}"
+  fi
+  ROWS+=("$label|$arch|$name|$sha|$human|$flavor")
 done
 
 # Group by OS, preserving order: Windows, Linux, macOS.
 cards=""
 for os in Windows Linux macOS; do
   for row in "${ROWS[@]}"; do
-    IFS='|' read -r label arch name sha human <<< "$row"
+    IFS='|' read -r label arch name sha human flavor <<< "$row"
     [[ "$label" == "$os" ]] || continue
+    ftag=""
+    [[ -n "$flavor" ]] && ftag="<div class=\"flavor\">$flavor</div>"
     cards+="<div class=\"card\">
-  <div class=\"card-os\">$label</div>
+  <div class=\"card-os\">$label$ftag</div>
   <div class=\"card-arch\">$arch</div>
   <a class=\"btn\" href=\"bin/$name\" download>Scarica <span class=\"fname\">$name</span></a>
   <div class=\"meta\">$human · sha256 <code>${sha:0:16}…</code></div>
@@ -166,6 +175,9 @@ cat > "$DEST_DIR/index.html" <<EOF
           transition:transform .15s ease, border-color .15s ease, background .15s ease; }
   .card:hover { transform:translateY(-2px); border-color:var(--green-dim); background:var(--card-hover); }
   .card-os { font-size:15px; font-weight:700; }
+  .flavor { display:inline-block; margin-left:6px; font-size:10px; font-weight:600;
+    background:rgba(0,255,136,.12); color:var(--green); border:1px solid rgba(0,255,136,.35);
+    border-radius:999px; padding:1px 8px; vertical-align:middle; }
   .card-arch { color:var(--muted); font-size:13px; }
   .btn { margin-top:auto; text-align:center; background:var(--green); color:#000; font-weight:700;
          text-decoration:none; border-radius:8px; padding:10px 12px; font-size:13px;

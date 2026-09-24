@@ -26,6 +26,13 @@ var version = "0.1.0"
 // `-ldflags "-X main.defaultAPIBase=https://pos.example.com"`.
 var defaultAPIBase = "https://test.franksbar.it"
 
+// flavor tags a tenant-specific build (empty for the default release). It is
+// baked in by the Makefile (`FLAVOR=casale`) and used by the self-updater to
+// pick the artifact matching this build (updater.go artifactName), so builds
+// for different default origins can be published side by side in the shared
+// /downloads folder without cross-updating each other.
+var flavor = ""
+
 // backgroundMode suppresses modal dialogs. Set by the -background flag (the
 // Windows logon task passes it) so an unattended run never blocks on a dialog.
 var backgroundMode bool
