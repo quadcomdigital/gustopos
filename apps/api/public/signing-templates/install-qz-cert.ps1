@@ -23,6 +23,12 @@ $TenantSlug      = "{{SLUG}}"
 $ExpectedRootSha = "{{ROOT_SHA1}}"
 $ExpectedLeafSha = "{{LEAF_SHA1}}"
 $ExpectedCn      = "{{CN}}"
+# QZ Tray stores the SHA-1 in allowed.dat in LOWERCASE
+# (qz/utils/ByteUtilities.toHexString(digest, upperCase=false)) and matches it
+# case-sensitively, so every fingerprint comparison and every line written here
+# must be lowercase — an uppercase entry is simply never seen by QZ.
+$ExpectedRootShaLc = $ExpectedRootSha.ToLowerInvariant()
+$ExpectedLeafShaLc = $ExpectedLeafSha.ToLowerInvariant()
 
 function Step([int]$n, [string]$msg) {
   Write-Host ("[{0}/6] {1}" -f $n, $msg) -ForegroundColor Cyan
@@ -80,15 +86,15 @@ if ($leafPem -notmatch "BEGIN CERTIFICATE") { Fail "$Origin/signing/digital-cert
 $ca   = Get-CertFromPem $caPem
 $leaf = Get-CertFromPem $leafPem
 
-$caSha   = Get-Sha1 (Get-PemBytes $caPem)
-$leafSha = Get-Sha1 (Get-PemBytes $leafPem)
-Ok "override.crt  SHA1 $caSha"
-Ok "certificate   SHA1 $leafSha  CN=$($leaf.Subject)"
+$caSha   = (Get-Sha1 (Get-PemBytes $caPem)).ToLowerInvariant()
+$leafSha = (Get-Sha1 (Get-PemBytes $leafPem)).ToLowerInvariant()
+Ok "override.crt  SHA1 $($caSha.ToUpperInvariant())"
+Ok "certificate   SHA1 $($leafSha.ToUpperInvariant())  CN=$($leaf.Subject)"
 
-if ($caSha -ne $ExpectedRootSha) {
+if ($caSha -ne $ExpectedRootShaLc) {
   Fail "override.crt fingerprint mismatch (got $caSha, server publishes $ExpectedRootSha). Wrong origin or a certificate rotation is pending."
 }
-if ($leafSha -ne $ExpectedLeafSha) {
+if ($leafSha -ne $ExpectedLeafShaLc) {
   Fail "certificate fingerprint mismatch (got $leafSha, server publishes $ExpectedLeafSha)."
 }
 # .NET renders "CN=GustoPOS Casale, O=…" (no spaces); normalise both sides.
@@ -137,8 +143,8 @@ try {
 } catch {
   Fail "cannot write $overridePath ($($_.Exception.Message)) — the QZ Tray directory must be writable by an administrator."
 }
-$writtenSha = Get-Sha1 (Get-PemBytes ([IO.File]::ReadAllText($overridePath)))
-if ($writtenSha -ne $ExpectedRootSha) {
+$writtenSha = (Get-Sha1 (Get-PemBytes ([IO.File]::ReadAllText($overridePath)))).ToLowerInvariant()
+if ($writtenSha -ne $ExpectedRootShaLc) {
   Fail "$overridePath does not contain the expected CA after writing (got $writtenSha)."
 }
 Ok "$overridePath  SHA1 $ExpectedRootSha"
@@ -166,7 +172,7 @@ $notBefore = $leaf.NotBefore.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss")
 $notAfter  = $leaf.NotAfter.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss")
 $org = ""
 if ($leaf.Subject -match "O=([^,]+)") { $org = $Matches[1].Trim() }
-$line = ("{0}`t{1}`t{2}`t{3}`t{4}`tTrue" -f $ExpectedLeafSha, $ExpectedCn, $org, $notBefore, $notAfter)
+$line = ("{0}`t{1}`t{2}`t{3}`t{4}`tTrue" -f $ExpectedLeafShaLc, $ExpectedCn, $org, $notBefore, $notAfter)
 
 $allowDirs = @(
   (Join-Path $env:APPDATA "qz"),

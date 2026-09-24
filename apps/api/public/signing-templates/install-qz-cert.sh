@@ -98,7 +98,14 @@ fi
 [ -d "$QZ_DIR" ] || fail "QZ Tray not found in $QZ_DIR — install it from https://qz.io/download/ then re-run this script"
 ok "$QZ_DIR"
 
-pkill -f "qz-tray" >/dev/null 2>&1 || true
+# Stop QZ Tray. Match the process NAME exactly: `pkill -f qz-tray` matches any
+# command line that merely mentions the path (the user's shell, this script's
+# parent, a tail of the log) and would kill it too.
+if [ "$(uname)" = "Darwin" ]; then
+  pkill -x "QZ Tray" >/dev/null 2>&1 || true
+else
+  pkill -x qz-tray >/dev/null 2>&1 || true
+fi
 sleep 3
 
 # ── 4. write override.crt (the tenant's trust anchor) ──────────────────────
@@ -120,18 +127,24 @@ if [ -n "${QZ_BIN:-}" ]; then
   "$QZ_BIN" --whitelist "$LEAF_COPY" >/dev/null 2>&1 || true
 fi
 
+# QZ Tray records the SHA-1 in allowed.dat in LOWERCASE
+# (qz/utils/ByteUtilities.toHexString(digest, upperCase=false)) and matches it
+# case-sensitively, so the line written below must be lowercase even though
+# openssl prints the fingerprint uppercase.
+LEAF_LC="$(printf '%s' "$LEAF_SHA" | tr 'A-F' 'a-f')"
+
 CN_VALUE="$(openssl x509 -in "$LEAF_PEM" -noout -subject | sed -n 's/.*CN *= *\([^,]*\).*/\1/p')"
 OR_VALUE="$(openssl x509 -in "$LEAF_PEM" -noout -subject | sed -n 's/.*O *= *\([^,]*\).*/\1/p')"
 NOT_BEFORE="$(qz_date "$(openssl x509 -in "$LEAF_PEM" -noout -startdate | cut -d= -f2-)")"
 NOT_AFTER="$(qz_date "$(openssl x509 -in "$LEAF_PEM" -noout -enddate | cut -d= -f2-)")"
-LINE="$(printf '%s\t%s\t%s\t%s\t%s\tTrue' "$EXPECT_LEAF" "$CN_VALUE" "$OR_VALUE" "$NOT_BEFORE" "$NOT_AFTER")"
+LINE="$(printf '%s\t%s\t%s\t%s\t%s\tTrue' "$LEAF_LC" "$CN_VALUE" "$OR_VALUE" "$NOT_BEFORE" "$NOT_AFTER")"
 
 append_allow() {
   local file="$1" dir
   dir="$(dirname "$file")"
   mkdir -p "$dir"
   touch "$file"
-  if ! grep -q "$EXPECT_LEAF" "$file" 2>/dev/null; then
+  if ! grep -qi "$LEAF_LC" "$file" 2>/dev/null; then
     printf '%s\n' "$LINE" >> "$file"
   fi
   chmod 666 "$file" 2>/dev/null || true
@@ -154,6 +167,8 @@ echo "  certificate  : SHA1 $EXPECT_LEAF (CN=$EXPECT_CN)"
 echo
 echo "  Next: restart the GustoPOS print agent, then print a test ticket."
 echo "  No QZ Tray dialog should appear."
-echo "  If anything still fails, run debug-qz-cert.ps1 / debug-qz-cert.sh."
+echo "  If anything still fails, run the diagnostics:"
+echo "    https://<this-origin>/signing/debug-qz-cert.ps1   (Windows)"
+echo "    or the agent's dashboard: http://127.0.0.1:8183"
 echo
 exit 0
