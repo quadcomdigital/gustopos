@@ -353,6 +353,27 @@ func (a *API) FetchCertificate() (string, error) {
 	return string(data), nil
 }
 
+// FetchRootCA returns the tenant's QZ Tray trust anchor (the certificate the
+// POS machine must have in <QZ install dir>/override.crt). The preflight
+// compares it with what is installed locally, which is how a stale or
+// another tenant's anchor is detected before QZ Tray shows its dialog.
+// Errors are non-fatal: the preflight still checks the local anchor alone.
+func (a *API) FetchRootCA() (string, error) {
+	resp, err := a.Client.Get(a.SignBase + "/signing/override.crt")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("override.crt endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return string(data), nil
+}
+
 func ifEmpty(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {
 		return fallback

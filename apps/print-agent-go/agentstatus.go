@@ -9,13 +9,16 @@ import (
 // AgentStatusSnapshot is the JSON shape served by the local dashboard and
 // shipped (minus sensitive fields) to the API for remote diagnostics.
 type AgentStatusSnapshot struct {
-	BridgeID           string            `json:"bridgeId"`
-	APIBase            string            `json:"apiBase"`
-	InstanceID         string            `json:"instanceId"`
-	Version            string            `json:"version"`
-	OS                 string            `json:"os"`
-	Paired             bool              `json:"paired"`
-	QZConnected        bool              `json:"qzConnected"`
+	BridgeID    string `json:"bridgeId"`
+	APIBase     string `json:"apiBase"`
+	InstanceID  string `json:"instanceId"`
+	Version     string `json:"version"`
+	OS          string `json:"os"`
+	Paired      bool   `json:"paired"`
+	QZConnected bool   `json:"qzConnected"`
+	// Preflight is the last local validation of the QZ Tray installation
+	// (override.crt, chain, validity, allowed.dat) — nil until first run.
+	Preflight          *PreflightReport  `json:"preflight,omitempty"`
 	DiscoveredPrinters []string          `json:"discoveredPrinters"`
 	ClaimedAreas       []string          `json:"claimedAreas"`
 	Mappings           map[string]string `json:"mappings"`
@@ -68,6 +71,21 @@ func (s *agentStatus) SetQZConnected(connected bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snap.QZConnected = connected
+}
+
+// SetPreflight stores the latest QZ preflight report for the dashboard and the
+// diagnostics feed.
+func (s *agentStatus) SetPreflight(report PreflightReport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snap.Preflight = &report
+}
+
+// GetPreflight returns the last report, or nil when none has run yet.
+func (s *agentStatus) GetPreflight() *PreflightReport {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snap.Preflight
 }
 
 func (s *agentStatus) SetPrinters(printers []string) {

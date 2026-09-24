@@ -178,6 +178,20 @@ func main() {
 				a.ReconnectQZ()
 			}
 		},
+		Preflight: func() PreflightReport {
+			if a := currentAgent.Load(); a != nil {
+				return a.RunPreflight()
+			}
+			return PreflightReport{
+				OK:        false,
+				CheckedAt: time.Now(),
+				Blocking:  "agent non ancora attivo",
+				Checks: []PreflightCheck{{
+					Name: checkCertificate, OK: false, Blocking: true,
+					Detail: "the agent loop has not started yet",
+				}},
+			}
+		},
 		TestPrint: func(area string) error {
 			if a := currentAgent.Load(); a != nil {
 				return a.TestPrint(area)
