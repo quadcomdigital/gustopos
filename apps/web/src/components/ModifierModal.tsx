@@ -347,6 +347,11 @@ export default function ModifierModal({
           if (option.poolId) poolModifiers.push({ groupId: option.poolId, optionId: option.id });
         } else if (option.invId) {
           overridesByKey.set(`${option.invId}:add`, { ingredientId: option.invId, action: 'add' });
+        } else if (option.poolId) {
+          // Free-text pool option (simple_catalog: no inventory link): persist
+          // it as the pool selection so createOrder prices it and the ticket
+          // prints its name. Without this branch the add was silently dropped.
+          poolModifiers.push({ groupId: option.poolId, optionId: option.id });
         }
       }
     }

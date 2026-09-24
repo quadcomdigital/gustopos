@@ -449,6 +449,7 @@ export default function InventoryTabs({
             inventory={inventory}
             prepItems={prepItems}
             bomItems={bomItems}
+            simpleCatalogMode={simpleCatalogMode}
             onCreatePool={async (payload) => {
               if (onCreateCategoryModifierPool) await onCreateCategoryModifierPool(payload);
               onRefreshCategoryModifierPools?.();

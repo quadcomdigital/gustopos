@@ -290,7 +290,7 @@ import type { AuthenticatedRequest } from "./auth/auth-request.type";
 import { AuditLogService } from "./audit-log.service";
 import { imageBufferToLogoRaster, LOGO_IMAGE_MIME_TYPES, LOGO_MAX_BYTES, sniffImageType } from "./repository/utils/logo-raster";
 import { FeatureFlagGuard } from "./tenant/feature-flag.guard";
-import { RequiresModule } from "./tenant/requires-module.decorator";
+import { RequiresAnyOfModules, RequiresModule } from "./tenant/requires-module.decorator";
 import type { Response } from "express";
 import jwt from "jsonwebtoken";
 import { getJwtSecret } from "./auth/jwt-secret";
@@ -1652,7 +1652,7 @@ export class AppController {
 
   @Get("category-modifier-pools")
   @Roles("admin", "chef")
-  @RequiresModule("inventory")
+  @RequiresAnyOfModules("inventory", "simple_catalog")
   listCategoryModifierPools(@Query("categoryId") categoryId?: string) {
     return this.inventoryRepo.listCategoryModifierPools(categoryId);
   }
@@ -1660,7 +1660,7 @@ export class AppController {
   @Post("category-modifier-pools")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
-  @RequiresModule("inventory")
+  @RequiresAnyOfModules("inventory", "simple_catalog")
   createCategoryModifierPool(@Body() payload: CategoryModifierPoolCreateRequest) {
     const parsed = categoryModifierPoolCreateRequestSchema.parse(payload);
     return this.inventoryRepo.createCategoryModifierPool(parsed);
@@ -1669,7 +1669,7 @@ export class AppController {
   @Patch("category-modifier-pools/:id")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
-  @RequiresModule("inventory")
+  @RequiresAnyOfModules("inventory", "simple_catalog")
   async updateCategoryModifierPool(@Param("id") id: string, @Body() payload: CategoryModifierPoolUpdateRequest) {
     const parsed = categoryModifierPoolUpdateRequestSchema.parse(payload);
     const updated = await this.inventoryRepo.updateCategoryModifierPool(id, parsed);
@@ -1682,7 +1682,7 @@ export class AppController {
   @Delete("category-modifier-pools/:id")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
-  @RequiresModule("inventory")
+  @RequiresAnyOfModules("inventory", "simple_catalog")
   async deleteCategoryModifierPool(@Param("id") id: string) {
     const ok = await this.inventoryRepo.deleteCategoryModifierPool(id);
     if (!ok) {

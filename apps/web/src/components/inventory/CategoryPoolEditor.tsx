@@ -15,6 +15,8 @@ interface CategoryPoolEditorProps {
   onCreatePool: (payload: { categoryIds: string[]; name: string; options: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
   onUpdatePool: (id: string, payload: { name?: string; categoryIds?: string[]; options?: Array<{ inventoryItemId?: string; componentType: 'ingredient' | 'prep' | 'bom'; componentId?: string; name?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }> }) => Promise<void>;
   onDeletePool: (id: string) => Promise<void>;
+  /** simple_catalog: options are free-text names + price only (no inventory/prep/BoM linking). */
+  simpleCatalogMode?: boolean;
 }
 
 export default function CategoryPoolEditor({
@@ -26,6 +28,7 @@ export default function CategoryPoolEditor({
   onCreatePool,
   onUpdatePool,
   onDeletePool,
+  simpleCatalogMode = false,
 }: CategoryPoolEditorProps) {
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
@@ -50,7 +53,8 @@ export default function CategoryPoolEditor({
       await onCreatePool({
         categoryIds: selectedCategoryIds,
         name: newPoolName.trim(),
-        options: newPoolOptions,
+        // In simple_catalog mode drop unnamed rows: they are free-text options.
+        options: simpleCatalogMode ? newPoolOptions.filter((o) => o.name?.trim()) : newPoolOptions,
       });
       setNewPoolName('');
       setNewPoolOptions([]);
@@ -106,7 +110,7 @@ export default function CategoryPoolEditor({
       await onUpdatePool(editingPoolId, {
         name: editName.trim(),
         categoryIds: editCategoryIds,
-        options: editOptions,
+        options: simpleCatalogMode ? editOptions.filter((o) => o.name?.trim()) : editOptions,
       });
       cancelEditing();
     } finally {
@@ -187,6 +191,37 @@ export default function CategoryPoolEditor({
 
         <div className="space-y-1">
           {newPoolOptions.map((opt, idx) => {
+            if (simpleCatalogMode) {
+              // Free-text option: name + price only.
+              return (
+                <div key={idx} className="rounded border border-border bg-bg/30 p-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={opt.name ?? ''}
+                      onChange={(e) => updateNewPoolOption(idx, 'name', e.target.value)}
+                      placeholder="Nome opzione (es: Extra avocado)"
+                      className="flex-1 px-3 py-2 rounded border border-border text-sm"
+                    />
+                    <input
+                      type="number"
+                      value={opt.priceDelta}
+                      onChange={(e) => updateNewPoolOption(idx, 'priceDelta', Number(e.target.value) || 0)}
+                      step="0.5"
+                      placeholder="Prezzo"
+                      className="px-3 py-2 rounded border border-border text-xs w-24"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeNewPoolOption(idx)}
+                      className="px-3 py-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded border border-danger text-danger"
+                      aria-label="Rimuovi opzione"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            }
             const componentType = opt.componentType ?? 'ingredient';
             const isIngredientMode = componentType === 'ingredient';
             const componentId = opt.componentId ?? opt.inventoryItemId;
@@ -314,6 +349,37 @@ export default function CategoryPoolEditor({
                     </div>
                     <div className="space-y-1">
                       {editOptions.map((opt, idx) => {
+                        if (simpleCatalogMode) {
+                          // Free-text option: name + price only.
+                          return (
+                            <div key={idx} className="rounded border border-border bg-bg/30 p-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  value={opt.name ?? ''}
+                                  onChange={(e) => updateEditPoolOption(idx, 'name', e.target.value)}
+                                  placeholder="Nome opzione (es: Extra avocado)"
+                                  className="flex-1 px-3 py-2 rounded border border-border text-sm"
+                                />
+                                <input
+                                  type="number"
+                                  value={opt.priceDelta}
+                                  onChange={(e) => updateEditPoolOption(idx, 'priceDelta', Number(e.target.value) || 0)}
+                                  step="0.5"
+                                  placeholder="Prezzo"
+                                  className="px-3 py-2 rounded border border-border text-xs w-24"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeEditPoolOption(idx)}
+                                  className="px-3 py-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded border border-danger text-danger"
+                                  aria-label="Rimuovi opzione"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
                         const componentType = opt.componentType ?? 'ingredient';
                         const isIngredientMode = componentType === 'ingredient';
                         const componentId = opt.componentId ?? opt.inventoryItemId;

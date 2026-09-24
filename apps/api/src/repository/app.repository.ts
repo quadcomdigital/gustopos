@@ -1388,19 +1388,39 @@ export class AppRepository {
         : component.componentType === "prep"
           ? prepNameById.get(component.componentId) ?? component.componentId
           : bomNameById.get(component.componentId) ?? component.componentId;
+      // Prefer the inventory unit, but fall back to the unit recorded on the
+      // recipe edge: `simple_catalog` compositions reference free-text names
+      // (no inventory row) and must never serialise an empty unit (the shared
+      // contract requires min 1 char).
       const unit = component.componentType === "ingredient"
-        ? ingredientUnitById.get(component.componentId) ?? ""
+        ? component.unit || ingredientUnitById.get(component.componentId) || ""
         : component.componentType === "prep"
           ? prepUnitById.get(component.componentId) ?? ""
           : mappedBomItems.find((item) => item.id === component.componentId)?.outputUnit ?? "";
-      existing.push({
-        componentType: component.componentType as "ingredient" | "bom" | "prep",
+      existing.push(...this.expandPrepBomForDisplay({
+        componentType: component.componentType,
         componentId: component.componentId,
-        componentName: name,
         quantity: toNumeric(component.quantity),
-        unit,
-      });
+        fallbackName: name,
+        fallbackUnit: unit,
+        prepSourceById,
+        bomById,
+        componentsByBomId,
+        ingredientNameById,
+        ingredientUnitById,
+      }));
       recipeByMenuId.set(component.menuItemId, existing);
+    }
+
+    // `ingredients` mirrors the (possibly exploded) ingredient recipe entries.
+    const ingredientsByMenuId = new Map<string, string[]>();
+    for (const [menuItemId, entries] of recipeByMenuId) {
+      const ids: string[] = [];
+      for (const entry of entries) {
+        if (entry.componentType !== "ingredient") continue;
+        if (!ids.includes(entry.componentId)) ids.push(entry.componentId);
+      }
+      ingredientsByMenuId.set(menuItemId, ids);
     }
 
     const overridesByOptionId = new Map<string, Array<{ ingredientId: string; action: "add" | "remove" | "replace" }>>();
@@ -1666,19 +1686,149 @@ export class AppRepository {
       }
     }
 
-    const ingredientsByMenuId = new Map<string, string[]>();
+    // Resolve component names so the public menu shows human-readable recipe
+    // entries (exactly like the POS) instead of raw inventory/prep/bom ids.
+    const ingredientNameById = new Map(inventoryRows.map((row) => [row.id, row.name]));
+    const ingredientUnitById = new Map(inventoryRows.map((row) => [row.id, row.unit ?? ""]));
+    const prepNameById = new Map(prepRows.map((row) => [row.id, row.name]));
+    const prepUnitById = new Map(prepRows.map((row) => [row.id, row.outputUnit ?? ""]));
+    const bomNameById = new Map(bomRows.map((row) => [row.id, row.name]));
+    const bomById = new Map<string, BomRow>(bomRows.map((row) => [row.id, row]));
+    const componentsByBomId = new Map<string, BomComponentRow[]>();
+    for (const component of bomComponentRows) {
+      const existing = componentsByBomId.get(component.bomId) ?? [];
+      existing.push(component);
+      componentsByBomId.set(component.bomId, existing);
+    }
+    const prepSourceById = new Map(prepRows.map((row) => [row.id, { sourceType: row.sourceType, sourceId: row.sourceId }]));
+
+    const recipeByMenuId = new Map<string, Array<{ componentType: "ingredient" | "prep" | "bom"; componentId: string; componentName: string; quantity: number; unit: string }>>();
     const bomByMenuId = new Map<string, string[]>();
     for (const row of componentRows) {
-      if (row.componentType === "ingredient") {
-        const existing = ingredientsByMenuId.get(row.menuItemId) ?? [];
-        existing.push(row.componentId);
-        ingredientsByMenuId.set(row.menuItemId, existing);
-      } else if (row.componentType === "bom") {
+      const componentType = row.componentType as "ingredient" | "prep" | "bom";
+      const resolvedName = componentType === "ingredient"
+        ? ingredientNameById.get(row.componentId) ?? row.componentId
+        : componentType === "prep"
+          ? prepNameById.get(row.componentId) ?? row.componentId
+          : bomNameById.get(row.componentId) ?? row.componentId;
+      // Prefer the inventory unit; fall back to the unit on the recipe edge so
+      // simple_catalog free-name compositions never serialise an empty unit.
+      const resolvedUnit = componentType === "ingredient"
+        ? row.unit || ingredientUnitById.get(row.componentId) || ""
+        : componentType === "prep"
+          ? prepUnitById.get(row.componentId) ?? ""
+          : "";
+      const recipe = recipeByMenuId.get(row.menuItemId) ?? [];
+      recipe.push(...this.expandPrepBomForDisplay({
+        componentType,
+        componentId: row.componentId,
+        quantity: toNumeric(row.quantity),
+        fallbackName: resolvedName,
+        fallbackUnit: resolvedUnit,
+        prepSourceById,
+        bomById,
+        componentsByBomId,
+        ingredientNameById,
+        ingredientUnitById,
+      }));
+      recipeByMenuId.set(row.menuItemId, recipe);
+
+      if (componentType === "bom") {
         const existing = bomByMenuId.get(row.menuItemId) ?? [];
         existing.push(row.componentId);
         bomByMenuId.set(row.menuItemId, existing);
       }
     }
+
+    // `ingredients` mirrors the (possibly exploded) ingredient recipe entries.
+    const ingredientsByMenuId = new Map<string, string[]>();
+    for (const [menuItemId, entries] of recipeByMenuId) {
+      const names: string[] = [];
+      for (const entry of entries) {
+        if (entry.componentType !== "ingredient") continue;
+        if (!names.includes(entry.componentName)) names.push(entry.componentName);
+      }
+      ingredientsByMenuId.set(menuItemId, names);
+    }
+
+    // ── Modifiers (per-item groups + category pools), mirroring getPublicData
+    const overridesByOptionId = new Map<string, Array<{ ingredientId: string; action: "add" | "remove" | "replace" }>>();
+    for (const override of modifierOptionOverrideRows) {
+      const existing = overridesByOptionId.get(override.optionId) ?? [];
+      existing.push({ ingredientId: override.ingredientId, action: override.action as "add" | "remove" | "replace" });
+      overridesByOptionId.set(override.optionId, existing);
+    }
+
+    const optionsByGroupId = new Map<string, Array<z.infer<typeof modifierOptionSchema>>>();
+    for (const opt of modifierOptionRows) {
+      const existing = optionsByGroupId.get(opt.groupId) ?? [];
+      existing.push({
+        id: opt.id,
+        name: opt.name,
+        inventoryItemId: opt.inventoryItemId ?? undefined,
+        referenceId: opt.referenceId ?? undefined,
+        componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
+        componentId: opt.componentId ?? undefined,
+        quantity: Number(opt.quantity ?? 1),
+        unit: (opt.unit as z.infer<typeof modifierOptionSchema>["unit"]) ?? "pz",
+        priceDelta: Number(opt.priceDelta),
+        isDefault: Boolean(opt.isDefault),
+        isActive: Boolean(opt.isActive),
+        sortOrder: opt.sortOrder ?? 0,
+        ingredientOverrides: overridesByOptionId.get(opt.id) ?? [],
+      });
+      optionsByGroupId.set(opt.groupId, existing);
+    }
+
+    const modifierGroupsByMenuId = new Map<string, Array<z.infer<typeof modifierGroupSchema>>>();
+    for (const group of modifierGroupRows) {
+      const existing = modifierGroupsByMenuId.get(group.menuItemId) ?? [];
+      existing.push({
+        id: group.id,
+        name: group.name,
+        required: Boolean(group.required),
+        minSelections: group.minSelections,
+        maxSelections: group.maxSelections,
+        multiSelectPriceMode: (group.multiSelectPriceMode as "max" | "sum" | "none") ?? "max",
+        sortOrder: group.sortOrder ?? 0,
+        options: optionsByGroupId.get(group.id) ?? [],
+      });
+      modifierGroupsByMenuId.set(group.menuItemId, existing);
+    }
+    for (const groups of modifierGroupsByMenuId.values()) {
+      groups.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    }
+
+    const catPoolOptionsByPoolId = new Map<string, Array<{ id: string; name: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: string; priceDelta: number; sortOrder: number }>>();
+    for (const opt of catPoolOptionRows) {
+      const existing = catPoolOptionsByPoolId.get(opt.poolId) ?? [];
+      existing.push({
+        id: opt.id,
+        name: opt.name || opt.componentId || opt.inventoryItemId || "",
+        componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient",
+        componentId: opt.componentId ?? opt.inventoryItemId ?? undefined,
+        quantity: Number(opt.quantity ?? 1),
+        unit: opt.unit ?? "pz",
+        priceDelta: Number(opt.priceDelta),
+        sortOrder: opt.sortOrder ?? 0,
+      });
+      catPoolOptionsByPoolId.set(opt.poolId, existing);
+    }
+    const catPoolCategoriesByPoolId = new Map<string, string[]>();
+    for (const cat of catPoolCategoryRows) {
+      const existing = catPoolCategoriesByPoolId.get(cat.poolId) ?? [];
+      if (!existing.includes(cat.categoryId)) existing.push(cat.categoryId);
+      catPoolCategoriesByPoolId.set(cat.poolId, existing);
+    }
+    const catPoolById = new Map(catPoolRows.map((pool) => [pool.id, pool]));
+    const catPoolIdsForCategory = (categoryId: string): string[] =>
+      catPoolRows
+        .filter((pool) => {
+          const ids = catPoolCategoriesByPoolId.get(pool.id) ?? (pool.categoryId ? [pool.categoryId] : []);
+          return ids.includes(categoryId);
+        })
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        .map((pool) => pool.id);
 
     const hiddenCategories = new Set(menuConfig.hiddenCategoryIds);
     const featuredItems = new Set(menuConfig.featuredItemIds);

@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
+import { syncMenuModifierGroups } from "./utils/sync-menu-modifier-groups";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, SQL, lt, gte, lte } from "drizzle-orm";
 import crypto from "node:crypto";
 import {
@@ -276,7 +277,8 @@ export class InventoryRepository {
     assertAcyclicBomGraph(edges, prepSources);
   }
 
-  private async mapMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
+  /** Full admin menu mapping: recipe (resolved names), modifiers, groups. Public so SimpleCatalogRepository can reuse it. */
+  async mapMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
     const tenantId = getTenantIdOrDefault();
     const [menuRows, canonicalRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows] = await Promise.all([
       db.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
@@ -1863,73 +1865,7 @@ return this.mapMenuItemsAdmin();
     menuItemId: string,
     groups: ModifierGroupInput[],
   ): Promise<void> {
-    const existingGroups = await tx
-      .select({ id: menuModifierGroups.id })
-      .from(menuModifierGroups)
-      .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, menuItemId)));
-    for (const group of existingGroups) {
-      const options = await tx
-        .select({ id: menuModifierOptions.id })
-        .from(menuModifierOptions)
-        .where(eq(menuModifierOptions.groupId, group.id));
-      for (const opt of options) {
-        await tx
-          .delete(menuModifierOptionOverrides)
-          .where(eq(menuModifierOptionOverrides.optionId, opt.id));
-      }
-      await tx.delete(menuModifierOptions).where(eq(menuModifierOptions.groupId, group.id));
-    }
-    await tx
-      .delete(menuModifierGroups)
-      .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, menuItemId)));
-
-    for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
-      const group = groups[groupIdx];
-      const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-      await tx.insert(menuModifierGroups).values({
-        id: groupId,
-        tenantId,
-        menuItemId,
-        name: group.name,
-        required: group.required ? 1 : 0,
-        minSelections: group.minSelections,
-        maxSelections: group.maxSelections,
-        sortOrder: groupIdx,
-      });
-
-      for (let optIdx = 0; optIdx < group.options.length; optIdx++) {
-        const opt = group.options[optIdx];
-        const optId = opt.id || `mo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-        await tx.insert(menuModifierOptions).values({
-          id: optId,
-          tenantId,
-          groupId,
-          name: opt.name,
-          inventoryItemId: opt.inventoryItemId || null,
-          referenceId: opt.referenceId ?? null,
-          componentType: opt.componentType ?? "ingredient",
-          componentId: opt.componentId ?? opt.inventoryItemId ?? null,
-          priceDelta: String(opt.priceDelta),
-          isDefault: opt.isDefault ? 1 : 0,
-          isActive: opt.isActive ? 1 : 0,
-          sortOrder: optIdx,
-          quantity: String(opt.quantity ?? 1),
-          unit: opt.unit ?? "pz",
-        });
-
-        for (const override of opt.ingredientOverrides) {
-          await tx.insert(menuModifierOptionOverrides).values({
-            id: `moo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-            tenantId,
-            optionId: optId,
-            ingredientId: override.ingredientId,
-            action: override.action,
-          });
-        }
-      }
-    }
+    await syncMenuModifierGroups(tx, tenantId, menuItemId, groups);
   }
 
   async deleteMenuItem(id: string): Promise<boolean> {

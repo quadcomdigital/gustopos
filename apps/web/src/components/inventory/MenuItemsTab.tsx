@@ -5,7 +5,7 @@ import type {
   IngredientCreateRequest, UnitConversion,
 } from '@gustopos/shared';
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { RotateCcw, Plus, UtensilsCrossed } from 'lucide-react';
+import { RotateCcw, Plus, UtensilsCrossed, X } from 'lucide-react';
 import Button from '../../shared/ui/atoms/Button';
 import StatusPill from '../../shared/ui/atoms/StatusPill';
 import Modal from '../../shared/ui/molecules/Modal';
@@ -85,6 +85,7 @@ export default function MenuItemsTab({
 }: MenuItemsTabProps) {
   const [selectedMenuId, setSelectedMenuId] = useState('');
   const [editTab, setEditTab] = useState<EditTab>('metadata');
+  const [newIngredientName, setNewIngredientName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearch = useDebounce(searchQuery, 250);
 
@@ -284,7 +285,9 @@ export default function MenuItemsTab({
 
   const saveRecipe = async () => {
     if (!selectedMenu || !onUpdate) return;
-    if (editRecipe.length === 0) return;
+    // simple_catalog compositions are plain names: allow saving an empty list
+    // to clear the "Togli" tab. The inventory flow keeps the old guard.
+    if (editRecipe.length === 0 && !simpleCatalogMode) return;
     const unitByKey = new Map(
       selectedMenu.recipe.map((r) => [`${r.componentType}:${r.componentId}`, r.unit]),
     );
@@ -524,7 +527,7 @@ export default function MenuItemsTab({
               <div className="flex items-center gap-1 border-b border-border -mx-4 px-4">
                 {([
                   { key: 'metadata', label: 'Dettagli' },
-                  { key: 'recipe', label: 'Ricetta' },
+                  { key: 'recipe', label: simpleCatalogMode ? 'Composizione' : 'Ricetta' },
                   { key: 'modifiers', label: 'Modificatori' },
                   { key: 'preview', label: 'Anteprima' },
                 ] as const).map((tab) => (
@@ -623,20 +626,112 @@ export default function MenuItemsTab({
                 </div>
               )}
 
+              {/* Composition Tab (simple_catalog): plain ingredient names only —
+                  they populate the POS "Togli" tab. No stock, no BoM. */}
+              {editTab === 'recipe' && simpleCatalogMode && (
+                <div className="space-y-3 pt-2">
+                  <p className="text-xs text-text-muted">
+                    Ingredienti del piatto: compaiono nel POS sotto «Personalizza → Togli».
+                    Solo nomi liberi — nessun magazzino, nessuna BoM.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {editRecipe.map((component, idx) => (
+                      <span
+                        key={`${component.componentId}-${idx}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg border border-border text-xs font-medium text-secondary"
+                      >
+                        {component.componentName ?? component.componentId}
+                        <button
+                          type="button"
+                          onClick={() => setEditRecipe(editRecipe.filter((_, i) => i !== idx))}
+                          className="text-text-muted hover:text-danger transition-colors"
+                          aria-label={`Rimuovi ${component.componentId}`}
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    ))}
+                    {editRecipe.length === 0 && (
+                      <span className="text-xs text-text-muted italic">
+                        Nessun ingrediente: il tab «Togli» non apparirà nel POS.
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      value={newIngredientName}
+                      onChange={(e) => setNewIngredientName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const name = newIngredientName.trim();
+                          if (!name) return;
+                          const exists = editRecipe.some(
+                            (c) => c.componentId.toLocaleLowerCase('it') === name.toLocaleLowerCase('it'),
+                          );
+                          if (!exists) {
+                            setEditRecipe([
+                              ...editRecipe,
+                              { componentType: 'ingredient', componentId: name, componentName: name, quantity: 1, unit: 'pz' },
+                            ]);
+                          }
+                          setNewIngredientName('');
+                        }
+                      }}
+                      placeholder="Aggiungi ingrediente (es: mozzarella)"
+                      className="flex-1 px-3 py-2 rounded border border-border text-sm"
+                      aria-label="Nuovo ingrediente"
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        const name = newIngredientName.trim();
+                        if (!name) return;
+                        const exists = editRecipe.some(
+                          (c) => c.componentId.toLocaleLowerCase('it') === name.toLocaleLowerCase('it'),
+                        );
+                        if (!exists) {
+                          setEditRecipe([
+                            ...editRecipe,
+                            { componentType: 'ingredient', componentId: name, componentName: name, quantity: 1, unit: 'pz' },
+                          ]);
+                        }
+                        setNewIngredientName('');
+                      }}
+                      disabled={!newIngredientName.trim()}
+                    >
+                      <Plus size={14} />
+                      Aggiungi
+                    </Button>
+                  </div>
+                  <Button
+                    variant="primary"
+                    onClick={() => void saveRecipe()}
+                    disabled={!editModalDirty}
+                  >
+                    Salva composizione
+                  </Button>
+                </div>
+              )}
+
               {/* Modifiers Tab */}
               {editTab === 'modifiers' && (
                 <div className="space-y-3 pt-2">
-                  <ModifierEditor
-                    modifiers={editModifiers}
-                    inventory={inventory}
-                    onChange={setEditModifiers}
-                  />
+                  {/* Legacy modifiers are inventory-bound: hidden in simple_catalog. */}
+                  {!simpleCatalogMode && (
+                    <ModifierEditor
+                      modifiers={editModifiers}
+                      inventory={inventory}
+                      onChange={setEditModifiers}
+                    />
+                  )}
                    <ModifierGroupsEditor
                     value={editModifierGroups}
                     inventory={inventory}
                     prepItems={prepItems}
                     bomItems={bomItems}
                     onChange={setEditModifierGroups}
+                    simpleCatalogMode={simpleCatalogMode}
                     categoryPools={selectedMenu?.categoryId ? categoryModifierPools.filter((p) => p.categoryIds?.includes(selectedMenu.categoryId!) || p.categoryId === selectedMenu.categoryId) : []}
                   />
                   <Button
