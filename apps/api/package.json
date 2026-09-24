@@ -10,7 +10,9 @@
     "lint": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:baseline": "tsx scripts/db-baseline.ts",
+    "db:provision": "drizzle-kit push && tsx scripts/db-baseline.ts"
   },
   "dependencies": {
     "@gustopos/shared": "0.1.0",

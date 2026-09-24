@@ -12,6 +12,7 @@ npm test --workspace @gustopos/api          # API unit tests (tsx --test)
 npm test --workspace @gustopos/print-bridge # Print-bridge tests
 npm run db:generate --workspace @gustopos/api   # Generate Drizzle migrations
 npm run db:migrate --workspace @gustopos/api    # Apply migrations to PostgreSQL
+npm run db:provision --workspace @gustopos/api  # BRAND-NEW database: schema (push) + migration baseline
 ```
 
 ## Infrastructure
@@ -59,4 +60,5 @@ npm run db:migrate --workspace @gustopos/api    # Apply migrations to PostgreSQL
 - **Split bill**: `POST /api/tables/:id/split-bill` with `{ people }`, then each share pays separately via `POST /api/tables/:id/pay`.
 - **`@gustopos/shared`** is consumed by both API and web. API uses `require()` (CommonJS), web uses `import`.
 - **Drizzle migrations**: edit `apps/api/src/db/schema.ts`, then `npm run db:generate --workspace @gustopos/api`. Never edit migration files directly.
+- **Brand-new database**: `npm run db:migrate` does **not** work from scratch — it dies at `0029_brainy_johnny_blaze`, which re-creates tables `0008_vivid_console` already created (`0031`, `0033`, `0046`, `0049` and `0079_late_thunderbolts` also emit errors on an empty DB). Use `npm run db:provision` instead: `drizzle-kit push` builds the schema straight from `schema.ts` (69 tables) and `scripts/db-baseline.ts` marks the journal as applied — after that `npm run db:migrate` is a clean no-op and applies *future* migrations normally. Never edit an already-applied migration to make it idempotent: its sha256 is what `drizzle.__drizzle_migrations` records, and a changed hash makes `db:migrate` fail on every environment that already ran it.
 - **PM2 production**: `pm2 start ecosystem.config.cjs`. HMR dev: `pm2 start ecosystem.hmr.config.cjs`.
