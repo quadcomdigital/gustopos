@@ -40,16 +40,26 @@ chmod +x qz-tray-2.2.4.run
 sudo bash qz-tray-2.2.4.run
 ```
 
-### 3. Whitelist the Certificate
+### 3. Install the tenant certificate (silent printing)
 
-QZ Tray requires a whitelisted certificate for WebSocket connections. Generate one or use the default:
+QZ Tray only prints silently when the certificate it receives chains to a CA it
+loaded from `<install dir>/override.crt`. Each tenant has its own root and its
+own leaf, so download the installer **from the tenant's domain** — it is
+rendered by the server with the current fingerprints, nothing is hardcoded:
 
 ```bash
-# Whitelist the QZ Tray certificate (required for headless/browser access)
-sudo /opt/qz-tray/qz-tray --whitelist /path/to/digital-certificate.pem
+# Linux / macOS (as root)
+curl -fsSL https://<tenant-domain>/signing/install-qz-cert.sh | sudo bash
 ```
 
-> **Note:** If connecting from a browser on the same machine, the self-signed certificate may work without whitelisting. For remote browsers, whitelist the certificate or use the demo certificate.
+Windows: open `https://<tenant-domain>/signing/install-qz-cert.bat` and run it
+**as Administrator** (without elevation neither `C:\Program Files\QZ Tray\override.crt`
+nor `%PROGRAMDATA%\qz\allowed.dat` can be written — that is exactly what makes
+QZ report the certificate as untrusted).
+
+The script verifies the chain, pins the published SHA-1 fingerprints, writes
+`override.crt`, whitelists the certificate (lowercase, the form QZ matches) and
+restarts QZ Tray. Details: [`docs/qz-certificate-remediation.md`](qz-certificate-remediation.md).
 
 ### 4. Start QZ Tray in Headless Mode
 
@@ -192,7 +202,11 @@ In the Print Station UI, configure:
 ### 3. Connect to QZ Tray
 
 1. Click the **Connect** button
-2. QZ Tray will prompt for permission — click **Allow**
+2. **No dialog should appear** — the certificate is already trusted and
+   whitelisted. If QZ Tray prompts anyway, stop and diagnose it:
+   open `https://<tenant-domain>/signing/debug-qz-cert.ps1`, or run
+   **"Verifica QZ Tray"** in the agent dashboard (`http://127.0.0.1:8183`),
+   which names the failing check (override.crt, catena, orologio, allowed.dat)
 3. The status indicator should turn green
 
 ### 4. Enable Auto-Connect
@@ -237,7 +251,7 @@ Once connected, the Print Station lists all available printers detected by QZ Tr
 | **Connection refused** | Verify firewall allows ports 8181–8484; ensure QZ Tray is listening |
 | **Print job fails** | Verify the printer name in Print Station settings matches the OS printer name **exactly** (case-sensitive) |
 | **Jobs not appearing** | Check the API Base URL is correct and the VPS is reachable from the local network |
-| **QZ Tray certificate error** | Whitelist the certificate: `sudo /opt/qz-tray/qz-tray --whitelist /path/to/cert.pem` |
+| **QZ Tray certificate error** | Run the preflight: agent dashboard → "Verifica QZ Tray", or `https://<tenant>/signing/debug-qz-cert.ps1`. It tells you whether `override.crt` is missing/foreign, the chain fails, the clock is wrong or `allowed.dat` is not writable |
 | **Browser blocks connection** | Use `http://` (not `https://`) for local network, or add a security exception for the QZ Tray WebSocket |
 | **Prints blank pages** | Ensure the printer paper is loaded correctly and the ESC/POS protocol is selected in GustoPOS settings |
 
