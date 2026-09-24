@@ -44,7 +44,11 @@ interface CheckoutState {
   // Opt-in certified fiscal emission (Path B). Default OFF — the operator
   // explicitly enables fiscal for the transaction on the close screen.
   fiscalEmit: boolean;
+  // Per-transaction cashier close-receipt toggle: when false the receipt is
+  // NOT printed for this close. Defaults to ON (operator opts out when needed).
+  printReceipt: boolean;
   setFiscalEmit: (enabled: boolean) => void;
+  setPrintReceipt: (enabled: boolean) => void;
   
   openCheckout: (tableId: string, tableNumber: string) => Promise<void>;
   closeCheckout: () => void;
@@ -96,6 +100,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   surchargeAmount: '',
   gatewayReference: '',
   fiscalEmit: false,
+  printReceipt: true,
   
   openCheckout: async (tableId, tableNumber) => {
     set({ isOpen: true, step: 'main', tableId, tableNumber, error: '' });
@@ -120,6 +125,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
       surchargeAmount: '',
       gatewayReference: '',
       fiscalEmit: false,
+      printReceipt: true,
       error: '',
       busy: false,
     });
@@ -336,8 +342,10 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   
   setFiscalEmit: (enabled) => set({ fiscalEmit: enabled }),
   
+  setPrintReceipt: (enabled) => set({ printReceipt: enabled }),
+  
   closeTable: async (tableId) => {
-    const { closeMethod, paidAmount, discountAmount, surchargeAmount, gatewayReference, fiscalEmit } = get();
+    const { closeMethod, paidAmount, discountAmount, surchargeAmount, gatewayReference, fiscalEmit, printReceipt } = get();
     
     set({ busy: true, error: '' });
     
@@ -350,6 +358,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
         ...(closeMethod !== 'cash' && gatewayReference.trim().length > 0 ? { gatewayReference: gatewayReference.trim() } : {}),
         paymentStatus: 'captured',
         ...(fiscalEmit ? { fiscalEmit: true } : {}),
+        printReceipt,
       });
       
       get().closeCheckout();

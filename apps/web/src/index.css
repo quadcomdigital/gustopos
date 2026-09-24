@@ -202,3 +202,55 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Large, grab-able VERTICAL scrollbar for the detected POS terminal
+   (installed PWA or touch-only). Only the vertical bar is resized; the
+   horizontal scrollbar and the rest of the UI are left untouched.
+   ───────────────────────────────────────────────────────────────────────── */
+html[data-scrollbars="large"] ::-webkit-scrollbar {
+  width: var(--scrollbar-size, 18px);
+}
+
+html[data-scrollbars="large"] ::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+}
+
+html[data-scrollbars="large"] ::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  min-height: 48px;
+}
+
+html[data-scrollbars="large"] ::-webkit-scrollbar-thumb:hover,
+html[data-scrollbars="large"] ::-webkit-scrollbar-thumb:active {
+  background: #64748b;
+  background-clip: padding-box;
+}
+
+/* Keep opt-out scrollbars hidden. */
+html[data-scrollbars="large"] .no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Larger, easier-to-hit controls (touch terminals only). */
+html[data-input="touch"] button,
+html[data-input="touch"] [role="button"] {
+  min-height: var(--touch-target, 44px);
+  touch-action: manipulation;
+}
+
+html[data-input="touch"] {
+  -webkit-tap-highlight-color: rgba(49, 130, 206, 0.18);
+}
+
+/* Finger-friendly momentum scrolling inside scroll containers. */
+html[data-input="touch"] .overflow-auto,
+html[data-input="touch"] .overflow-y-auto,
+html[data-input="touch"] .overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}

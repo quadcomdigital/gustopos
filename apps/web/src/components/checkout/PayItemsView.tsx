@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/app-store';
 import { useMemo } from 'react';
 import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import { trackUxMetric } from '../../shared/ux/metrics';
+import { buildComponentNameById, buildModifierOptionNameById } from '../../lib/catalog-names';
 
 export default function PayItemsView() {
   const { tableId, paymentStatus, payItemsSelected, payItemsMethod, payItemsGatewayRef, updatePayItemQuantity, setPayItemsMethod, setPayItemsGatewayRef, paySelectedItems, setStep, busy, error } = useCheckoutStore();
@@ -12,11 +13,21 @@ export default function PayItemsView() {
 
   const modifierOptionById = useMemo(() => {
     if (!data) return new Map<string, { name: string; priceDelta: number }>();
+    const nameById = buildModifierOptionNameById(data, buildComponentNameById(data));
     const map = new Map<string, { name: string; priceDelta: number }>();
     for (const mi of data.menu) {
       for (const group of mi.modifierGroups) {
         for (const opt of group.options) {
-          map.set(opt.id, { name: opt.name, priceDelta: opt.priceDelta });
+          map.set(opt.id, { name: nameById.get(opt.id) ?? opt.name, priceDelta: opt.priceDelta });
+        }
+      }
+    }
+    // Category pool options (cmpo_…) are selectable as modifiers too; without
+    // this they rendered as raw ids or were dropped entirely.
+    for (const pool of data.categoryModifierPools ?? []) {
+      for (const opt of pool.options ?? []) {
+        if (!map.has(opt.id)) {
+          map.set(opt.id, { name: nameById.get(opt.id) ?? opt.name ?? opt.id, priceDelta: opt.priceDelta });
         }
       }
     }

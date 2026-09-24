@@ -4,6 +4,7 @@ import { useCheckoutStore } from '../../store/checkout-store';
 import { useAppStore } from '../../store/app-store';
 import { useMemo, useState } from 'react';
 import type { OrderItem } from '@gustopos/shared';
+import { buildComponentNameById, buildModifierOptionNameById } from '../../lib/catalog-names';
 
 export default function CheckoutMainView() {
   const { tableId: _tableId, tableNumber, paymentStatus, setStep, discountAmount, surchargeAmount, setDiscountAmount, setSurchargeAmount, closeCheckout } = useCheckoutStore();
@@ -12,11 +13,21 @@ export default function CheckoutMainView() {
 
   const modifierOptionById = useMemo(() => {
     if (!data) return new Map<string, { name: string; priceDelta: number }>();
+    const nameById = buildModifierOptionNameById(data, buildComponentNameById(data));
     const map = new Map<string, { name: string; priceDelta: number }>();
     for (const mi of data.menu) {
       for (const group of mi.modifierGroups) {
         for (const opt of group.options) {
-          map.set(opt.id, { name: opt.name, priceDelta: opt.priceDelta });
+          map.set(opt.id, { name: nameById.get(opt.id) ?? opt.name, priceDelta: opt.priceDelta });
+        }
+      }
+    }
+    // Category pool options (cmpo_…) are selectable as modifiers too; without
+    // this they rendered as raw ids or were dropped entirely.
+    for (const pool of data.categoryModifierPools ?? []) {
+      for (const opt of pool.options ?? []) {
+        if (!map.has(opt.id)) {
+          map.set(opt.id, { name: nameById.get(opt.id) ?? opt.name ?? opt.id, priceDelta: opt.priceDelta });
         }
       }
     }

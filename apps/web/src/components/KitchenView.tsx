@@ -4,6 +4,7 @@ import { CheckCircle2, PlayCircle, UtensilsCrossed, Layers3, X, Clock, Timer, Ar
 import { formatDistanceToNow, format } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { cn } from '../lib/utils';
+import { buildComponentNameById, buildModifierOptionNameById } from '../lib/catalog-names';
 import { trackUxMetric } from '../shared/ux/metrics';
 import SegmentedChips from '../shared/ui/atoms/SegmentedChips';
 import StatusPill from '../shared/ui/atoms/StatusPill';
@@ -129,6 +130,7 @@ interface OrderCardProps {
   selected: boolean;
   updatingOrderId: string | null;
   inventoryById: ReadonlyMap<string, { id: string; name: string }>;
+  componentNameById: ReadonlyMap<string, string>;
   modifierOptionNameById: ReadonlyMap<string, string>;
   menuItemStationIdById: ReadonlyMap<string, string | null>;
   onToggleSelection: (orderId: string) => void;
@@ -147,6 +149,7 @@ const OrderCard = React.memo(function OrderCard({
   selected,
   updatingOrderId,
   inventoryById,
+  componentNameById,
   modifierOptionNameById,
   menuItemStationIdById,
   onToggleSelection,
@@ -208,13 +211,16 @@ const OrderCard = React.memo(function OrderCard({
             <div className="flex items-center gap-1.5">
               {order.scheduledFor ? (
                 <>
-                  <Timer size={10} className="text-blue-500 shrink-0" />
-                  <p className="text-[9px] sm:text-[10px] text-blue-600 font-bold uppercase truncate">
-                    Consegna {format(new Date(order.scheduledFor), 'HH:mm', { locale: it })}
-                    {!isScheduledCard && (
-                      <span className="text-red-500 ml-1">— prepara ora!</span>
-                    )}
+                  <Timer size={14} className="text-blue-500 shrink-0" />
+                  <p className="flex items-baseline gap-1 text-blue-700">
+                    <span className="text-[9px] sm:text-[10px] font-bold uppercase">Consegna</span>
+                    <span className="text-lg sm:text-xl font-extrabold leading-none tabular-nums">
+                      {format(new Date(order.scheduledFor), 'HH:mm', { locale: it })}
+                    </span>
                   </p>
+                  {!isScheduledCard && (
+                    <span className="text-[9px] font-bold text-red-500 ml-1">prepara ora!</span>
+                  )}
                   <span className={cn(
                     'text-[8px] font-medium px-1 py-0.5 rounded',
                     isScheduledCard ? 'bg-blue-100 text-blue-600' : 'bg-red-100 text-red-600',
@@ -267,7 +273,7 @@ const OrderCard = React.memo(function OrderCard({
                   ))}
                   {overrides.map((e) => (
                     <span key={e.ingredientId} className={cn('text-[9px]', e.action === 'add' ? 'text-green-600' : 'text-red-500')}>
-                      {e.action === 'add' ? '+' : '-'}{inventoryById.get(e.ingredientId)?.name ?? e.ingredientId}
+                      {e.action === 'add' ? '+' : '-'}{componentNameById.get(e.ingredientId) ?? inventoryById.get(e.ingredientId)?.name ?? e.ingredientId}
                     </span>
                   ))}
                 </div>
@@ -336,17 +342,17 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
   const [pendingBatchState, setPendingBatchState] = React.useState<{ status: 'preparing' | 'ready' | 'served'; count: number } | null>(null);
 
   const inventoryById = React.useMemo(() => new Map((data?.inventory ?? []).map((e) => [e.id, e])), [data?.inventory]);
-  const modifierOptionNameById = React.useMemo(() => {
-    const map = new Map<string, string>();
-    for (const mi of data?.menu ?? []) {
-      for (const group of (mi.modifierGroups ?? []) as Array<{ id: string; options: Array<{ id: string; name: string }> }>) {
-        for (const opt of group.options) {
-          map.set(opt.id, opt.name);
-        }
-      }
-    }
-    return map;
-  }, [data?.menu]);
+  const componentNameById = React.useMemo(
+    () => buildComponentNameById({ inventory: data?.inventory ?? [], bomItems: data?.bomItems ?? [], menu: data?.menu ?? [] }),
+    [data?.inventory, data?.bomItems, data?.menu],
+  );
+  const modifierOptionNameById = React.useMemo(
+    () => buildModifierOptionNameById(
+      { menu: data?.menu ?? [], categoryModifierPools: data?.categoryModifierPools ?? [] },
+      componentNameById,
+    ),
+    [data?.menu, data?.categoryModifierPools, componentNameById],
+  );
 
   // Resolve the station id of each menu item. Order items expose their
   // menuItemId as `id`, so we can classify every order row. Assignment is
@@ -517,6 +523,7 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
       selected={selectedOrderIds.includes(order.id)}
       updatingOrderId={updatingOrderId}
       inventoryById={inventoryById}
+      componentNameById={componentNameById}
       modifierOptionNameById={modifierOptionNameById}
       menuItemStationIdById={menuItemStationIdById}
       onToggleSelection={toggleOrderSelection}

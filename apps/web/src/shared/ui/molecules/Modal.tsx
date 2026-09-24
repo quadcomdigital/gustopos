@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { AlertTriangle, X } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import { lockBodyScroll, unlockBodyScroll } from '../utils/scrollLock';
+import { useBackdropDismiss } from '../../../hooks/useBackdropDismiss';
 
 interface ModalProps {
   open: boolean;
@@ -46,6 +47,8 @@ export default function Modal({ open, onClose, title, children, footer, size = '
   const handleBackdropClick = useCallback(() => {
     handleClose();
   }, [handleClose]);
+
+  const backdropDismiss = useBackdropDismiss(handleBackdropClick);
 
   const handleConfirmDiscard = useCallback(() => {
     setConfirmDiscard(false);
@@ -104,7 +107,7 @@ export default function Modal({ open, onClose, title, children, footer, size = '
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/50 backdrop-blur-sm"
-            onClick={handleBackdropClick}
+            {...backdropDismiss}
           />
           <div className="min-h-full flex items-end sm:items-center justify-center p-4 sm:p-6">
           <motion.div

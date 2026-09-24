@@ -19,6 +19,8 @@ export default function CloseTableView() {
     setPaidAmount,
     setGatewayReference,
     setFiscalEmit,
+    printReceipt,
+    setPrintReceipt,
     closeTable,
     busy,
     error,
@@ -26,6 +28,12 @@ export default function CloseTableView() {
   // Certified fiscal (Path B) is opt-in per transaction and only offered when
   // the tenant has the fiscal_exports module enabled.
   const fiscalModuleEnabled = useAppStore((state) => state.enabledModules.includes('fiscal_exports'));
+  // Cashier close receipt can be skipped per transaction. Offered only when the
+  // close would actually print (printing module on + escpos + autoPrintOnClose).
+  const printingModuleEnabled = useAppStore((state) => state.enabledModules.includes('printing'));
+  const printing = useAppStore((state) => state.uiSettings?.printing);
+  const canToggleReceipt =
+    printingModuleEnabled && printing?.protocol === 'escpos' && printing?.autoPrintOnClose === true;
   const [showConfirm, setShowConfirm] = useState(false);
 
   const handlePay = async () => {
@@ -110,6 +118,37 @@ export default function CloseTableView() {
             />
           )}
 
+          {canToggleReceipt && (
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-text-muted uppercase tracking-widest">Stampa conto</label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={printReceipt}
+              onClick={() => setPrintReceipt(!printReceipt)}
+              className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 min-h-[44px] rounded border text-sm transition-colors ${
+                printReceipt ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-white text-text-muted'
+              }`}
+            >
+              <span className="font-semibold">{printReceipt ? 'Stampa conto in cassa' : 'Non stampare il conto'}</span>
+              <span
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                  printReceipt ? 'bg-primary' : 'bg-border'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                    printReceipt ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </span>
+            </button>
+            <p className="text-[11px] text-text-muted">
+              Se disattivo, alla chiusura il conto non viene stampato dalla stampante di cassa.
+            </p>
+          </div>
+          )}
+
           {fiscalModuleEnabled && (
           <div className="space-y-2">
             <label className="text-sm font-bold text-text-muted uppercase tracking-widest">Scontrino fiscale</label>
@@ -156,7 +195,7 @@ export default function CloseTableView() {
       <ConfirmDialog
         open={showConfirm}
         title="Chiudi conto?"
-        message={`Confermare la chiusura del conto con metodo ${closeMethod === 'cash' ? 'contanti' : closeMethod === 'card' ? 'carta' : 'misto'}${fiscalEmit ? ' e emissione dello scontrino fiscale' : ''}? L'azione non può essere annullata.`}
+        message={`Confermare la chiusura del conto con metodo ${closeMethod === 'cash' ? 'contanti' : closeMethod === 'card' ? 'carta' : 'misto'}${fiscalEmit ? ' e emissione dello scontrino fiscale' : ''}${canToggleReceipt && !printReceipt ? ' senza stampa del conto' : ''}? L'azione non può essere annullata.`}
         confirmLabel="Chiudi"
         onConfirm={() => {
           setShowConfirm(false);
