@@ -80,7 +80,9 @@ test("bridge QZ signing route uses bridge authentication", () => {
 
   assert.match(section, /@Public\(\)/);
   assert.match(section, /verifyBridgeOrOnboardingSecret\(req\)/);
-  assert.match(section, /signQzDigest\(request\)/);
+  // The route forwards only the validated digest and the request (used to pick
+  // the tenant's signing key) — never raw user input as a key path.
+  assert.match(section, /signQzDigest\(request, req\)/);
 });
 
 test("heartbeat normalizes legacy null collections before strict validation", () => {

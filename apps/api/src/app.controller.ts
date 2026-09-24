@@ -303,6 +303,7 @@ import { getJwtSecret } from "./auth/jwt-secret";
 import type { JwtPayload } from "./auth/jwt.types";
 import { TenantService } from "./tenant/tenant.service";
 import { runWithBridgeAuthContext, runWithTenantContext } from "./tenant/tenant-context.store";
+import { resolveSigningMaterial } from "./security/signing-tenants";
 import type { ModuleKey } from "@gustopos/shared";
 
 @Controller("api")
@@ -3022,7 +3023,7 @@ export class AppController {
   // Signs requests for QZ Tray message signing (silent printing).
   // The certificate must be served as a static file from /signing/digital-certificate.txt
 
-  private async signQzDigest(request: string): Promise<string> {
+  private async signQzDigest(request: string, req?: unknown): Promise<string> {
     // QZ Tray sends the lowercase SHA-256 hex digest of its canonical request.
     // Never allow this endpoint to become an arbitrary signing oracle.
     if (!request || !/^[a-f0-9]{64}$/.test(request)) {
@@ -3032,18 +3033,38 @@ export class AppController {
     const fs = await import("fs");
     const path = await import("path");
     const crypto = await import("crypto");
-    // Keep the private signing key outside every statically served directory.
-    // Deployments may provision it at an explicit path; the default resolves
-    // to apps/api/signing from both src (tests) and dist (production).
-    const configuredKeyPath = process.env.QZ_SIGNING_KEY_PATH?.trim();
-    const keyPath = configuredKeyPath
-      ? path.resolve(configuredKeyPath)
-      : path.join(__dirname, "..", "signing", "private-key.pem");
+
+    // Per-tenant key: the certificate served for this host and the key used
+    // here MUST be the same pair (both go through resolveSigningMaterial) —
+    // otherwise QZ Tray logs "Bad signature on request" and falls back to the
+    // access dialog instead of printing silently.
+    const tenant = req
+      ? resolveSigningMaterial(req as Parameters<typeof resolveSigningMaterial>[0])
+      : null;
+
+    let keyPath: string;
+    if (tenant) {
+      keyPath = tenant.keyPath;
+    } else {
+      // Keep the private signing key outside every statically served directory.
+      // Deployments may provision it at an explicit path; the default resolves
+      // to apps/api/signing from both src (tests) and dist (production).
+      const configuredKeyPath = process.env.QZ_SIGNING_KEY_PATH?.trim();
+      keyPath = configuredKeyPath
+        ? path.resolve(configuredKeyPath)
+        : path.join(__dirname, "..", "signing", "private-key.pem");
+    }
 
     let privateKey: string;
     try {
       privateKey = fs.readFileSync(keyPath, "utf-8");
     } catch {
+      if (tenant) {
+        throw new NotFoundException(
+          `Signing key for tenant '${tenant.slug}' not found at ${keyPath}. ` +
+            `Generate it with apps/print-bridge/scripts/gen-tenant-pki.sh ${tenant.slug} --domains <hosts>`,
+        );
+      }
       throw new NotFoundException("Signing key not found. Run: openssl req -x509 -newkey rsa:2048 -keyout private-key.pem -out certificate.txt -days 365 -nodes -subj '/CN=GustoPOS'");
     }
 
@@ -3056,8 +3077,8 @@ export class AppController {
   @Get("sign")
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @RequiresModule("printing")
-  async signQzRequest(@Query("request") request: string): Promise<string> {
-    return this.signQzDigest(request);
+  async signQzRequest(@Query("request") request: string, @Req() req: unknown): Promise<string> {
+    return this.signQzDigest(request, req);
   }
 
   // Dedicated bridge-authenticated signing route for the Go agent. The
@@ -3067,7 +3088,7 @@ export class AppController {
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   async signQzRequestForBridge(@Query("request") request: string, @Req() req: any): Promise<string> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
-    return this.withBridgeTenantContext(auth.tenantId, () => this.signQzDigest(request));
+    return this.withBridgeTenantContext(auth.tenantId, () => this.signQzDigest(request, req));
   }
 
   // ─── Prep Items ────────────────────────────────────────────────────────
