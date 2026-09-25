@@ -1831,7 +1831,15 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       db
         .select()
         .from(menuItems)
-        .where(and(eq(menuItems.tenantId, tenant.id), eq(menuItems.isActive, 1))),
+        .where(
+          and(
+            eq(menuItems.tenantId, tenant.id),
+            eq(menuItems.isActive, 1),
+            // JOLLY items are POS-only: their price is entered ad-hoc by the
+            // waiter, so the public menu can never render (or price) them.
+            eq(menuItems.isJolly, 0),
+          ),
+        ),
       db.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenant.id)),
       db
         .select()
@@ -2581,6 +2589,18 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     for (const line of lines) {
       const menuItem = itemById.get(line.menuItemId);
       if (!menuItem) {
+        // Distinguish "never existed" from "exists but is POS-only": a JOLLY
+        // item never reaches the public menu (see getPublicMenu), and its
+        // price is typed ad-hoc at the POS, so pricing it server-side here
+        // would charge 0. Reject explicitly instead of silently selling free.
+        const [hidden] = await db
+          .select({ id: menuItems.id, name: menuItems.name, isJolly: menuItems.isJolly })
+          .from(menuItems)
+          .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, line.menuItemId)))
+          .limit(1);
+        if (hidden && hidden.isJolly === 1) {
+          throw new Error(`Public order item '${hidden.name}' is not available for online ordering`);
+        }
         throw new Error(`Public order item '${line.menuItemId}' not found in menu`);
       }
       if (menuItem.isSoldOut) {
