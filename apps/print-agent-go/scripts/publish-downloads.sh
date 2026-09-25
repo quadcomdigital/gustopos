@@ -8,6 +8,7 @@
 #
 # Usage:
 #   ./scripts/publish-downloads.sh [VERSION]
+#   ./scripts/publish-downloads.sh --check [VERSION]   # guard only, no writes
 #
 # Requires the release binaries to already exist in bin/ (run
 # `make linux windows darwin` first). VERSION defaults to 0.8.0.
@@ -18,6 +19,11 @@
 
 set -euo pipefail
 
+CHECK_ONLY=0
+if [[ "${1:-}" == "--check" ]]; then
+  CHECK_ONLY=1
+  shift
+fi
 VERSION="${1:-0.8.0}"
 AGENT="gustopos-print-agent"
 
@@ -38,15 +44,55 @@ if [[ ! -d "$BIN_DIR" ]] || ! ls "$BIN_DIR"/"$AGENT"-* >/dev/null 2>&1; then
   exit 1
 fi
 
-# Guard: make sure the version passed here matches the version baked into the
-# binaries by the Makefile (-X main.version). Prevents drift when the script is
-# invoked directly with a stale/typo'd VERSION.
-if [[ -x "$BIN_DIR/${AGENT}-linux-amd64" ]]; then
-  embedded="$("$BIN_DIR/${AGENT}-linux-amd64" -version 2>/dev/null | awk '{print $NF}')"
-  if [[ -n "$embedded" && "$embedded" != "$VERSION" ]]; then
-    echo "error: VERSION '$VERSION' does not match the version baked into the binary ('$embedded'). Bump VERSION in the Makefile first." >&2
-    exit 1
+# Guard: EVERY artifact about to be published must embed VERSION. A stale
+# binary left in bin/ (say, a tenant flavor built before the bump) would be
+# published under the new manifest: agents would download a binary reporting an
+# older version, never converge, and keep burning update attempts in a loop.
+#
+# - linux/amd64 artifacts run natively here, so we ask them with -version;
+# - cross-compiled artifacts (windows/darwin/linux-arm64) can't execute, so we
+#   require the linker-injected VERSION literal to be present in their bytes.
+verify_artifact_version() {
+  local name printed
+  name="$(basename "$1")"
+  case "$name" in
+    *-linux-amd64)
+      printed="$("$1" -version 2>/dev/null | awk '{print $NF}')"
+      if [[ -n "$printed" && "$printed" != "$VERSION" ]]; then
+        echo "error: '$name' reports version '$printed', expected '$VERSION'." >&2
+        echo "       Rebuild it (make linux windows darwin [FLAVOR=...]) or delete it from bin/." >&2
+        return 1
+      fi
+      if [[ -n "$printed" ]]; then
+        return 0
+      fi
+      # Fall through: not executable on this host (or -version unsupported).
+      ;;
+  esac
+  if grep -aqF -- "$VERSION" "$1"; then
+    return 0
   fi
+  echo "error: '$name' does not embed version '$VERSION' (stale artifact?)." >&2
+  echo "       Rebuild it (make linux windows darwin [FLAVOR=...]) or delete it from bin/." >&2
+  return 1
+}
+
+version_mismatch=0
+for f in "$BIN_DIR"/"$AGENT"-*; do
+  [[ -f "$f" ]] || continue
+  verify_artifact_version "$f" || version_mismatch=1
+done
+if [[ "$version_mismatch" -ne 0 ]]; then
+  echo "error: VERSION '$VERSION' does not match every artifact in $BIN_DIR — refusing to publish." >&2
+  echo "       Bump/fix VERSION in the Makefile, rebuild, then publish again." >&2
+  exit 1
+fi
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  count=0
+  for f in "$BIN_DIR"/"$AGENT"-*; do [[ -f "$f" ]] && count=$((count + 1)); done
+  echo "==> OK: $count artifacts in $BIN_DIR all embed VERSION $VERSION"
+  exit 0
 fi
 
 # HTML-escape the version for the download page (it comes from the CLI arg).

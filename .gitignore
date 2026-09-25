@@ -31,6 +31,9 @@ coverage/
 # Print-agent release artifacts (generated — publish via make publish-downloads):
 /apps/print-agent-go/bin/
 /apps/web/public/downloads/
+# Stray local `go build -o print-agent` output (release binaries go to bin/).
+/apps/print-agent-go/print-agent
+/apps/print-agent-go/print-agent.exe
 
 # Graphify analysis output (regenerated tooling artifacts):
 /graphify-out/

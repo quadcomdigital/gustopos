@@ -54,15 +54,29 @@ cd apps/print-agent-go
 # 2. Build the release binaries for all platforms
 make linux windows darwin
 
+#    Flavored (per-tenant) builds are SEPARATE: rebuild them too, otherwise the
+#    publish guard fails on the stale flavor binaries left in bin/.
+make FLAVOR=casale API_BASE=https://test.anticocasalericevimenti.it linux windows darwin
+
 # 3. Sanity check the build (version string must print the new version)
 ./bin/gustopos-print-agent-linux-amd64 -version
-go vet ./...
+./bin/gustopos-print-agent-casale-linux-amd64 -version
+go vet ./... && go test ./...
 
-# 4. Publish to the web app's public folder
+# 4. Verify every artifact in bin/ embeds VERSION — read-only, no writes:
+./scripts/publish-downloads.sh --check        # or: --check 0.14.0
+
+# 5. Publish to the web app's public folder
 make publish-downloads          # uses VERSION from the Makefile
 #    or, to override on the CLI:
 make publish-downloads VERSION=0.7.0
 ```
+
+> The publish script **refuses to run** if ANY binary in `bin/` embeds a
+> different version (stale flavor, leftover platform, hand-copied file). A
+> stale artifact published under the new manifest would make agents download a
+> binary that reports an older version: they never converge and keep retrying.
+> Rebuild it or delete it from `bin/`, then publish again.
 
 `make publish-downloads` runs `scripts/publish-downloads.sh` which:
 
@@ -77,7 +91,7 @@ make publish-downloads VERSION=0.7.0
    (in Italian) with OS-categorized download cards, install instructions,
    and integrity-check instructions.
 
-### 5. Publish the web build
+### 6. Publish the web build
 
 The `downloads/` folder lives under `apps/web/public/`, so it is copied into
 the API-served `dist/` only when the web app is built:
@@ -129,9 +143,14 @@ The page copy (Italian) lives inline in `scripts/publish-downloads.sh`
 ## Checklist before shipping
 
 - [ ] `VERSION` bumped in the Makefile
-- [ ] `make linux windows darwin` clean (`go vet` + gofmt too)
-- [ ] `./bin/gustopos-print-agent-linux-amd64 -version` prints the new version
+- [ ] `make linux windows darwin` clean (`go vet` + gofmt + `go test` too)
+- [ ] Every **flavor** rebuilt as well (`make FLAVOR=… API_BASE=… linux windows darwin`)
+- [ ] `./scripts/publish-downloads.sh --check` passes — every artifact embeds `VERSION`
 - [ ] `make publish-downloads` regenerated all three files (`index.html`,
       `checksums.sha256`, `version.json`)
 - [ ] `sha256sum -c checksums.sha256` passes (run in the downloads folder)
-- [ ] Web app rebuilt and deployed; `/downloads/` reachable on the public origin
+- [ ] Web app rebuilt and deployed; `curl <origin>/downloads/version.json`
+      reports the new version on **every** origin agents are paired to
+      (flavorless + each flavored server)
+- [ ] `print_bridges.version` moves from `go-<old>` to `go-<new>` as agents
+      check in (startup + every 6h)
