@@ -52,6 +52,7 @@ import {
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   updateOrderRequestSchema,
+  hasTenantOverride,
   type AppData,
   type BomItem,
   type BomUpsertComponentsRequest,
@@ -114,6 +115,7 @@ import { Injectable, Inject } from "@nestjs/common";
 import crypto from "node:crypto";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
+import { hasTenantOverrideFor } from "../tenant/tenant-overrides";
 import { assertOrderStatusTransition } from "../orders/order-status-policy";
 import { isStockTrackingEnabled } from "../orders/stock-tracking";
 import {
@@ -1434,6 +1436,13 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
 
   async getPublicData(): Promise<AppData> {
     const tenantId = getTenantIdOrDefault();
+    // JOLLY (ad-hoc price at the POS) is a per-tenant capability: tenants that
+    // never opted into it never receive the flag, so the POS cannot render the
+    // "Prezzo ad-hoc" input for them.
+    const jollyEnabled = hasTenantOverrideFor("jolly");
+    // Same story for the ×2 (MAXI) modifier multiplier: without the override
+    // every option resolves to plain additive pricing, exactly like legacy.
+    const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
     const [staffRows, tableRows, inventoryRows, menuRows, canonicalMenuComponents, prepRows, orderRows, orderItemRows, mappedBomItems, modifierGroupRows, modifierOptionRows, modifierOptionOverrideRows, catPoolRows, catPoolOptionRows, catPoolCategoryRows, categoryRows, deliveryOrderRows] =
       // Run the whole read set on ONE pooled connection inside a transaction
       // with a single transaction-local RLS set_config. Previously each of the
@@ -1598,7 +1607,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       overridesByOptionId.set(override.optionId, existing);
     }
 
-    const optionsByGroupId = new Map<string, Array<{ id: string; name: string; inventoryItemId?: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: "mg" | "g" | "kg" | "ml" | "L" | "pz"; priceDelta: number; isDefault: boolean; isActive: boolean; sortOrder: number; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
+    const optionsByGroupId = new Map<string, Array<{ id: string; name: string; inventoryItemId?: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: "mg" | "g" | "kg" | "ml" | "L" | "pz"; priceDelta: number; priceMultiplier?: number | null; isDefault: boolean; isActive: boolean; sortOrder: number; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
     for (const opt of modifierOptionRows) {
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
       existing.push({
@@ -1610,6 +1619,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: (opt.unit as "mg" | "g" | "kg" | "ml" | "L" | "pz") ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isDefault: Boolean(opt.isDefault),
         isActive: Boolean(opt.isActive),
         sortOrder: opt.sortOrder ?? 0,
@@ -1658,7 +1668,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isDefault: false,
         isActive: opt.isActive !== 0,
         ingredientOverrides: opt.inventoryItemId ? [{ ingredientId: opt.inventoryItemId, action: "add" as const }] : [],
@@ -1703,7 +1713,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           stationId: row.stationId,
           referenceId: row.referenceId,
           printAreas: parsePrintAreas(row.printAreas),
-          isJolly: row.isJolly === 1,
+          isJolly: jollyEnabled && row.isJolly === 1,
           ingredients: ingredientsByMenuId.get(row.id) ?? [],
           recipe: recipeByMenuId.get(row.id) ?? [],
           modifiers: [],
@@ -1778,7 +1788,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isActive: opt.isActive !== 0,
         sortOrder: opt.sortOrder ?? 0,
       });
@@ -1817,6 +1827,11 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     if (!tenant) {
       throw new Error("Tenant not found for public menu");
     }
+
+    // The ×2 (MAXI) modifier multiplier is a per-tenant capability. Without the
+    // override every option here resolves to null, so the shared pricing engine
+    // falls back to the legacy additive rule for this tenant's public orders.
+    const multiplierEnabled = hasTenantOverride("modifierMultiplier", tenant.slug, tenant.id);
 
     const enabledModules = await this.staffRepo.getEnabledModulesForTenant(tenant.id);
     if (!enabledModules.includes("public_menu")) {
@@ -1980,6 +1995,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: (opt.unit as z.infer<typeof modifierOptionSchema>["unit"]) ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isDefault: Boolean(opt.isDefault),
         isActive: Boolean(opt.isActive),
         sortOrder: opt.sortOrder ?? 0,
@@ -2018,7 +2034,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isActive: opt.isActive !== 0,
         sortOrder: opt.sortOrder ?? 0,
       });

@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
+import { hasTenantOverrideFor } from "../tenant/tenant-overrides";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { syncMenuModifierGroups } from "./utils/sync-menu-modifier-groups";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, SQL, lt, gte, lte } from "drizzle-orm";
@@ -280,6 +281,12 @@ export class InventoryRepository {
   /** Full admin menu mapping: recipe (resolved names), modifiers, groups. Public so SimpleCatalogRepository can reuse it. */
   async mapMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
     const tenantId = getTenantIdOrDefault();
+    // JOLLY (ad-hoc price at the POS) is a per-tenant capability: tenants that
+    // never opted into it must not see the flag at all, so the POS cannot even
+    // render the "Prezzo ad-hoc" input.
+    const jollyEnabled = hasTenantOverrideFor("jolly");
+    // The ×2 (MAXI) modifier multiplier is a per-tenant capability too.
+    const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
     const [menuRows, canonicalRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows] = await Promise.all([
       db.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
       db.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenantId)),
@@ -326,8 +333,10 @@ export class InventoryRepository {
     }
     const optionsByGroupId = new Map<string, any[]>();
     for (const opt of modifierOptionRows) {
+      // The ×2 (MAXI) multiplier is a per-tenant capability: the admin editor
+      // receives null without the override, mirroring the pool read path.
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
-      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, referenceId: opt.referenceId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
+      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, referenceId: opt.referenceId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null, isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
       optionsByGroupId.set(opt.groupId, existing);
     }
     const modifierGroupsByMenuId = new Map<string, any[]>();
@@ -344,7 +353,7 @@ export class InventoryRepository {
     return menuItemAdminListResponseSchema.parse(menuRows.map((row) => menuItemAdminSchema.parse({
       id: row.id, name: row.name, price: Number(row.price), category: row.category, categoryId: row.categoryId ?? undefined,
       stationId: row.stationId, referenceId: row.referenceId,
-      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1, isJolly: row.isJolly === 1,
+      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1, isJolly: jollyEnabled && row.isJolly === 1,
       recipe: recipeByMenuId.get(row.id) ?? [], modifiers: [], modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
     })));
   }
@@ -1400,6 +1409,10 @@ return true;
 
   async listCategoryModifierPools(categoryId?: string): Promise<CategoryModifierPool[]> {
 const tenantId = getTenantIdOrDefault();
+// The ×2 (MAXI) multiplier is a per-tenant capability: without the override
+// the editor receives null on every option and therefore cannot show (or
+// re-save) a multiplier it is not entitled to.
+const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
 const conditions: SQL[] = [eq(categoryModifierPools.tenantId, tenantId)];
 
 const groupRows = await db
@@ -1429,7 +1442,7 @@ for (const opt of optionRows) {
     unit: opt.unit ?? "pz",
     priceDelta: Number(opt.priceDelta),
     // Nullable in DB: keep "unset" as undefined so legacy pricing is unchanged.
-    priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+    priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
     isActive: opt.isActive !== 0,
     sortOrder: opt.sortOrder ?? 0,
   });
@@ -1485,6 +1498,10 @@ if (payload.categoryIds.length > 0) {
 }
 
 if (payload.options.length > 0) {
+  // The ×2 (MAXI) multiplier is a per-tenant capability: tenants that never
+  // opted into it never persist one, so a stray payload cannot smuggle a
+  // price-scaling option into their catalog.
+  const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
   await db.insert(categoryModifierPoolOptions).values(
     payload.options.map((opt, idx) => ({
       id: `cmpo_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
@@ -1499,7 +1516,7 @@ if (payload.options.length > 0) {
       unit: opt.unit ?? "pz",
       priceDelta: String(opt.priceDelta),
       // Nullable: null keeps legacy additive-only pricing.
-      priceMultiplier: opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
+      priceMultiplier: !multiplierEnabled || opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
       isActive: opt.isActive === false ? 0 : 1,
       sortOrder: idx,
     })),
@@ -1543,6 +1560,9 @@ if (payload.options !== undefined) {
     .where(and(eq(categoryModifierPoolOptions.tenantId, tenantId), eq(categoryModifierPoolOptions.poolId, id)));
 
   if (payload.options.length > 0) {
+    // Same capability gate as create: options are replaced wholesale, so a
+    // tenant without the override must not gain a ×2 through the update path.
+    const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
     await db.insert(categoryModifierPoolOptions).values(
       payload.options.map((opt, idx) => ({
         // The update contract omits `id` (options are replaced wholesale), so a
@@ -1558,7 +1578,7 @@ if (payload.options !== undefined) {
         quantity: String(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: String(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
+        priceMultiplier: !multiplierEnabled || opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
         isActive: opt.isActive === false ? 0 : 1,
         sortOrder: idx,
       })),
