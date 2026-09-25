@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Plus, Minus, ShoppingCart, Settings, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { computeGroupModifierDelta, isMultiSelectGroup, modifierOptionPriceBadge } from '../lib/modifier-pricing';
+import { hasTenantOverride } from '@gustopos/shared';
+import { useAppStore } from '../store/app-store';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
 
@@ -86,7 +88,12 @@ export default function POSProductModal({
   const backdropDismiss = useBackdropDismiss(onClose);
 
   const resolvedItem = menuItems.find((m) => m.id === item?.id) ?? item;
-  const isJolly = Boolean((resolvedItem as any)?.isJolly);
+  // JOLLY (ad-hoc price) is a per-tenant capability, not base behaviour. The
+  // API already masks the flag for tenants without the override, this keeps the
+  // input hidden even if a cached payload still carries it.
+  const tenantId = useAppStore((state) => state.tenantContext?.tenantId);
+  const isJolly =
+    Boolean((resolvedItem as any)?.isJolly) && hasTenantOverride('jolly', undefined, tenantId);
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
 
