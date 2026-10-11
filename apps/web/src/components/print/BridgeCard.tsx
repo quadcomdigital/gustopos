@@ -3,14 +3,16 @@ import type { PrintBridge } from '@gustopos/shared';
 import { filterLegacyAreas } from './legacy-areas';
 import { usePrintStations } from '../inventory/usePrintStations';
 import { fetchBridgeLogs } from '../../shared/api/client';
+import type { BridgeConfigStatus } from './print-profile-utils';
 
 type Freshness = 'fresh' | 'slow' | 'offline';
 
 interface BridgeCardProps {
   bridge: PrintBridge;
   isLocal: boolean;
-  onEditMappings: (bridge: PrintBridge) => void;
-  onEditClaimedAreas: (bridge: PrintBridge) => void;
+  /** null = no active configuration (live routing is authoritative). */
+  configStatus: BridgeConfigStatus;
+  onOpenConfiguration: (bridge: PrintBridge) => void;
   onDelete: (bridge: PrintBridge) => void;
   onTestPrint: (bridgeId: string, area: string) => Promise<void>;
   onScanNetwork: (bridgeId: string) => Promise<void>;
@@ -47,8 +49,8 @@ function relTime(iso: string | null | undefined): string {
 export default function BridgeCard({
   bridge,
   isLocal,
-  onEditMappings,
-  onEditClaimedAreas,
+  configStatus,
+  onOpenConfiguration,
   onDelete,
   onTestPrint,
   onScanNetwork,
@@ -185,23 +187,64 @@ export default function BridgeCard({
           : 'nessuna stampante visibile via QZ Tray'}
       </p>
 
+      {/* ─── Posizione rispetto alla configurazione (fonte unica) ──── */}
+      {configStatus === 'diverges' && (
+        <div className="rounded border border-amber-400 bg-amber-50 px-2.5 py-1.5 text-[10px] text-amber-900 leading-relaxed">
+          <strong>Da applicare:</strong> il routing live differisce dalla configurazione attiva
+          {freshness === 'offline'
+            ? ' (bridge offline: resterà così finché non si riconnette)'
+            : ''}
+          . Aprila per riallinearlo, oppure salva il live dentro la configurazione.
+        </div>
+      )}
+      {configStatus === 'waiting' && (
+        <div className="rounded border border-primary/40 bg-primary/5 px-2.5 py-1.5 text-[10px] text-secondary leading-relaxed">
+          <strong>⏳ In attesa:</strong> la configurazione è stata applicata e questo bridge la
+          riceverà al prossimo heartbeat.
+        </div>
+      )}
+      {configStatus === 'applied' && (
+        <p className="text-[10px] text-success">✅ Routing applicato e ricevuto dall&apos;agente.</p>
+      )}
+      {configStatus === 'not-in-profile' && (
+        <p className="text-[10px] text-text-muted">
+          Non è coperto dalla configurazione attiva: le sue stazioni non verranno riscritte alla
+          prossima attivazione.
+        </p>
+      )}
+      {configStatus === 'no-config' && (
+        <p className="text-[10px] text-text-muted">
+          Nessuna configurazione attiva: per ora il routing live fa fede.
+        </p>
+      )}
+
       {/* ─── Action chips ─────────────────────────── */}
       <div className="flex flex-wrap gap-2 border-t border-border pt-2">
-        <button
-          type="button"
-          onClick={() => onEditClaimedAreas(bridge)}
-          className="px-2.5 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider hover:bg-gray-50 flex items-center gap-1.5"
+        <span
+          title="Stazioni che questo bridge stampa: si modificano nella configurazione"
+          className="px-2.5 py-1 rounded border border-border bg-gray-50 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5"
         >
           <span className={`w-1.5 h-1.5 rounded-full ${claimedAreas.length > 0 ? 'bg-primary' : 'bg-gray-300'}`} />
-          Aree reclamate ({claimedAreas.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => onEditMappings(bridge)}
-          className="px-2.5 py-1 rounded border border-border text-[10px] font-bold uppercase tracking-wider hover:bg-gray-50 flex items-center gap-1.5"
+          Stazioni ({claimedAreas.length})
+        </span>
+        <span
+          title="Zona → stampante: si modificano nella configurazione"
+          className="px-2.5 py-1 rounded border border-border bg-gray-50 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5"
         >
           <span className={`w-1.5 h-1.5 rounded-full ${(bridge.mappings?.length ?? 0) > 0 ? 'bg-primary' : 'bg-gray-300'}`} />
-          Mappings ({bridge.mappings?.length ?? 0})
+          Mapping ({bridge.mappings?.length ?? 0})
+        </span>
+        <button
+          type="button"
+          onClick={() => onOpenConfiguration(bridge)}
+          title="Il routing si scrive solo nella configurazione: aprila per modificare stazioni e stampanti"
+          className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+            configStatus === 'diverges'
+              ? 'border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100'
+              : 'border-primary text-primary hover:bg-primary hover:text-white'
+          }`}
+        >
+          ⚙ Modifica nella configurazione
         </button>
         <button
           type="button"

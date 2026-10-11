@@ -14,7 +14,8 @@ import AddComponentModal from './AddComponentModal';
 import EditComponentModal from './EditComponentModal';
 import CreateIngredientInlineModal from './CreateIngredientInlineModal';
 import CreatePrepInlineModal from './CreatePrepInlineModal';
-import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
+import { required, minLength, maxLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
+import { TICKET_NAME_MAX_LENGTH } from '@gustopos/shared';
 import { explodeBomCost } from '../useInventoryShared';
 
 
@@ -52,6 +53,7 @@ export default function FoodProductModal({
 }: FoodProductModalProps) {
   const isEdit = !!editItem;
   const [name, setName] = useState('');
+  const [ticketName, setTicketName] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [price, setPrice] = useState('');
@@ -98,6 +100,7 @@ export default function FoodProductModal({
     if (editItem && open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] initializes form fields from editItem prop on modal open; safe because all setters receive primitive values derived from props, not from previous state
       setName(editItem.name);
+      setTicketName(editItem.ticketName ?? '');
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
       setPrice(String(editItem.price));
@@ -113,7 +116,7 @@ export default function FoodProductModal({
       setOriginalResolved(JSON.parse(JSON.stringify(recipe)));
       setIsBase(editItem.price > 0 && recipe.length === 0);
     } else if (!open) {
-      setName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setStationId(''); setReferenceId(''); setRecipe([]); setIsBase(false); setModifierGroups([]); setErrors({}); setError('');
+      setName(''); setTicketName(''); setCategoryId(''); setCategoryName(''); setPrice(''); setStationId(''); setReferenceId(''); setRecipe([]); setIsBase(false); setModifierGroups([]); setErrors({}); setError('');
       setOriginalResolved([]);
     }
   }, [editItem, open]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -132,6 +135,7 @@ export default function FoodProductModal({
   const handleSave = async () => {
     const errs: ValidationErrors = {};
     errs.name = required(name, 'Nome') ?? minLength(name, 2, 'Nome');
+    errs.ticketName = maxLength(ticketName, TICKET_NAME_MAX_LENGTH, 'Nome interno');
     errs.price = positiveNumber(price, 'Prezzo');
     setErrors(errs);
     if (Object.values(errs).some(Boolean)) return;
@@ -159,6 +163,8 @@ export default function FoodProductModal({
       if (isEdit && onUpdateMenuItem && editItem) {
         await onUpdateMenuItem(editItem.id, {
           name: name.trim(),
+          // Empty = clear the internal comanda name (print falls back to `name`).
+          ticketName: ticketName.trim() || null,
           category: catName,
           categoryId: categoryId || undefined,
           price: Number(price),
@@ -171,6 +177,7 @@ export default function FoodProductModal({
       } else if (onCreateMenuProduct) {
         await onCreateMenuProduct({
           name: name.trim(),
+          ticketName: ticketName.trim() || undefined,
           price: Number(price),
           category: catName.trim(),
           categoryId: categoryId || undefined,
@@ -313,6 +320,7 @@ export default function FoodProductModal({
     const originalRecipe = originalResolved.length > 0 ? originalResolved : editItem.recipe;
     return (
       name !== editItem.name
+      || ticketName.trim() !== (editItem.ticketName ?? '')
       || categoryId !== (editItem.categoryId ?? '')
       || price !== String(editItem.price)
       || stationId !== (editItem.stationId ?? '')
@@ -320,7 +328,7 @@ export default function FoodProductModal({
       || JSON.stringify(recipe) !== JSON.stringify(originalRecipe)
       || JSON.stringify(modifierGroups) !== JSON.stringify(editItem.modifierGroups)
     );
-  }, [isEdit, editItem, name, categoryId, price, stationId, referenceId, recipe, originalResolved, modifierGroups]);
+  }, [isEdit, editItem, name, ticketName, categoryId, price, stationId, referenceId, recipe, originalResolved, modifierGroups]);
 
   return (
     <>
@@ -354,6 +362,21 @@ export default function FoodProductModal({
             <FormField label={isBase ? 'Prezzo base (€)' : 'Prezzo (€)'} error={errors.price?.message}>
               <input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="Prezzo" inputMode="decimal" min="0.01" step="0.10" className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.price)}`} />
             </FormField>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <FormField label="Nome interno (comanda)" error={errors.ticketName?.message}>
+              <input
+                value={ticketName}
+                onChange={(e) => setTicketName(e.target.value)}
+                maxLength={TICKET_NAME_MAX_LENGTH + 8}
+                placeholder="Es. MEDITERR"
+                className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.ticketName)}`}
+              />
+            </FormField>
+            <p className="text-[11px] text-text-muted">
+              Stampa sulla comanda di cucina al posto del nome completo (max {TICKET_NAME_MAX_LENGTH} caratteri). Conto e menu pubblico restano col nome completo.
+            </p>
           </div>
 
           <div className="flex flex-col gap-1">

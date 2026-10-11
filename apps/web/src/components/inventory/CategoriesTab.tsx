@@ -1,6 +1,6 @@
 import type { Category, CategoryCreateRequest, CategoryUpdateRequest } from '@gustopos/shared';
 import LoadingOrEmpty from '../../shared/ui/molecules/LoadingOrEmpty';
-import { Plus, RotateCcw, Save, ChevronDown, Search, Tag, Package, Layers, UtensilsCrossed } from 'lucide-react';
+import { Plus, RotateCcw, Save, ChevronDown, ChevronUp, Search, Tag, Package, Layers, UtensilsCrossed } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import Modal from '../../shared/ui/molecules/Modal';
 import SectionHeader from '../../shared/ui/molecules/SectionHeader';
@@ -12,6 +12,7 @@ import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
 import { usePrintStations } from './usePrintStations';
 import { useProductionReferences } from './useProductionReferences';
+import { isCategoryAtGroupEdge, moveCategoryInGroup } from '../../lib/category-order';
 
 interface CategoriesTabProps {
   categories: Category[];
@@ -21,6 +22,8 @@ interface CategoriesTabProps {
   onCreate?: (payload: CategoryCreateRequest) => Promise<void>;
   onUpdate?: (id: string, payload: CategoryUpdateRequest) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
+  /** Full id list of one scope in the new order (persisted as sortOrder). */
+  onReorder?: (ids: string[]) => Promise<void>;
 }
 
 export default function CategoriesTab({
@@ -31,6 +34,7 @@ export default function CategoriesTab({
   onCreate,
   onUpdate,
   onDelete,
+  onReorder,
 }: CategoriesTabProps) {
   const { stations } = usePrintStations();
   const { references } = useProductionReferences();
@@ -138,6 +142,27 @@ export default function CategoriesTab({
     });
   };
 
+  /**
+   * Swap a category with its neighbour INSIDE its scope — the list sent to the
+   * server is always the complete group, never the search-filtered view, so a
+   * search can never truncate (and silently renumber) the order.
+   */
+  const moveCategory = async (category: Category, direction: -1 | 1) => {
+    if (!onReorder) return;
+    const group = categories.filter((c) => c.scope === category.scope);
+    const ids = moveCategoryInGroup(group, category.id, direction);
+    if (!ids) return;
+    setSaving(true);
+    try {
+      await onReorder(ids);
+      void onRefresh?.();
+    } catch {
+      // Error already handled by store
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
       <SectionHeader
@@ -225,6 +250,11 @@ export default function CategoriesTab({
       )}
 
       {/* Category list grouped by scope */}
+      {onReorder && (
+        <p className="px-4 pt-3 text-[10px] text-text-muted">
+          Ordine composto con le frecce: è l'ordine che apparirà sul POS (gruppo per gruppo).
+        </p>
+      )}
       <div className="p-4 space-y-4">
         {filteredCategories.length === 0 && (
           <LoadingOrEmpty
@@ -237,6 +267,9 @@ export default function CategoriesTab({
         {(['ingredient', 'bom', 'menu'] as const).map((scope) => {
           const scopeCategories = filteredCategories.filter((c) => c.scope === scope);
           if (scopeCategories.length === 0) return null;
+          // Full group, search-independent: both the swap and the arrows'
+          // disabled state are computed against it, never the filtered view.
+          const orderedScope = categories.filter((c) => c.scope === scope);
           const scopeLabel = scope === 'ingredient' ? 'Ingredienti' : scope === 'bom' ? 'BoM' : 'Menu';
           const ScopeIcon = scope === 'ingredient' ? Package : scope === 'bom' ? Layers : UtensilsCrossed;
           return (
@@ -257,6 +290,28 @@ export default function CategoriesTab({
                     <span className="text-[10px] uppercase tracking-wider text-text-muted">
                       {category.stationId ? (stationName.get(category.stationId) ?? 'stazione eliminata') : 'predefinita'}
                     </span>
+                    {onReorder && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void moveCategory(category, -1)}
+                          disabled={saving || isCategoryAtGroupEdge(orderedScope, category.id, -1)}
+                          aria-label={`Sposta "${category.name}" su`}
+                          className="w-7 h-7 grid place-items-center rounded-lg text-text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-30 disabled:pointer-events-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                        >
+                          <ChevronUp size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void moveCategory(category, 1)}
+                          disabled={saving || isCategoryAtGroupEdge(orderedScope, category.id, 1)}
+                          aria-label={`Sposta "${category.name}" giù`}
+                          className="w-7 h-7 grid place-items-center rounded-lg text-text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-30 disabled:pointer-events-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                        >
+                          <ChevronDown size={14} />
+                        </button>
+                      </>
+                    )}
                     <Button variant="secondary" onClick={() => startEdit(category)}>
                       Modifica
                     </Button>

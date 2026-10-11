@@ -8,6 +8,7 @@ import { RealtimePubSubService } from "./realtime/pubsub.service";
 import type { JwtPayload } from "./auth/jwt.types";
 import { AppRepository } from "./repository/app.repository";
 import { StaffRepository } from "./repository/staff.repository";
+import { PushDispatcher } from "./push/push-dispatcher.service";
 import { getJwtSecret } from "./auth/jwt-secret";
 import { getTenantContext, runWithTenantContext } from "./tenant/tenant-context.store";
 import { TenantService } from "./tenant/tenant.service";
@@ -38,6 +39,7 @@ export class RealtimeGateway implements OnModuleInit {
     @Inject(AppRepository) private readonly appRepository: AppRepository,
     @Inject(StaffRepository) private readonly staffRepo: StaffRepository,
     @Inject(TenantService) private readonly tenantService: TenantService,
+    @Inject(PushDispatcher) private readonly pushDispatcher: PushDispatcher,
   ) {}
 
   @WebSocketServer()
@@ -187,6 +189,7 @@ export class RealtimeGateway implements OnModuleInit {
 
     const pubsubPayload = scopedTenantId ? { __tenantId: scopedTenantId, payload } : payload;
     await this.pubSubService.publish(event, pubsubPayload);
+    this.dispatchPush(event, payload, scopedTenantId);
   }
 
   async emitToRoom(room: string, event: string, payload: unknown): Promise<void> {
@@ -197,6 +200,20 @@ export class RealtimeGateway implements OnModuleInit {
     const tenantId = getTenantContext()?.tenantId;
     this.server.to(room).emit(event, payload);
     await this.pubSubService.publish(`${room}:${event}`, tenantId ? { __tenantId: tenantId, payload } : payload);
+    this.dispatchPush(event, payload, tenantId ?? null);
+  }
+
+  /**
+   * Web Push fan-out. Fire-and-forget by design: this runs only on the
+   * instance that originated the event (the Redis relay never calls emit),
+   * so each notification is sent exactly once, and a slow push service can
+   * never delay the realtime path the POS depends on.
+   */
+  private dispatchPush(event: string, payload: unknown, tenantId: string | null): void {
+    if (!tenantId) return;
+    void this.pushDispatcher
+      .dispatch(event, payload, tenantId, getTenantContext()?.tenantSlug)
+      .catch((error: unknown) => console.warn("[push] dispatch failed:", error));
   }
 
   // Validates an event payload against the shared contract. Unknown events are

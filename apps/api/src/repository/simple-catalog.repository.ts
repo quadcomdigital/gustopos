@@ -12,6 +12,7 @@ import {
 } from "@gustopos/shared";
 import { InventoryRepository } from "./inventory.repository";
 import { syncMenuModifierGroups } from "./utils/sync-menu-modifier-groups";
+import { normalizeTicketName } from "../orders/ticket-names";
 
 /**
  * simple_catalog data access: catalog CRUD only — no stock, no BoM, no prep.
@@ -38,10 +39,11 @@ export class SimpleCatalogRepository {
   }
 
   async listSimpleCatalogItems(): Promise<MenuItemAdmin[]> {
-    const all = await this.inventoryRepo.mapMenuItemsAdmin();
-    // Same behaviour as before (only sellable rows), but with recipe /
-    // modifierGroups / isActive resolved for the backoffice editor.
-    return all.filter((item) => item.isActive);
+    // Archived rows (isActive = false) are deliberately NOT filtered out:
+    // they are hidden from the POS and the public menu by those read paths,
+    // but the backoffice list must keep them visible or an archived product
+    // could never be re-enabled from the UI.
+    return this.inventoryRepo.mapMenuItemsAdmin();
   }
 
   async createSimpleCatalogItem(
@@ -57,6 +59,7 @@ export class SimpleCatalogRepository {
         id: menuId,
         tenantId,
         name: payload.name,
+        ticketName: normalizeTicketName(payload.ticketName),
         price: String(payload.price),
         category: payload.category,
         categoryId: payload.categoryId ?? null,
@@ -107,6 +110,7 @@ export class SimpleCatalogRepository {
     await withTenantTx(async (tx) => {
       const scalarUpdates: Partial<Record<string, unknown>> = {};
       if (parsed.name !== undefined) scalarUpdates.name = parsed.name;
+      if (parsed.ticketName !== undefined) scalarUpdates.ticketName = normalizeTicketName(parsed.ticketName);
       if (parsed.category !== undefined) scalarUpdates.category = parsed.category;
       if (parsed.categoryId !== undefined) scalarUpdates.categoryId = parsed.categoryId ?? null;
       if (parsed.stationId !== undefined) scalarUpdates.stationId = parsed.stationId;

@@ -22,6 +22,8 @@ import { PaymentsRepository } from "./repository/payments.repository";
 import { PrintJobsRepository } from "./repository/print-jobs.repository";
 import { PrintBridgeRepository } from "./repository/print-bridge.repository";
 import { PrintStationsRepository } from "./repository/print-stations.repository";
+import { PrintEndpointsRepository } from "./repository/print-endpoints.repository";
+import { PrintProfilesRepository } from "./repository/print-profiles.repository";
 import { ProductionReferencesRepository } from "./repository/production-references.repository";
 import { FiscalBridgeRepository } from "./repository/fiscal-bridge.repository";
 import { RealtimePubSubService } from "./realtime/pubsub.service";
@@ -42,6 +44,11 @@ import { ConsumerAuthController } from "./public/consumer-auth.controller";
 import { ConsumerAuthService } from "./public/consumer-auth.service";
 import { ConsumerJwtAuthGuard } from "./auth/consumer-jwt-auth.guard";
 import { PublicMenuController } from "./public/public-menu.controller";
+import { PushController } from "./push/push.controller";
+import { PublicPushController } from "./push/public-push.controller";
+import { PushNotificationService } from "./push/push.service";
+import { PushDispatcher } from "./push/push-dispatcher.service";
+import { PushRepository } from "./repository/push.repository";
 
 @Module({
   imports: [
@@ -67,6 +74,8 @@ import { PublicMenuController } from "./public/public-menu.controller";
     SuperadminAuthController,
     PublicMenuController,
     ConsumerAuthController,
+    PushController,
+    PublicPushController,
   ],
   providers: [
     AppRepository,
@@ -83,6 +92,8 @@ import { PublicMenuController } from "./public/public-menu.controller";
     PrintJobsRepository,
     PrintBridgeRepository,
     PrintStationsRepository,
+    PrintEndpointsRepository,
+    PrintProfilesRepository,
     ProductionReferencesRepository,
     FiscalBridgeRepository,
     DbInitService,
@@ -100,6 +111,9 @@ import { PublicMenuController } from "./public/public-menu.controller";
     BootstrapTenantService,
     ConsumerAuthService,
     ConsumerJwtAuthGuard,
+    PushRepository,
+    PushNotificationService,
+    PushDispatcher,
   ],
 })
 export class AppModule implements NestModule {

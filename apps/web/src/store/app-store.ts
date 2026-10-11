@@ -126,6 +126,10 @@ import {
   type UnitConversionCreateRequest,
   type PreparePrepItemResponse,
   type PrintBridgePrinterMapping,
+  type PrintProfilesState,
+  type PrintProfileCreateRequest,
+  type PrintProfileUpdateRequest,
+  type PrintProfileActivateResponse,
 
 } from '@gustopos/shared';
 import {
@@ -212,6 +216,7 @@ import {
   deleteIngredient as deleteIngredientRequest,
   adjustIngredient as adjustIngredientRequest,
   deleteMenuItem as deleteMenuItemRequest,
+  deleteSimpleCatalogItem as deleteSimpleCatalogItemRequest,
   fetchReservations,
   createReservation as createReservationRequest,
   updateReservation as updateReservationRequest,
@@ -255,6 +260,7 @@ import {
   updateTable as updateTableRequest,
   deleteTable as deleteTableRequest,
   deleteCategory as deleteCategoryRequest,
+  reorderCategories as reorderCategoriesRequest,
   createOnboardingSecret as createOnboardingSecretRequest,
   createShortCodePairingRequest,
   revokeOnboardingSecret as revokeOnboardingSecretRequest,
@@ -267,6 +273,12 @@ import {
   requestBridgeDiscovery as requestBridgeDiscoveryRequest,
   testBridgePrinter as testBridgePrinterRequest,
   requestBridgeUpdate as requestBridgeUpdateRequest,
+  listPrintProfilesRequest,
+  createPrintProfileRequest,
+  updatePrintProfileRequest,
+  deletePrintProfileRequest,
+  activatePrintProfileRequest,
+  deactivatePrintProfileRequest,
 
 } from '../shared/api/client';
 import { disconnectSocket, getSocket } from '../shared/api/socket';
@@ -821,6 +833,10 @@ interface AppState {
   cartContextKey: string;
   posOrderMode: 'dine_in' | 'takeaway' | 'delivery';
   posTableNumber: string;
+  // Stable selected-table identity (the table row id). Survives renames and
+  // lets the POS tell "renamed" (id still exists) from "deleted" (id gone)
+  // instead of blindly rebinding to the first table. Empty = no selection yet.
+  posTableId: string;
   posMenuSearch: string;
   initDone: boolean;
   hydrate: () => Promise<void>;
@@ -867,6 +883,8 @@ interface AppState {
   createCategory: (payload: CategoryCreateRequest) => Promise<void>;
   updateCategory: (id: string, payload: CategoryUpdateRequest) => Promise<void>;
   deleteCategory: (id: string) => Promise<void>;
+  /** Persist the tenant's own category order (full id list of one scope). */
+  reorderCategories: (ids: string[]) => Promise<void>;
   categoryModifierPools: CategoryModifierPool[];
   refreshCategoryModifierPools: () => Promise<void>;
   createCategoryModifierPool: (payload: CategoryModifierPoolCreateRequest) => Promise<void>;
@@ -954,6 +972,8 @@ interface AppState {
   clearPosCart: () => void;
   setCartContext: (key: string) => void;
   relocateCart: (sourceKey: string, targetKey: string) => void;
+  // Atomically set the selected table (id + number).
+  selectPosTable: (id: string, number: string) => void;
 
   // ─── Print-bridge pool (Phase E) ───────────────────────────────────────
   printBridges: PrintBridge[];
@@ -971,6 +991,14 @@ interface AppState {
   createOnboardingSecret: (hint?: { bridgeIdHint?: string }) => Promise<{ plaintext: string; suggestedBridgeId: string; bootstrapSnippet: string }>;
   createShortCodePairing: (input?: { bridgeIdHint?: string; publicBaseUrl?: string }) => Promise<PrintBridgeOnboardingSecretCreateCode6DigitResponse>;
   revokeOnboardingSecret: (id: string) => Promise<void>;
+  // ─── Print configurations (switchable routing profiles) ─────────────────
+  printProfiles: PrintProfilesState;
+  refreshPrintProfiles: () => Promise<void>;
+  createPrintProfile: (payload: PrintProfileCreateRequest) => Promise<void>;
+  updatePrintProfile: (id: string, payload: PrintProfileUpdateRequest) => Promise<void>;
+  deletePrintProfile: (id: string) => Promise<void>;
+  activatePrintProfile: (id: string) => Promise<PrintProfileActivateResponse>;
+  deactivatePrintProfile: () => Promise<void>;
   // ─── Local browser-bridge slice (Phase E) ──────────────────────────────────
   localBridgeConfig: LocalBridgeConfig | null;
   localBridgeLastError: string | null;
@@ -1285,12 +1313,17 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   cartStore: {},
   cartContextKey: '',
   posOrderMode: 'dine_in',
-  posTableNumber: '1',
+  // No default table: an empty selection lets the POS resolve the first active
+  // table ONCE. A persisted number would otherwise trigger the "first table"
+  // fallback on every realtime update (the D1 misassignment class).
+  posTableNumber: '',
+  posTableId: '',
   posMenuSearch: '',
   // ─── Print-bridge pool (Phase E) ──────────────────────────────
   printBridges: [],
   printBridgesLastFetchedAt: null,
   onboardingSecrets: [],
+  printProfiles: { activeId: null, activeAt: null, profiles: [] },
   prepItems: [],
   prepItemsLastFetchedAt: null,
   // ─── Local browser-bridge slice (Phase E) ────────────────────
@@ -1762,6 +1795,10 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         posCart: nextCartStore[targetKey] ?? [],
       };
     });
+  },
+
+  selectPosTable: (id, number) => {
+    set({ posTableId: id, posTableNumber: number });
   },
 
   addToPosCart: (item) => {
@@ -2477,6 +2514,20 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
+  reorderCategories: async (ids) => {
+    try {
+      if (!hasModuleEnabled(get(), 'inventory') && !hasModuleEnabled(get(), 'simple_catalog')) {
+        throw new Error('Modulo non disponibile per questo tenant');
+      }
+      await reorderCategoriesRequest(ids);
+      const categories = await (isSimpleCatalogOnly(get()) ? fetchSimpleCatalogCategories() : fetchCategories());
+      set({ categories });
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
   categoryModifierPools: [],
   refreshCategoryModifierPools: async () => {
     try {
@@ -3025,7 +3076,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         enqueueBlockedAction(set as StoreSet, isSimpleCatalogOnly(get()) ? 'simple_catalog' : 'inventory', { action: 'deleteMenuItemAdmin', id });
         throw new Error('Modulo non disponibile per questo tenant');
       }
-      await deleteMenuItemRequest(id);
+      await (isSimpleCatalogOnly(get()) ? deleteSimpleCatalogItemRequest(id) : deleteMenuItemRequest(id));
       const menuItemsAdmin = await (isSimpleCatalogOnly(get()) ? fetchSimpleCatalogItemsAdmin() : fetchMenuItemsAdmin());
       set({ menuItemsAdmin });
     } catch (err) {
@@ -3739,6 +3790,34 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   revokeOnboardingSecret: async (id) => {
     await revokeOnboardingSecretRequest(id);
   },
+  // ─── Print configurations (switchable routing profiles) ─────────────────
+  refreshPrintProfiles: async () => {
+    try {
+      set({ printProfiles: await listPrintProfilesRequest() });
+    } catch (err) {
+      console.warn('[print-profiles] refresh failed:', err);
+    }
+  },
+  createPrintProfile: async (payload) => {
+    set({ printProfiles: await createPrintProfileRequest(payload) });
+  },
+  updatePrintProfile: async (id, payload) => {
+    set({ printProfiles: await updatePrintProfileRequest(id, payload) });
+  },
+  deletePrintProfile: async (id) => {
+    set({ printProfiles: await deletePrintProfileRequest(id) });
+  },
+  activatePrintProfile: async (id) => {
+    const result = await activatePrintProfileRequest(id);
+    // The server emits bridge:status for every bridge it rewrote; refresh the
+    // list so activeId/badges update even when nothing changed on a bridge.
+    await get().refreshPrintProfiles();
+    void get().refreshPrintBridges();
+    return result;
+  },
+  deactivatePrintProfile: async () => {
+    set({ printProfiles: await deactivatePrintProfileRequest() });
+  },
   refreshPrepItems: async () => {
     try {
       const currentUser = get().currentUser;
@@ -3812,6 +3891,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     cartContextKey: state.cartContextKey,
     posOrderMode: state.posOrderMode,
     posTableNumber: state.posTableNumber,
+    posTableId: state.posTableId,
     localBridgeConfig: state.localBridgeConfig,
     courseRoundsConfig: state.courseRoundsConfig,
     courseRoundsModuleEnabled: state.courseRoundsModuleEnabled,

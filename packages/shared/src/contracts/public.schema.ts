@@ -163,6 +163,9 @@ export const publicMenuResponseSchema = z.object({
   capabilities: z.object({
     takeawayOrder: z.boolean().default(false),
     groupOrder: z.boolean().default(false),
+    // Scaffolding only: online payment for group orders (Stripe). Off until a
+    // tenant/provider wiring exists; the UI shows a disabled slot when false.
+    onlinePayments: z.boolean().default(false),
     takeawayConfig: z.object({
       minOrderAmount: z.number().nonnegative().default(0),
       maxItems: z.number().int().positive().default(20),
@@ -224,19 +227,42 @@ export type PublicOrderPricedLine = z.infer<typeof publicOrderPricedLineSchema>;
 
 // ─── Group Order ───────────────────────────────────────────────────────
 
-export const groupOrderSessionStatusSchema = z.enum(["open", "locked", "submitted", "expired"]);
+// `open`/`locked`/`expired` are the cart lifecycle; `pending_review` is the
+// window in which the master has submitted but staff has not yet approved;
+// `approved`/`rejected` are the terminal staff outcomes. `submitted` is kept
+// for sessions created before the review workflow existed.
+export const groupOrderSessionStatusSchema = z.enum([
+  "open",
+  "locked",
+  "pending_review",
+  "approved",
+  "rejected",
+  "submitted",
+  "expired",
+]);
 
 export const groupOrderParticipantRoleSchema = z.enum(["master", "guest"]);
 
 export const groupOrderCartItemSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
+  /** Owner of the line (soft ownership: master moderates everyone's). */
+  participantId: z.string(),
+  participantName: z.string(),
   menuItemId: z.string(),
   name: z.string(),
+  /** Base unit price without modifiers. */
   price: z.number().nonnegative(),
+  modifierPriceDelta: z.number().default(0),
+  /** (price + modifierPriceDelta) * quantity, authoritative. */
+  lineTotal: z.number().nonnegative(),
   quantity: z.number().int().positive(),
   category: z.string(),
   ingredients: z.array(z.string()),
+  selectedModifiers: z
+    .array(z.object({ groupId: z.string(), optionId: z.string() }))
+    .default([]),
+  notes: z.string().optional(),
   updatedByParticipantId: z.string().optional(),
   updatedAt: z.string(),
 });
@@ -261,6 +287,10 @@ export const groupOrderSessionSchema = z.object({
   masterParticipantId: z.string(),
   expiresAt: z.string(),
   submittedOrderId: z.string().optional(),
+  /** Staff review outcome metadata (populated once reviewed). */
+  reviewedAt: z.string().optional(),
+  reviewedByStaffId: z.string().optional(),
+  rejectionReason: z.string().optional(),
   participants: z.array(groupOrderParticipantSchema),
   items: z.array(groupOrderCartItemSchema),
   total: z.number().nonnegative(),
@@ -289,14 +319,27 @@ export const groupOrderJoinSessionResponseSchema = z.object({
   participantToken: z.string().min(24),
 });
 
+/**
+ * Per-line cart operations. The participant is always derived from the token
+ * (never the body). `lineId` targets an existing line the caller may edit
+ * (own line, or any line when master); without it the server derives a stable
+ * id from participant + item + modifiers + notes, so re-adding collapses.
+ * `quantity: 0` removes the line.
+ */
+export const groupOrderCartLineOperationSchema = z.object({
+  lineId: z.string().min(1).optional(),
+  menuItemId: z.string().min(1),
+  quantity: z.number().int().min(0),
+  selectedModifiers: z
+    .array(z.object({ groupId: z.string().min(1), optionId: z.string().min(1) }))
+    .optional(),
+  notes: z.string().max(200).optional(),
+});
+export type GroupOrderCartLineOperation = z.infer<typeof groupOrderCartLineOperationSchema>;
+
 export const groupOrderPatchCartRequestSchema = z.object({
   expectedVersion: z.number().int().nonnegative(),
-  items: z.array(
-    z.object({
-      menuItemId: z.string().min(1),
-      quantity: z.number().int().min(0),
-    }),
-  ),
+  items: z.array(groupOrderCartLineOperationSchema),
 });
 
 export const groupOrderPatchCartResponseSchema = z.object({
@@ -337,6 +380,67 @@ export const groupOrderRealtimeMasterChangedSchema = z.object({
 export const groupOrderRealtimeSubmittedSchema = z.object({
   session: groupOrderSessionSchema,
   order: orderSchema,
+});
+
+/** Staff decision on a submitted draft group order. */
+export const groupOrderReviewRequestSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  reason: z.string().max(300).optional(),
+});
+export type GroupOrderReviewRequest = z.infer<typeof groupOrderReviewRequestSchema>;
+
+export const groupOrderReviewResponseSchema = z.object({
+  sessionId: z.string(),
+  status: groupOrderSessionStatusSchema,
+  order: orderSchema,
+});
+export type GroupOrderReviewResponse = z.infer<typeof groupOrderReviewResponseSchema>;
+
+/** Staff review queue: submitted drafts awaiting approval. */
+export const groupOrderReviewQueueItemSchema = z.object({
+  id: z.number().int(),
+  menuItemId: z.string(),
+  name: z.string(),
+  price: z.number().nonnegative(),
+  quantity: z.number().int().positive(),
+  participantId: z.string().optional(),
+  participantName: z.string().optional(),
+  notes: z.string().optional(),
+  selectedModifiers: z
+    .array(z.object({ groupId: z.string(), optionId: z.string() }))
+    .default([]),
+});
+export type GroupOrderReviewQueueItem = z.infer<typeof groupOrderReviewQueueItemSchema>;
+
+export const groupOrderReviewQueueEntrySchema = z.object({
+  order: orderSchema,
+  sessionId: z.string().optional(),
+  joinCode: z.string().optional(),
+  items: z.array(groupOrderReviewQueueItemSchema),
+});
+export type GroupOrderReviewQueueEntry = z.infer<typeof groupOrderReviewQueueEntrySchema>;
+
+export const groupOrderReviewQueueResponseSchema = z.array(groupOrderReviewQueueEntrySchema);
+export type GroupOrderReviewQueueResponse = z.infer<typeof groupOrderReviewQueueResponseSchema>;
+
+/** Realtime fan-out to the participants and the staff review queue. */
+/**
+ * Scaffolding for online payment of a submitted group order (Stripe).
+ * `disabled` is the only value the API returns today — the contract exists so
+ * the UI and the (future) intent endpoint can be wired without a redesign.
+ */
+export const groupOrderPaymentIntentResponseSchema = z.object({
+  status: z.enum(["disabled", "requires_payment_method", "processing", "succeeded"]),
+  provider: z.string().nullable().default(null),
+  clientSecret: z.string().nullable().default(null),
+});
+export type GroupOrderPaymentIntentResponse = z.infer<typeof groupOrderPaymentIntentResponseSchema>;
+
+export const groupOrderRealtimeReviewUpdatedSchema = z.object({
+  sessionId: z.string(),
+  status: groupOrderSessionStatusSchema,
+  orderId: z.string().optional(),
+  rejectionReason: z.string().optional(),
 });
 
 // ─── Public Funnel Events ──────────────────────────────────────────────
@@ -469,6 +573,7 @@ export type GroupOrderRealtimeJoined = z.infer<typeof groupOrderRealtimeJoinedSc
 export type GroupOrderRealtimeCartUpdated = z.infer<typeof groupOrderRealtimeCartUpdatedSchema>;
 export type GroupOrderRealtimeMasterChanged = z.infer<typeof groupOrderRealtimeMasterChangedSchema>;
 export type GroupOrderRealtimeSubmitted = z.infer<typeof groupOrderRealtimeSubmittedSchema>;
+export type GroupOrderRealtimeReviewUpdated = z.infer<typeof groupOrderRealtimeReviewUpdatedSchema>;
 export type PublicFunnelEventRequest = z.infer<typeof publicFunnelEventRequestSchema>;
 export type PublicFunnelEventResponse = z.infer<typeof publicFunnelEventResponseSchema>;
 export type SelfOrderSession = z.infer<typeof selfOrderSessionSchema>;

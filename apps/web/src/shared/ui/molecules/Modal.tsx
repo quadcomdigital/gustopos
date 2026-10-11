@@ -20,6 +20,7 @@ interface ModalProps {
 export default function Modal({ open, onClose, title, children, footer, size = 'md', dirty = false, zIndex = 1200 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const openTransitionRef = useRef(false);
   const onCloseRef = useRef(onClose);
   // eslint-disable-next-line react-hooks/refs -- latest-ref pattern avoids stale callbacks in async paths
   onCloseRef.current = onClose;
@@ -60,11 +61,33 @@ export default function Modal({ open, onClose, title, children, footer, size = '
   }, []);
 
   useEffect(() => {
-    if (!open) return;
+    // Focus handling keyed on the closed -> open transition ONLY.
+    // `handleClose` changes identity when `confirmDiscard` flips, and the old
+    // combined effect re-ran then: the cleanup() restored focus to the element
+    // *outside* the dialog (kicking the user out) and the 50ms timer stole
+    // focus from fields that had `autoFocus` (e.g. the POS customer-details
+    // form), closing the mobile soft-keyboard right after it opened.
+    if (!open) {
+      openTransitionRef.current = false;
+      return;
+    }
+    if (openTransitionRef.current) return;
+    openTransitionRef.current = true;
     previousFocusRef.current = document.activeElement as HTMLElement;
     const timer = setTimeout(() => {
-      dialogRef.current?.focus();
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      // Never steal focus from a field inside the dialog that is already
+      // focused (autoFocus inputs win over the dialog container).
+      const active = document.activeElement;
+      if (active && active !== document.body && dialog.contains(active) && active !== dialogRef.current) return;
+      dialog.focus();
     }, 50);
+    return () => clearTimeout(timer);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         handleClose();
@@ -89,12 +112,17 @@ export default function Modal({ open, onClose, title, children, footer, size = '
     window.addEventListener('keydown', onKeyDown);
     lockBodyScroll();
     return () => {
-      clearTimeout(timer);
       window.removeEventListener('keydown', onKeyDown);
       unlockBodyScroll();
-      previousFocusRef.current?.focus();
     };
   }, [open, handleClose]);
+
+  // Restore focus to the element that had it before opening, on close only.
+  useEffect(() => {
+    if (open) return;
+    previousFocusRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per close
+  }, [open]);
 
   const widthClass = size === 'sm' ? 'sm:max-w-sm' : size === 'lg' ? 'sm:max-w-3xl' : 'sm:max-w-lg';
 

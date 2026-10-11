@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { computeGroupModifierDelta } from '../lib/modifier-pricing';
+import { composedPricingBase, isJollyItem } from '../lib/jolly';
+import { useAppStore } from '../store/app-store';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
 
@@ -164,53 +166,82 @@ export default function ModifierModal({
     existingOverridesRef.current = existingOverrides;
   }, [existingOverrides]);
 
+  const wasOpenRef = React.useRef(false);
+
   React.useEffect(() => {
-    if (isOpen) {
-      setActiveTab((item.recipe?.length ?? 0) > 0 ? 'togli' : 'aggiungi'); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] reset modifier tab to default when modal opens; literal string, safe
-      setRemovedIds(
-        existingOverridesRef.current
-          .filter((o) => o.action === 'remove')
-          .map((o) => o.ingredientId),
+    // Run ONLY on the closed -> open transition. `existingSelectedModifiers`
+    // defaults to a fresh `[]` every render and parents pass inline props, so
+    // re-running on dep identity changes reset the user's in-progress edits on
+    // every parent re-render (socket data updates, viewport changes...).
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
+    setActiveTab((item.recipe?.length ?? 0) > 0 ? 'togli' : 'aggiungi'); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] reset modifier tab to default when modal opens; literal string, safe
+    setRemovedIds(
+      existingOverridesRef.current
+        .filter((o) => o.action === 'remove')
+        .map((o) => o.ingredientId),
+    );
+    setAddedIds([
+      ...existingOverridesRef.current
+        .filter((o) => o.action === 'add')
+        .map((o) => o.ingredientId),
+      // Pool options (e.g. MAXI) are persisted as selectedModifiers, not as
+      // ingredient overrides. Restore them so the option reads as selected
+      // on re-open — otherwise a second confirm would charge it twice.
+      // Read from the raw prop (declared above) rather than `poolOptions`,
+      // which is initialised later in the component body.
+      ...restorablePoolOptionIds(existingSelectedModifiers, item, categoryModifierPools),
+    ]);
+    const initialSelections: Record<string, string[]> = {};
+    // A group can legitimately persist several selections ("Le due metà" of a
+    // JOLLY line holds up to 2 halves), so collect every option id per group
+    // instead of a last-wins map — otherwise re-opening dropped one half and
+    // recomposed the price from the survivor alone.
+    const selectedByGroup = new Map<string, string[]>();
+    for (const selected of existingSelectedModifiers) {
+      const list = selectedByGroup.get(selected.groupId) ?? [];
+      list.push(selected.optionId);
+      selectedByGroup.set(selected.groupId, list);
+    }
+    for (const group of (item.modifierGroups ?? [])) {
+      if (group.name.trim().toLowerCase() === 'base') continue;
+      const existingOptionIds = (selectedByGroup.get(group.id) ?? []).filter((optionId) =>
+        group.options.some((option) => option.id === optionId),
       );
-      setAddedIds([
-        ...existingOverridesRef.current
-          .filter((o) => o.action === 'add')
-          .map((o) => o.ingredientId),
-        // Pool options (e.g. MAXI) are persisted as selectedModifiers, not as
-        // ingredient overrides. Restore them so the option reads as selected
-        // on re-open — otherwise a second confirm would charge it twice.
-        // Read from the raw prop (declared above) rather than `poolOptions`,
-        // which is initialised later in the component body.
-        ...restorablePoolOptionIds(existingSelectedModifiers, item, categoryModifierPools),
-      ]);
-      const initialSelections: Record<string, string[]> = {};
-      const selectedMap = new Map(existingSelectedModifiers.map((selected) => [selected.groupId, selected.optionId]));
-      for (const group of (item.modifierGroups ?? [])) {
-        if (group.name.trim().toLowerCase() === 'base') continue;
-        const existingOptionId = selectedMap.get(group.id);
-        if (existingOptionId) {
-          initialSelections[group.id] = [existingOptionId];
-        } else {
-          const defaults = group.options.filter((option) => option.isDefault && option.isActive).map((option) => option.id);
-          if (defaults.length > 0) initialSelections[group.id] = defaults;
-          else if (group.maxSelections === 1 && group.options.length > 0) {
-            const first = group.options.find((option) => option.isActive);
-            if (first) initialSelections[group.id] = [first.id];
-          }
+      if (existingOptionIds.length > 0) {
+        initialSelections[group.id] = existingOptionIds;
+      } else {
+        const defaults = group.options.filter((option) => option.isDefault && option.isActive).map((option) => option.id);
+        if (defaults.length > 0) initialSelections[group.id] = defaults;
+        else if (group.maxSelections === 1 && group.options.length > 0) {
+          const first = group.options.find((option) => option.isActive);
+          if (first) initialSelections[group.id] = [first.id];
         }
       }
-      setGroupSelections(initialSelections);
     }
-  }, [existingSelectedModifiers, isOpen, item]);
+    setGroupSelections(initialSelections);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- init-on-open only: props are read at open time, their later identity churn must NOT reset the form
+  }, [isOpen]);
 
   const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
   const backdropDismiss = useBackdropDismiss(onClose);
+  // Latest-ref: parents pass inline `onClose`, so keeping it in the effect deps
+  // would re-run the effect on every parent render and `focus()` would steal
+  // focus back from inputs — closing the mobile soft-keyboard right after it
+  // opens. The ref keeps Escape fresh without re-running the effect.
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern avoids stale callbacks in the keydown listener
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
 
   React.useEffect(() => {
     if (!isOpen) return;
     confirmButtonRef.current?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     window.addEventListener('keydown', onKeyDown);
     lockBodyScroll();
@@ -218,7 +249,7 @@ export default function ModifierModal({
       window.removeEventListener('keydown', onKeyDown);
       unlockBodyScroll();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
   const prepById = useMemo(() => new Map(prepItems.map((prep) => [prep.id, prep])), [prepItems]);
@@ -226,6 +257,16 @@ export default function ModifierModal({
     () => ((item.modifierGroups ?? []) as Array<{ id: string; name: string; required: boolean; minSelections: number; maxSelections: number; multiSelectPriceMode?: 'max' | 'sum' | 'none'; options: ModifierOption[] }>)
       .filter((group) => group.name.trim().toLowerCase() !== 'base' && group.options.some((option) => option.isActive)),
     [item.modifierGroups],
+  );
+
+  // Same base rule as POSProductModal: a JOLLY line has no typed price, its
+  // base is composed by the product's own groups ("Le due metà"), so MAXI (×2)
+  // scales the composed pizza here too instead of the catalog price (0.00).
+  const tenantId = useAppStore((state) => state.tenantContext?.tenantId);
+  const isJolly = isJollyItem(item, tenantId);
+  const pricingBase = useMemo(
+    () => composedPricingBase(isJolly, item.price, modifierGroups, groupSelections),
+    [isJolly, item.price, modifierGroups, groupSelections],
   );
 
   const leafComponents = useMemo(() => {
@@ -274,18 +315,19 @@ export default function ModifierModal({
 
   /**
    * Cost of one "add" entry as shown in the list: a priceMultiplier option
-   * (MAXI) costs `item.price × (m - 1)` plus its flat delta.
+   * (MAXI) costs `pricingBase × (m - 1)` plus its flat delta. For a JOLLY item
+   * that base is the price composed by the selections, never 0.
    */
   const addableDelta = useMemo(() => {
     return (option: { priceDelta: number; priceMultiplier?: number }): number => {
       const multiplier = option.priceMultiplier;
       const scaled =
         typeof multiplier === 'number' && Number.isFinite(multiplier) && multiplier !== 1
-          ? item.price * (multiplier - 1)
+          ? pricingBase * (multiplier - 1)
           : 0;
       return scaled + option.priceDelta;
     };
-  }, [item.price]);
+  }, [pricingBase]);
 
   const allAddableItems = useMemo(() => {
     const items: Array<{ id: string; name: string; subtitle?: string; priceDelta: number; invId: string; componentType?: string; poolId?: string }> = [];
@@ -315,7 +357,15 @@ export default function ModifierModal({
         // Pool options may reference a prep/BoM (componentId) instead of an
         // inventory ingredient — carry the component reference so the add
         // override reaches the right stock target.
-        invId: opt.inventoryItemId ?? opt.componentId ?? '',
+        //
+        // simple_catalog pools keep a FREE-TEXT ingredient name in
+        // componentId ("Bufala", "Salsiccia"): it is not an inventory id, so
+        // it must NOT become an ingredient override (createOrder resolves
+        // every add against the `inventory` table and 400s on an unknown id).
+        // Leaving invId empty routes the choice to the pool-selection branch
+        // in handleConfirm instead, which createOrder accepts and the ticket
+        // prints by name.
+        invId: opt.inventoryItemId ?? (opt.componentType === 'ingredient' ? '' : (opt.componentId ?? '')),
       });
     }
     return items.sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
@@ -340,10 +390,10 @@ export default function ModifierModal({
     for (const [groupId, optionIds] of Object.entries(groupSelections)) {
       const group = modifierGroups.find((candidate) => candidate.id === groupId);
       if (!group || optionIds.length === 0) continue;
-      total += computeGroupModifierDelta(group, optionIds, item.price);
+      total += computeGroupModifierDelta(group, optionIds, pricingBase);
     }
     return total;
-  }, [groupSelections, modifierGroups, item.price]);
+  }, [groupSelections, modifierGroups, pricingBase]);
 
   const existingGroupPriceDelta = useMemo(() => {
     let total = 0;
@@ -351,10 +401,10 @@ export default function ModifierModal({
       const group = modifierGroups.find((candidate) => candidate.id === selected.groupId);
       const option = group?.options.find((candidate) => candidate.id === selected.optionId);
       if (!option || option.isDefault) continue;
-      total += computeGroupModifierDelta(group!, [option.id], item.price);
+      total += computeGroupModifierDelta(group!, [option.id], pricingBase);
     }
     return total;
-  }, [existingSelectedModifiers, modifierGroups, item.price]);
+  }, [existingSelectedModifiers, modifierGroups, pricingBase]);
 
   const existingAddedPriceDelta = useMemo(() => {
     const ids = new Set(existingOverrides.filter((override) => override.action === 'add').map((override) => override.ingredientId));

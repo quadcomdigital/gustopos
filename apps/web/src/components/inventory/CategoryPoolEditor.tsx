@@ -1,8 +1,10 @@
 import type { Category, Ingredient, CategoryModifierPool, BomItem, PrepItem } from '@gustopos/shared';
+import { hasTenantOverride } from '@gustopos/shared';
 import { Trash2, Save, X, Boxes, Eye, EyeOff } from 'lucide-react';
 import { useState } from 'react';
 import SearchableSelect from '../../shared/ui/molecules/SearchableSelect';
 import EmptyState from '../../shared/ui/atoms/EmptyState';
+import { useAppStore } from '../../store/app-store';
 
 const UNIT_OPTIONS = ['mg', 'g', 'kg', 'ml', 'L', 'pz'] as const;
 
@@ -66,31 +68,39 @@ function OptionPricingControls({
   onToggleActive: () => void;
 }) {
   const isMultiplier = option.priceMultiplier != null && option.priceMultiplier !== 1;
+  // The ×2 multiplier is a per-tenant capability: without the override the
+  // control is not rendered, so the draft can never carry one (the API strips
+  // it anyway as defence in depth).
+  const multiplierEnabled = useAppStore((state) =>
+    hasTenantOverride('modifierMultiplier', undefined, state.tenantContext?.tenantId),
+  );
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
-      <label className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-text-muted">
-        Moltiplica prezzo
-        <input
-          type="number"
-          value={option.priceMultiplier ?? ''}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === '') onMultiplierChange(null);
-            else {
-              const parsed = Number(raw);
-              onMultiplierChange(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
-            }
-          }}
-          step="0.5"
-          min="0"
-          placeholder="es. 2"
-          aria-label="Moltiplicatore di prezzo"
-          className={`px-2 py-1.5 rounded border text-xs w-20 tabular-nums ${isMultiplier ? 'border-accent text-accent font-bold' : 'border-border'}`}
-        />
-        {isMultiplier && (
-          <span className="text-[9px] font-bold uppercase tracking-wider text-accent">× raddoppia il prezzo base</span>
-        )}
-      </label>
+      {multiplierEnabled && (
+        <label className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+          Moltiplica prezzo
+          <input
+            type="number"
+            value={option.priceMultiplier ?? ''}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') onMultiplierChange(null);
+              else {
+                const parsed = Number(raw);
+                onMultiplierChange(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
+              }
+            }}
+            step="0.5"
+            min="0"
+            placeholder="es. 2"
+            aria-label="Moltiplicatore di prezzo"
+            className={`px-2 py-1.5 rounded border text-xs w-20 tabular-nums ${isMultiplier ? 'border-accent text-accent font-bold' : 'border-border'}`}
+          />
+          {isMultiplier && (
+            <span className="text-[9px] font-bold uppercase tracking-wider text-accent">× raddoppia il prezzo base</span>
+          )}
+        </label>
+      )}
       <button
         type="button"
         onClick={onToggleActive}

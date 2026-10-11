@@ -12,6 +12,10 @@ import {
   orderSchema,
   orderHistoryFiltersSchema,
   orderHistoryListResponseSchema,
+  salesSummaryQuerySchema,
+  salesSummarySchema,
+  type SalesSummary,
+  type SalesSummaryQuery,
   orderTypeSchema,
   categoryScopeSchema,
   printBridgePrinterMappingSchema,
@@ -42,6 +46,8 @@ import {
   groupOrderPatchCartResponseSchema,
   groupOrderSubmitRequestSchema,
   groupOrderSubmitResponseSchema,
+  groupOrderReviewQueueResponseSchema,
+  groupOrderReviewResponseSchema,
   groupOrderSessionSchema,
   groupOrderParticipantSchema,
   groupOrderCartItemSchema,
@@ -52,6 +58,7 @@ import {
   voidOrderRequestSchema,
   voidOrderResponseSchema,
   updateOrderRequestSchema,
+  hasTenantOverride,
   type AppData,
   type BomItem,
   type BomUpsertComponentsRequest,
@@ -71,6 +78,8 @@ import {
   type MenuItemAdmin,
   type Order,
   type OrderStatus,
+  type GroupOrderReviewQueueResponse,
+  type GroupOrderReviewResponse,
   type PaymentsListResponse,
   type StaffAdmin,
   type Staff,
@@ -114,6 +123,7 @@ import { Injectable, Inject } from "@nestjs/common";
 import crypto from "node:crypto";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
+import { hasTenantOverrideFor } from "../tenant/tenant-overrides";
 import { assertOrderStatusTransition } from "../orders/order-status-policy";
 import { isStockTrackingEnabled } from "../orders/stock-tracking";
 import {
@@ -170,9 +180,11 @@ import { PrintJobsRepository } from "./print-jobs.repository";
 import { PrintStationsRepository } from "./print-stations.repository";
 import { ProductionReferencesRepository } from "./production-references.repository";
 import { buildReferenceTally, resolveItemReference } from "../orders/production-references";
+import { resolveStationItemName } from "../orders/ticket-names";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight, formatRomeTime, formatRomeDateTime, orderStationTicketItems, selectStationTicketItems, isValidLogoRaster } from "./utils/escpos-builder";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { formatIngredientOverrides } from "./utils/order-labels";
+import { sanitizeActiveStationIds } from "./print-areas";
 
 
 type InventoryRow = typeof inventory.$inferSelect;
@@ -378,16 +390,33 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
 
   private validatePrintingSettings(settings: UiSettings) {
     if (settings.printing.protocol === "escpos") {
-      if (settings.printing.activeAreas.length === 0) {
-        throw new Error("ESC/POS requires at least one active print area");
-      }
-
       if (settings.printing.logoMode === "bitmap") {
         if (!settings.printing.logoBitmap) {
           throw new Error("Bitmap logo mode requires a logo bitmap payload");
         }
       }
     }
+  }
+
+  /**
+   * Runs on every settings write: resolves `activeStationIds` ("which zones
+   * print") against the live registry, then validates the rest.
+   *
+   * Resolving here instead of at read time keeps the stored value honest — a
+   * station that was deleted or deactivated cannot linger as a phantom id, and
+   * a stale id can never silently filter every ticket out.
+   *
+   * `activeAreas` (legacy kitchen/bar/cashier enum) no longer gates anything:
+   * it used to reject any save with zero areas, even though routing is driven
+   * entirely by stations.
+   */
+  private async normalizePrintingSettings(settings: UiSettings): Promise<void> {
+    const activeStations = await this.printStationsRepo.listActiveStations();
+    settings.printing.activeStationIds = sanitizeActiveStationIds(
+      settings.printing.activeStationIds,
+      new Set(activeStations.map((station) => station.id)),
+    );
+    this.validatePrintingSettings(settings);
   }
 
   private mergeUiSettingsWithDefaults(raw: unknown): UiSettings {
@@ -445,6 +474,42 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
 
   private hashGroupOrderSubmitIdempotencyKey(idempotencyKey: string): string {
     return crypto.createHash("sha256").update(`group-order:submit:${idempotencyKey}`).digest("hex");
+  }
+
+  /**
+   * Deterministic cart line id: the same participant + item + modifier set +
+   * notes always maps to the same row, so re-adding a configuration collapses
+   * into a quantity bump instead of creating duplicate lines.
+   */
+  private hashGroupOrderCartLine(
+    participantId: string,
+    menuItemId: string,
+    selectedModifiers: Array<{ groupId: string; optionId: string }>,
+    notes?: string,
+  ): string {
+    const modifierKey = selectedModifiers
+      .map((entry) => `${entry.groupId}:${entry.optionId}`)
+      .sort()
+      .join(",");
+    const key = `${participantId}|${menuItemId}|${modifierKey}|${notes ?? ""}`;
+    return `goc_${crypto.createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+  }
+
+  /** Dedupe + stable-order a modifier selection so ids/pricing stay canonical. */
+  private normalizeGroupOrderModifiers(
+    selectedModifiers?: Array<{ groupId: string; optionId: string }>,
+  ): Array<{ groupId: string; optionId: string }> {
+    const seen = new Set<string>();
+    const normalized: Array<{ groupId: string; optionId: string }> = [];
+    for (const entry of selectedModifiers ?? []) {
+      const key = `${entry.groupId}:${entry.optionId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push({ groupId: entry.groupId, optionId: entry.optionId });
+    }
+    return normalized.sort((a, b) =>
+      a.groupId === b.groupId ? a.optionId.localeCompare(b.optionId) : a.groupId.localeCompare(b.groupId),
+    );
   }
 
   async findGroupOrderParticipantByToken(
@@ -539,7 +604,11 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
 
   async assertPublicGroupOrderEnabled(tenantId: string): Promise<void> {
     const enabledModules = await this.getEnabledModulesRows(tenantId);
-    if (!enabledModules.includes("public_group_order") || !enabledModules.includes("public_menu")) {
+    if (
+      !enabledModules.includes("public_group_order") ||
+      !enabledModules.includes("public_menu") ||
+      !enabledModules.includes("kitchen")
+    ) {
       throw new Error("Public group order module is disabled for this tenant");
     }
   }
@@ -618,14 +687,20 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     order: Order;
     waiterName: string | null;
     station: PrintStation;
-    items: Array<{ name: string; quantity: number; price: number; notes: string; modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; stationId: string | null; round?: number | null }>;
+    items: Array<{ name: string; ticketName?: string | null; quantity: number; price: number; notes: string; modifiers: string[]; modifierOptionIds: string[]; overrides: string[]; stationId: string | null; round?: number | null }>;
     summary: Array<{ name: string; count: number }>;
     totalItems: number;
     settings: UiSettings;
     priceDeltaByOptionId: Map<string, number>;
     roundLabels?: string[];
+    /** `stationNotes2x1` override: print item notes at GS 2x1 (casale). */
+    notes2x1: boolean;
+    /** `stationHideComandaLine` override: drop the `Comanda: <numero>` line (casale). */
+    hideComandaLine: boolean;
+    /** `stationTable2x1` override: print the table number at GS 2x1 (casale). */
+    table2x1: boolean;
   }): string {
-    const { order, waiterName, station, items, summary, totalItems, settings, priceDeltaByOptionId, roundLabels = [] } = params;
+    const { order, waiterName, station, items, summary, totalItems, settings, priceDeltaByOptionId, roundLabels = [], notes2x1, hideComandaLine, table2x1 } = params;
     const showPrice = station.kind === "cashier";
     const ep = new EscPosBuilder();
 
@@ -644,9 +719,9 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     ep.align("left").line();
 
     const orderTypeLabel = order.orderType === "takeaway" ? "Take away" : order.orderType === "delivery" ? "Delivery" : order.orderType === "dine_in" ? "Dine-in" : order.orderType;
-    const ref = order.orderType === "dine_in"
-      ? `Tavolo: ${order.table ?? "-"}`
-      : `Cliente: ${order.customerName ?? "-"}`;
+    const isDineIn = order.orderType === "dine_in";
+    const refLabel = isDineIn ? "Tavolo" : "Cliente";
+    const refValue = isDineIn ? order.table ?? "-" : order.customerName ?? "-";
     const orderTime = (() => {
       try {
         return formatRomeTime(new Date(order.timestamp));
@@ -655,12 +730,24 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       }
     })();
     ep.line(`Ordine: ${order.id.slice(0, 8)} | ${orderTypeLabel}`);
-    ep.line(ref);
+    if (table2x1 && isDineIn) {
+      // Casale (`stationTable2x1`): the table number runs at GS 2x1 — double
+      // width, SAME height — so the header stays one line tall while the
+      // number is readable from across the kitchen. The label stays Font A.
+      ep.text(`${refLabel}: `).charSize(2, 1).text(refValue).charSize(1, 1).line();
+    } else {
+      ep.line(`${refLabel}: ${refValue}`);
+    }
     ep.line(`Orario: ${orderTime}`);
     if (waiterName) {
       ep.line(`Cameriere: ${waiterName}`);
     }
-    ep.line(`Comanda: ${order.ticketNumber ?? order.id.slice(0, 8)}`);
+    // Casale (`stationHideComandaLine`): without a ticket number the line just
+    // repeats the `Ordine:` hash, so the production comanda drops it. The
+    // cashier station keeps it — that copy is the order's reference there.
+    if (!(hideComandaLine && station.kind === "production")) {
+      ep.line(`Comanda: ${order.ticketNumber ?? order.id.slice(0, 8)}`);
+    }
     if (order.customerPhone) {
       ep.line(`Telefono: ${order.customerPhone}`);
     }
@@ -690,7 +777,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           : roundLabels[item.round] ?? `PORTATA ${item.round + 1}`;
         ep.bold(true).align("center").line(`--- ${sectionLabel} ---`).align("left").bold(false);
       }
-      const label = `${item.quantity}x ${item.name}`;
+      const label = `${item.quantity}x ${resolveStationItemName(item, station.kind)}`;
       if (showPrice) {
         const priceStr = `EUR ${(item.price * item.quantity).toFixed(2)}`;
         const pad = RECEIPT_WIDTH - label.length - priceStr.length;
@@ -719,7 +806,13 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         ep.charSize(2, 1).bold(true).line(`  ${ovr}`).bold(false).charSize(1, 1);
       }
       if (item.notes) {
-        ep.line(`  * ${item.notes}`);
+        if (notes2x1) {
+          // Casale (`stationNotes2x1`): notes get the same double width the
+          // customizations use, so they can't be skimmed over in the kitchen.
+          ep.charSize(2, 1).line(`  * ${item.notes}`).charSize(1, 1);
+        } else {
+          ep.line(`  * ${item.notes}`);
+        }
       }
       ep.line();
     }
@@ -897,7 +990,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     const activeReferences = await this.productionReferencesRepo.listActiveReferences();
     const refMenuRows = menuIds.length > 0
       ? await db
-          .select({ id: menuItems.id, referenceId: menuItems.referenceId, categoryId: menuItems.categoryId })
+          .select({ id: menuItems.id, referenceId: menuItems.referenceId, categoryId: menuItems.categoryId, ticketName: menuItems.ticketName, isOpenPrice: menuItems.isOpenPrice })
           .from(menuItems)
           .where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuIds)))
       : [];
@@ -931,6 +1024,9 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     }
     const richItems: Array<{
       name: string; quantity: number; price: number; notes: string;
+      // Internal comanda name from `menu_items.ticket_name` (null = `name`).
+      // Only production stations print it; the cashier ticket keeps `name`.
+      ticketName: string | null;
       modifiers: string[]; modifierOptionIds: string[]; overrides: string[];
       stationId: string | null; referenceId: string | null; round?: number | null;
       skipKitchenPrint?: boolean;
@@ -963,6 +1059,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
 
       richItems.push({
         name: item.name,
+        ticketName: menuRef?.ticketName ?? null,
         quantity: item.quantity,
         price: item.price,
         notes: item.notes ?? "",
@@ -971,7 +1068,9 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         overrides: ovrStrings,
         stationId,
         referenceId: resolvedReferenceId,
-        ...(item.skipKitchenPrint ? { skipKitchenPrint: true } : {}),
+        // An open-price line never prints on a production station: the price is
+        // typed at the POS. Server-authoritative so a resend stays silent too.
+        ...(item.skipKitchenPrint || menuRef?.isOpenPrice === 1 ? { skipKitchenPrint: true } : {}),
         ...(roundsPresentationEnabled ? { round: item.round ?? null } : {}),
       });
 
@@ -1039,6 +1138,12 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           settings,
           priceDeltaByOptionId,
           roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
+          // `stationNotes2x1` (casale): item notes print at GS 2x1.
+          notes2x1: hasTenantOverrideFor("stationNotes2x1"),
+          // `stationHideComandaLine` (casale): production comanda drops the
+          // `Comanda:` line. `stationTable2x1` (casale): table number at GS 2x1.
+          hideComandaLine: hasTenantOverrideFor("stationHideComandaLine"),
+          table2x1: hasTenantOverrideFor("stationTable2x1"),
         }),
         error: null,
         createdAt: now,
@@ -1191,7 +1296,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     if (themeChanged) {
       this.validateThemeContrast(parsed);
     }
-    this.validatePrintingSettings(parsed);
+    await this.normalizePrintingSettings(parsed);
 
     await db
       .insert(appSettings)
@@ -1226,7 +1331,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       },
     });
 
-    this.validatePrintingSettings(next);
+    await this.normalizePrintingSettings(next);
 
     await db
       .insert(appSettings)
@@ -1423,6 +1528,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       name: row.name,
       scope: categoryScopeSchema.parse(row.scope),
       isActive: row.isActive === 1,
+      sortOrder: row.sortOrder,
       stationId: row.stationId,
       referenceId: row.referenceId,
       printAreas: parsePrintAreas(row.printAreas),
@@ -1434,6 +1540,17 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
 
   async getPublicData(): Promise<AppData> {
     const tenantId = getTenantIdOrDefault();
+    // JOLLY (a POS-only line whose price is composed by the selections) is a
+    // per-tenant capability: tenants that never opted into it never receive the
+    // flag, so the POS keeps treating that product as an ordinary one.
+    const jollyEnabled = hasTenantOverrideFor("jolly");
+    // Open-price lines (waiter types the price by hand) are a per-tenant
+    // capability too: tenants without it never receive the flag, so the POS
+    // keeps treating that product as an ordinary one.
+    const openPriceEnabled = hasTenantOverrideFor("openPrice");
+    // Same story for the ×2 (MAXI) modifier multiplier: without the override
+    // every option resolves to plain additive pricing, exactly like legacy.
+    const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
     const [staffRows, tableRows, inventoryRows, menuRows, canonicalMenuComponents, prepRows, orderRows, orderItemRows, mappedBomItems, modifierGroupRows, modifierOptionRows, modifierOptionOverrideRows, catPoolRows, catPoolOptionRows, catPoolCategoryRows, categoryRows, deliveryOrderRows] =
       // Run the whole read set on ONE pooled connection inside a transaction
       // with a single transaction-local RLS set_config. Previously each of the
@@ -1442,12 +1559,21 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       // connections while the pool max is 10, so bursts queued under load.
       await withTenantTx(async (executor) => Promise.all([
         executor.select().from(staff).where(eq(staff.tenantId, tenantId)),
-        executor.select().from(tables).where(eq(tables.tenantId, tenantId)),
+        // Soft-deleted tables never reach the POS map / management view.
+        executor.select().from(tables).where(and(eq(tables.tenantId, tenantId), eq(tables.isActive, 1))),
         executor.select().from(inventory).where(eq(inventory.tenantId, tenantId)),
         executor.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
         executor.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenantId)),
         executor.select().from(prepItems).where(eq(prepItems.tenantId, tenantId)),
-        executor.select().from(orders).where(and(eq(orders.tenantId, tenantId), ne(orders.status, "paid"), ne(orders.status, "cancelled"))),
+        // Draft group orders (pending/rejected approval) never reach the
+        // POS/kitchen map: they only exist in the review queue until approved.
+        executor.select().from(orders).where(and(
+          eq(orders.tenantId, tenantId),
+          ne(orders.status, "paid"),
+          ne(orders.status, "cancelled"),
+          ne(orders.approvalStatus, "pending_approval"),
+          ne(orders.approvalStatus, "rejected"),
+        )),
         // Solo item degli ordini aperti (specchia il filtro su orders): gli item
         // degli ordini paid/cancelled non servono mai a getPublicData e, senza
         // questo filtro, si scaricavano TUTTI gli item storici del tenant.
@@ -1471,6 +1597,8 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
                 eq(orders.tenantId, tenantId),
                 ne(orders.status, "paid"),
                 ne(orders.status, "cancelled"),
+                ne(orders.approvalStatus, "pending_approval"),
+                ne(orders.approvalStatus, "rejected"),
               )),
             ),
           )),
@@ -1481,7 +1609,9 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         executor.select().from(categoryModifierPools).where(eq(categoryModifierPools.tenantId, tenantId)),
         executor.select().from(categoryModifierPoolOptions).where(eq(categoryModifierPoolOptions.tenantId, tenantId)),
         executor.select().from(categoryModifierPoolCategories).where(eq(categoryModifierPoolCategories.tenantId, tenantId)),
-        executor.select().from(categories).where(eq(categories.tenantId, tenantId)),
+        // Category order is tenant-owned (`categories.sortOrder`, edited in
+        // Magazzino → Categorie): the POS pill row follows it, name breaks ties.
+        executor.select().from(categories).where(eq(categories.tenantId, tenantId)).orderBy(categories.sortOrder, categories.name),
         executor.select({ orderId: deliveryOrders.orderId, eta: deliveryOrders.eta }).from(deliveryOrders).where(eq(deliveryOrders.tenantId, tenantId)),
       ]));
 
@@ -1598,7 +1728,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       overridesByOptionId.set(override.optionId, existing);
     }
 
-    const optionsByGroupId = new Map<string, Array<{ id: string; name: string; inventoryItemId?: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: "mg" | "g" | "kg" | "ml" | "L" | "pz"; priceDelta: number; isDefault: boolean; isActive: boolean; sortOrder: number; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
+    const optionsByGroupId = new Map<string, Array<{ id: string; name: string; inventoryItemId?: string; componentType: "ingredient" | "prep" | "bom"; componentId?: string; quantity: number; unit: "mg" | "g" | "kg" | "ml" | "L" | "pz"; priceDelta: number; priceMultiplier?: number | null; isDefault: boolean; isActive: boolean; sortOrder: number; ingredientOverrides: Array<{ ingredientId: string; action: "add" | "remove" | "replace" }> }>>();
     for (const opt of modifierOptionRows) {
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
       existing.push({
@@ -1610,6 +1740,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: (opt.unit as "mg" | "g" | "kg" | "ml" | "L" | "pz") ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isDefault: Boolean(opt.isDefault),
         isActive: Boolean(opt.isActive),
         sortOrder: opt.sortOrder ?? 0,
@@ -1658,7 +1789,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isDefault: false,
         isActive: opt.isActive !== 0,
         ingredientOverrides: opt.inventoryItemId ? [{ ingredientId: opt.inventoryItemId, action: "add" as const }] : [],
@@ -1703,7 +1834,8 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           stationId: row.stationId,
           referenceId: row.referenceId,
           printAreas: parsePrintAreas(row.printAreas),
-          isJolly: row.isJolly === 1,
+          isJolly: jollyEnabled && row.isJolly === 1,
+          isOpenPrice: openPriceEnabled && row.isOpenPrice === 1,
           ingredients: ingredientsByMenuId.get(row.id) ?? [],
           recipe: recipeByMenuId.get(row.id) ?? [],
           modifiers: [],
@@ -1778,7 +1910,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isActive: opt.isActive !== 0,
         sortOrder: opt.sortOrder ?? 0,
       });
@@ -1818,6 +1950,11 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       throw new Error("Tenant not found for public menu");
     }
 
+    // The ×2 (MAXI) modifier multiplier is a per-tenant capability. Without the
+    // override every option here resolves to null, so the shared pricing engine
+    // falls back to the legacy additive rule for this tenant's public orders.
+    const multiplierEnabled = hasTenantOverride("modifierMultiplier", tenant.slug, tenant.id);
+
     const enabledModules = await this.staffRepo.getEnabledModulesForTenant(tenant.id);
     if (!enabledModules.includes("public_menu")) {
       throw new Error("Public menu module is disabled for this tenant");
@@ -1831,7 +1968,18 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       db
         .select()
         .from(menuItems)
-        .where(and(eq(menuItems.tenantId, tenant.id), eq(menuItems.isActive, 1))),
+        .where(
+          and(
+            eq(menuItems.tenantId, tenant.id),
+            eq(menuItems.isActive, 1),
+            // JOLLY items are POS-only: their price is composed at the POS from
+            // the selected halves, so the public menu can never price them.
+            eq(menuItems.isJolly, 0),
+            // Open-price items are POS-only too: their price is typed by the
+            // waiter, so there is no price the public menu could show.
+            eq(menuItems.isOpenPrice, 0),
+          ),
+        ),
       db.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenant.id)),
       db
         .select()
@@ -1972,6 +2120,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: (opt.unit as z.infer<typeof modifierOptionSchema>["unit"]) ?? "pz",
         priceDelta: Number(opt.priceDelta),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isDefault: Boolean(opt.isDefault),
         isActive: Boolean(opt.isActive),
         sortOrder: opt.sortOrder ?? 0,
@@ -2010,7 +2159,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         quantity: Number(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: Number(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+        priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
         isActive: opt.isActive !== 0,
         sortOrder: opt.sortOrder ?? 0,
       });
@@ -2116,6 +2265,8 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           enabledModules.includes("public_group_order") &&
           enabledModules.includes("public_menu") &&
           enabledModules.includes("kitchen"),
+        // Stripe scaffolding: no tenant/provider wiring yet, so always off.
+        onlinePayments: false,
         takeawayConfig: {
           minOrderAmount: typeof takeawayConfig.minOrderAmount === "number" ? takeawayConfig.minOrderAmount : 0,
           maxItems: typeof takeawayConfig.maxItems === "number" ? takeawayConfig.maxItems : 20,
@@ -2174,22 +2325,32 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       }),
     );
 
-    const items: GroupOrderCartItem[] = itemRows.map((row) =>
-      groupOrderCartItemSchema.parse({
-        id: `${row.sessionId}:${row.menuItemId}`,
+    const participantNameById = new Map(participantRows.map((row) => [row.id, row.displayName]));
+    const items: GroupOrderCartItem[] = itemRows.map((row) => {
+      const price = Number(row.price);
+      const modifierPriceDelta = Number(row.modifierPriceDelta);
+      const lineTotal = Number(((price + modifierPriceDelta) * row.quantity).toFixed(2));
+      return groupOrderCartItemSchema.parse({
+        id: row.id,
         sessionId: row.sessionId,
+        participantId: row.participantId,
+        participantName: participantNameById.get(row.participantId) ?? "?",
         menuItemId: row.menuItemId,
         name: row.name,
-        price: Number(row.price),
+        price,
+        modifierPriceDelta,
+        lineTotal,
         quantity: row.quantity,
         category: row.category,
         ingredients: JSON.parse(row.ingredientsJson) as string[],
+        selectedModifiers: JSON.parse(row.selectedModifiersJson) as Array<{ groupId: string; optionId: string }>,
+        notes: row.notes ?? undefined,
         updatedByParticipantId: row.updatedByParticipantId ?? undefined,
         updatedAt: row.updatedAt.toISOString(),
-      }),
-    );
+      });
+    });
 
-    const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const total = Number(items.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
     return groupOrderSessionSchema.parse({
       id: sessionRow.id,
       tenantId: sessionRow.tenantId,
@@ -2199,6 +2360,9 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       version: sessionRow.version,
       masterParticipantId: sessionRow.masterParticipantId,
       submittedOrderId: sessionRow.submittedOrderId ?? undefined,
+      reviewedAt: sessionRow.reviewedAt?.toISOString(),
+      reviewedByStaffId: sessionRow.reviewedByStaffId ?? undefined,
+      rejectionReason: sessionRow.rejectionReason ?? undefined,
       expiresAt: sessionRow.expiresAt.toISOString(),
       participants,
       items,
@@ -2327,13 +2491,64 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     return groupOrderJoinSessionResponseSchema.parse({ session, participant, participantToken });
   }
 
+  /**
+   * Resume/refresh a session for an already-authenticated participant (the
+   * master arriving from the menu, or a guest after a page reload). The join
+   * code + participant token from the client are the credential.
+   */
+  async getPublicGroupOrderSession(
+    tenantSlug: string,
+    sessionId: string,
+    joinCode: string,
+    participantToken: string,
+  ): Promise<GroupOrderSession> {
+    const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
+    if (!tenant) {
+      throw new Error("Tenant not found for public group order");
+    }
+    await this.assertPublicGroupOrderEnabled(tenant.id);
+
+    const sessionRows = await db
+      .select()
+      .from(groupOrderSessions)
+      .where(and(eq(groupOrderSessions.tenantId, tenant.id), eq(groupOrderSessions.id, sessionId)))
+      .limit(1);
+    const session = sessionRows[0];
+    if (!session || session.joinCodeHash !== this.hashGroupOrderJoinCode(joinCode.trim().toLowerCase())) {
+      throw new Error("Group order session not found");
+    }
+
+    const participantRows = await db
+      .select({ id: groupOrderParticipants.id })
+      .from(groupOrderParticipants)
+      .where(
+        and(
+          eq(groupOrderParticipants.tenantId, tenant.id),
+          eq(groupOrderParticipants.sessionId, sessionId),
+          eq(groupOrderParticipants.participantTokenHash, this.hashGroupOrderParticipantToken(participantToken.trim())),
+        ),
+      )
+      .limit(1);
+    if (participantRows.length === 0) {
+      throw new Error("Group order participant not authorized");
+    }
+
+    const now = new Date();
+    await db
+      .update(groupOrderParticipants)
+      .set({ lastSeenAt: now, disconnectedAt: null })
+      .where(and(eq(groupOrderParticipants.tenantId, tenant.id), eq(groupOrderParticipants.id, participantRows[0].id)));
+
+    return this.buildGroupOrderSessionState({ tenantId: tenant.id, sessionId, joinCode });
+  }
+
   async patchPublicGroupOrderCart(
     tenantSlug: string,
     sessionId: string,
     joinCode: string,
     participantToken: string,
     payload: GroupOrderPatchCartRequest,
-  ): Promise<GroupOrderPatchCartResponse> {
+  ): Promise<GroupOrderPatchCartResponse & { byParticipantId: string }> {
     const parsed = groupOrderPatchCartRequestSchema.parse(payload);
     const tenant = await this.staffRepo.getTenantBySlug(tenantSlug);
     if (!tenant) {
@@ -2353,11 +2568,8 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     if (session.status !== "open" || session.expiresAt.getTime() <= Date.now()) {
       throw new Error("Group order session locked or expired");
     }
-    if (session.version !== parsed.expectedVersion) {
-      const canonical = await this.buildGroupOrderSessionState({ tenantId: tenant.id, sessionId, joinCode });
-      return groupOrderPatchCartResponseSchema.parse({ session: canonical, reconciled: true });
-    }
-
+    // Resolve the acting participant BEFORE the version check so a reconciled
+    // response can still report who acted.
     const participantRows = await db
       .select()
       .from(groupOrderParticipants)
@@ -2374,47 +2586,132 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       throw new Error("Group order participant not authorized");
     }
 
+    if (session.version !== parsed.expectedVersion) {
+      const canonical = await this.buildGroupOrderSessionState({ tenantId: tenant.id, sessionId, joinCode });
+      return {
+        ...groupOrderPatchCartResponseSchema.parse({ session: canonical, reconciled: true }),
+        byParticipantId: participant.id,
+      };
+    }
+
+    const isMaster = participant.id === session.masterParticipantId;
     const menu = await this.getPublicMenu(tenant.slug);
     const menuById = new Map(menu.items.map((item) => [item.id, item]));
+    const existingLineRows = await db
+      .select()
+      .from(groupOrderCartItems)
+      .where(and(eq(groupOrderCartItems.tenantId, tenant.id), eq(groupOrderCartItems.sessionId, sessionId)));
+    const existingLineById = new Map(existingLineRows.map((row) => [row.id, row]));
+
+    // First pass: resolve every operation against the catalog and existing
+    // lines (ownership), and collect the authoritative pricing requests.
+    type PlannedUpsert = {
+      lineId: string;
+      menuItemId: string;
+      menuItem: (typeof menu.items)[number];
+      quantity: number;
+      modifiers: Array<{ groupId: string; optionId: string }>;
+      notes?: string;
+      priceRequestIndex: number;
+    };
+    const plannedDeletes: string[] = [];
+    const plannedUpserts: PlannedUpsert[] = [];
+    const priceRequests: PublicOrderLine[] = [];
+
+    for (const op of parsed.items) {
+      const menuItem = menuById.get(op.menuItemId);
+      if (!menuItem || menuItem.isSoldOut) {
+        continue;
+      }
+      const modifiers = this.normalizeGroupOrderModifiers(op.selectedModifiers);
+      const notes = op.notes?.trim() || undefined;
+
+      let lineId: string;
+      if (op.lineId) {
+        const existing = existingLineById.get(op.lineId);
+        if (!existing) {
+          continue; // line was already removed elsewhere
+        }
+        if (!isMaster && existing.participantId !== participant.id) {
+          throw new Error("Group order line is not owned by participant");
+        }
+        lineId = op.lineId;
+      } else {
+        lineId = this.hashGroupOrderCartLine(participant.id, menuItem.id, modifiers, notes);
+      }
+
+      if (op.quantity <= 0) {
+        plannedDeletes.push(lineId);
+        continue;
+      }
+
+      plannedUpserts.push({
+        lineId,
+        menuItemId: menuItem.id,
+        menuItem,
+        quantity: op.quantity,
+        modifiers,
+        notes,
+        priceRequestIndex: priceRequests.length,
+      });
+      priceRequests.push({
+        menuItemId: menuItem.id,
+        quantity: op.quantity,
+        notes,
+        selectedModifiers: modifiers.length > 0 ? modifiers : undefined,
+      });
+    }
+
+    const pricedLines = priceRequests.length > 0
+      ? (await this.pricePublicOrderLines(tenant.id, priceRequests)).lines
+      : [];
+
     const now = new Date();
     await withTenantTx(async (tx) => {
-      for (const item of parsed.items) {
-        const menuItem = menuById.get(item.menuItemId);
-        if (!menuItem || menuItem.isSoldOut) {
-          continue;
-        }
+      for (const lineId of plannedDeletes) {
+        await tx
+          .delete(groupOrderCartItems)
+          .where(
+            and(
+              eq(groupOrderCartItems.tenantId, tenant.id),
+              eq(groupOrderCartItems.sessionId, sessionId),
+              eq(groupOrderCartItems.id, lineId),
+            ),
+          );
+      }
 
-        if (item.quantity <= 0) {
-          await tx
-            .delete(groupOrderCartItems)
-            .where(
-              and(
-                eq(groupOrderCartItems.tenantId, tenant.id),
-                eq(groupOrderCartItems.sessionId, sessionId),
-                eq(groupOrderCartItems.menuItemId, item.menuItemId),
-              ),
-            );
-          continue;
-        }
-
+      for (const op of plannedUpserts) {
+        const line = pricedLines[op.priceRequestIndex];
+        if (!line) continue;
+        const basePrice = Number((line.unitPrice - line.modifierPriceDelta).toFixed(2));
         await tx
           .insert(groupOrderCartItems)
           .values({
+            id: op.lineId,
             tenantId: tenant.id,
             sessionId,
-            menuItemId: menuItem.id,
-            name: menuItem.name,
-            price: String(menuItem.price),
-            quantity: item.quantity,
-            category: menuItem.category,
-            ingredientsJson: JSON.stringify(menuItem.ingredients),
+            participantId: participant.id,
+            menuItemId: op.menuItemId,
+            name: line.name,
+            price: String(basePrice),
+            modifierPriceDelta: String(line.modifierPriceDelta),
+            quantity: op.quantity,
+            category: op.menuItem.category,
+            ingredientsJson: JSON.stringify(op.menuItem.ingredients),
+            selectedModifiersJson: JSON.stringify(op.modifiers),
+            notes: op.notes ?? null,
             updatedByParticipantId: participant.id,
             updatedAt: now,
           })
           .onConflictDoUpdate({
-            target: [groupOrderCartItems.tenantId, groupOrderCartItems.sessionId, groupOrderCartItems.menuItemId],
+            target: groupOrderCartItems.id,
             set: {
-              quantity: item.quantity,
+              name: line.name,
+              price: String(basePrice),
+              modifierPriceDelta: String(line.modifierPriceDelta),
+              quantity: op.quantity,
+              notes: op.notes ?? null,
+              selectedModifiersJson: JSON.stringify(op.modifiers),
               updatedByParticipantId: participant.id,
               updatedAt: now,
             },
@@ -2439,7 +2736,10 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       event: "group_order_cart_updated",
       payload: { sessionId, version: updated.version },
     });
-    return groupOrderPatchCartResponseSchema.parse({ session: updated, reconciled: false });
+    return {
+      ...groupOrderPatchCartResponseSchema.parse({ session: updated, reconciled: false }),
+      byParticipantId: participant.id,
+    };
   }
 
   async submitPublicGroupOrder(
@@ -2481,13 +2781,18 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     if (!participant || participant.id !== session.masterParticipantId) {
       throw new Error("Only master can submit group order");
     }
-    if (session.status === "submitted" && session.submittedOrderId) {
+    // Already submitted: return the draft (pending staff review) or the
+    // approved order idempotently instead of creating a second one.
+    if (session.submittedOrderId && (session.status === "pending_review" || session.status === "approved")) {
       const existingOrder = await this.getOrderById(session.submittedOrderId);
       if (!existingOrder) {
         throw new Error("Group order submitted but order missing");
       }
       const mapped = await this.buildGroupOrderSessionState({ tenantId: tenant.id, sessionId, joinCode });
       return groupOrderSubmitResponseSchema.parse({ session: mapped, order: existingOrder });
+    }
+    if (session.status === "rejected") {
+      throw new Error("Group order was rejected by staff");
     }
     if (session.status !== "open" || session.version !== parsed.expectedVersion) {
       throw new Error("Group order submit conflict");
@@ -2511,42 +2816,303 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       return groupOrderSubmitResponseSchema.parse({ session: mapped, order: existingOrder });
     }
 
-    const total = itemRows.reduce((sum, row) => sum + Number(row.price) * row.quantity, 0);
-    const staffId = await this.resolveSelfOrderStaffId(tenant.id);
-    const created = await this.createOrder({
-      orderType: "takeaway",
-      items: itemRows.map((row) => ({
-        id: row.menuItemId,
-        name: row.name,
-        price: Number(row.price),
+    const sessionParticipantRows = await db
+      .select({ id: groupOrderParticipants.id, displayName: groupOrderParticipants.displayName })
+      .from(groupOrderParticipants)
+      .where(and(eq(groupOrderParticipants.tenantId, tenant.id), eq(groupOrderParticipants.sessionId, sessionId)));
+    const participantNameById = new Map(sessionParticipantRows.map((row) => [row.id, row.displayName]));
+
+    // Re-price every line against the live catalog at submit time: the cart
+    // snapshot may be stale (price change, sold out) and client prices are
+    // never trusted.
+    const priceRequests: PublicOrderLine[] = itemRows.map((row) => {
+      const modifiers = JSON.parse(row.selectedModifiersJson) as Array<{ groupId: string; optionId: string }>;
+      return {
+        menuItemId: row.menuItemId,
         quantity: row.quantity,
-      })),
-      total,
+        notes: row.notes ?? undefined,
+        selectedModifiers: modifiers.length > 0 ? modifiers : undefined,
+      };
+    });
+    const priced = await this.pricePublicOrderLines(tenant.id, priceRequests);
+
+    const staffId = await this.resolveSelfOrderStaffId(tenant.id);
+    const ticketNumber = `GR-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`;
+    const draftOrder: Order = orderSchema.parse({
+      id: crypto.randomUUID(),
+      orderType: "takeaway",
+      ticketNumber,
       customerName: parsed.customerName,
       customerPhone: parsed.customerPhone,
-      pickupEta: parsed.pickupEta,
+      scheduledFor: parsed.pickupEta,
+      items: priced.items,
+      total: priced.total,
+      status: "pending",
+      timestamp: new Date().toISOString(),
       staffId,
+      approvalStatus: "pending_approval",
     });
 
-    await db
-      .update(groupOrderSessions)
-      .set({
-        status: "submitted",
-        submittedOrderId: created.order.id,
-        submitIdempotencyKeyHash: idempotencyHash,
-        version: session.version + 1,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(groupOrderSessions.tenantId, tenant.id), eq(groupOrderSessions.id, sessionId)));
+    // Draft = a real order row deliberately held back: no virtual asporto
+    // conto, no stock deduction and no printing until staff approves it.
+    await withTenantTx(async (tx) => {
+      await tx.insert(orders).values({
+        id: draftOrder.id,
+        tenantId: tenant.id,
+        orderType: draftOrder.orderType,
+        tableNumber: null,
+        ticketNumber: draftOrder.ticketNumber ?? null,
+        customerName: draftOrder.customerName ?? null,
+        customerId: null,
+        customerPhone: parsed.customerPhone ?? null,
+        pickupEta: parsed.pickupEta ? new Date(parsed.pickupEta) : null,
+        total: String(draftOrder.total),
+        status: draftOrder.status,
+        timestamp: new Date(draftOrder.timestamp),
+        staffId: draftOrder.staffId,
+        approvalStatus: "pending_approval",
+        groupSessionId: sessionId,
+      });
+
+      for (let index = 0; index < draftOrder.items.length; index += 1) {
+        const item = draftOrder.items[index];
+        const sourceRow = itemRows[index];
+        await tx.insert(orderItems).values({
+          tenantId: tenant.id,
+          orderId: draftOrder.id,
+          menuItemId: item.id,
+          name: item.name,
+          price: String(item.price),
+          quantity: item.quantity,
+          ingredientOverrides: JSON.stringify(item.ingredientOverrides ?? []),
+          notes: item.notes ?? null,
+          selectedModifiers: JSON.stringify(item.selectedModifiers ?? []),
+          round: item.round ?? null,
+          groupParticipantId: sourceRow?.participantId ?? null,
+          groupParticipantName: sourceRow ? participantNameById.get(sourceRow.participantId) ?? null : null,
+        });
+      }
+
+      await tx
+        .update(groupOrderSessions)
+        .set({
+          status: "pending_review",
+          submittedOrderId: draftOrder.id,
+          submitIdempotencyKeyHash: idempotencyHash,
+          version: session.version + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(groupOrderSessions.tenantId, tenant.id), eq(groupOrderSessions.id, sessionId)));
+    });
 
     const mapped = await this.buildGroupOrderSessionState({ tenantId: tenant.id, sessionId, joinCode });
     await this.logTenantAudit({
       tenantId: tenant.id,
       actor: `group_order:${participant.id}`,
       event: "group_order_submitted",
-      payload: { sessionId, orderId: created.order.id },
+      payload: { sessionId, orderId: draftOrder.id },
     });
-    return groupOrderSubmitResponseSchema.parse({ session: mapped, order: created.order });
+    return groupOrderSubmitResponseSchema.parse({ session: mapped, order: draftOrder });
+  }
+
+  /**
+   * Staff review queue: submitted group-order drafts awaiting approval, with
+   * the per-participant line breakdown. Drafts are excluded from getPublicData,
+   * so this is the only list that surfaces them.
+   */
+  async listPendingGroupOrderDrafts(): Promise<GroupOrderReviewQueueResponse> {
+    const tenantId = getTenantIdOrDefault();
+    const orderRows = await db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.tenantId, tenantId), eq(orders.approvalStatus, "pending_approval")))
+      .orderBy(orders.timestamp);
+
+    if (orderRows.length === 0) {
+      return [];
+    }
+
+    const orderIds = orderRows.map((row) => row.id);
+    const itemRows = await db
+      .select()
+      .from(orderItems)
+      .where(and(eq(orderItems.tenantId, tenantId), inArray(orderItems.orderId, orderIds)));
+
+    const itemsByOrderId = new Map<string, typeof itemRows>();
+    for (const item of itemRows) {
+      const existing = itemsByOrderId.get(item.orderId) ?? [];
+      existing.push(item);
+      itemsByOrderId.set(item.orderId, existing);
+    }
+
+    return groupOrderReviewQueueResponseSchema.parse(orderRows.map((row) => {
+      const lines = itemsByOrderId.get(row.id) ?? [];
+      const mappedItems: Order["items"] = lines.map((item) => ({
+        id: item.menuItemId,
+        orderItemId: item.id,
+        name: item.name,
+        price: Number(item.price),
+        quantity: item.quantity,
+        ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
+        selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        round: item.round ?? undefined,
+      }));
+      return {
+        order: orderSchema.parse({
+          id: row.id,
+          orderType: orderTypeSchema.parse(row.orderType as OrderType),
+          table: row.tableNumber ?? undefined,
+          ticketNumber: row.ticketNumber ?? undefined,
+          customerName: row.customerName ?? undefined,
+          customerId: row.customerId ?? undefined,
+          items: mappedItems,
+          total: Number(row.total),
+          status: row.status,
+          timestamp: row.timestamp.toISOString(),
+          staffId: row.staffId,
+          approvalStatus: row.approvalStatus,
+        }),
+        sessionId: row.groupSessionId ?? undefined,
+        items: lines.map((item) => ({
+          id: item.id,
+          menuItemId: item.menuItemId,
+          name: item.name,
+          price: Number(item.price),
+          quantity: item.quantity,
+          participantId: item.groupParticipantId ?? undefined,
+          participantName: item.groupParticipantName ?? undefined,
+          notes: item.notes ?? undefined,
+          selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        })),
+      };
+    }));
+  }
+
+  /**
+   * Staff decision on a submitted group-order draft.
+   *
+   * Reject: the draft is flagged rejected (its session too) and stays unprinted.
+   * Approve: the draft is re-created through the normal `createOrder` pipeline —
+   * stock deduction, virtual asporto conto, printing and customer linkage all
+   * happen exactly once, only now — then the draft row is removed so it never
+   * lingers in the POS/history as a second order.
+   */
+  async reviewGroupOrderDraft(params: {
+    orderId: string;
+    staffId: string;
+    action: "approve" | "reject";
+    reason?: string;
+  }): Promise<GroupOrderReviewResponse> {
+    const { orderId, staffId, action, reason } = params;
+    const tenantId = getTenantIdOrDefault();
+    const orderRows = await db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+      .limit(1);
+    const draft = orderRows[0];
+    if (!draft) {
+      throw new Error("Group order draft not found");
+    }
+    if (draft.approvalStatus !== "pending_approval") {
+      throw new Error("Group order draft is not pending approval");
+    }
+    if (!draft.groupSessionId) {
+      throw new Error("Group order draft has no session");
+    }
+    const sessionId = draft.groupSessionId;
+    const reviewedAt = new Date();
+
+    if (action === "reject") {
+      await withTenantTx(async (tx) => {
+        await tx
+          .update(orders)
+          .set({
+            approvalStatus: "rejected",
+            // Cancelling keeps a rejected draft out of the POS/kitchen map even
+            // if some other query forgets the approvalStatus filter.
+            status: "cancelled",
+            rejectionReason: reason ?? null,
+            reviewedAt,
+            reviewedByStaffId: staffId,
+          })
+          .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+        await tx
+          .update(groupOrderSessions)
+          .set({
+            status: "rejected",
+            rejectionReason: reason ?? null,
+            reviewedAt,
+            reviewedByStaffId: staffId,
+            updatedAt: reviewedAt,
+          })
+          .where(and(eq(groupOrderSessions.tenantId, tenantId), eq(groupOrderSessions.id, sessionId)));
+      });
+
+      const order = await this.getOrderById(orderId);
+      if (!order) {
+        throw new Error("Group order draft not found after reject");
+      }
+      await this.logTenantAudit({
+        tenantId,
+        actor: `staff:${staffId}`,
+        event: "group_order_rejected",
+        payload: { sessionId, orderId, reason },
+      });
+      return groupOrderReviewResponseSchema.parse({ sessionId, status: "rejected", order });
+    }
+
+    const itemRows = await db
+      .select()
+      .from(orderItems)
+      .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)));
+
+    const created = await this.createOrder({
+      orderType: "takeaway",
+      items: itemRows.map((item) => ({
+        id: item.menuItemId,
+        name: item.name,
+        price: Number(item.price),
+        quantity: item.quantity,
+        notes: item.notes ?? undefined,
+        selectedModifiers: parseSelectedModifiers(item.selectedModifiers),
+        ingredientOverrides: parseIngredientOverrides(item.ingredientOverrides),
+      })),
+      total: Number(draft.total),
+      customerName: draft.customerName ?? "Group order",
+      customerPhone: draft.customerPhone ?? undefined,
+      pickupEta: draft.pickupEta?.toISOString(),
+      staffId,
+    });
+
+    await withTenantTx(async (tx) => {
+      await tx
+        .update(orders)
+        .set({ approvalStatus: "approved", groupSessionId: sessionId, reviewedAt, reviewedByStaffId: staffId })
+        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, created.order.id)));
+      await tx
+        .delete(orders)
+        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+      await tx
+        .update(groupOrderSessions)
+        .set({
+          status: "approved",
+          submittedOrderId: created.order.id,
+          reviewedAt,
+          reviewedByStaffId: staffId,
+          rejectionReason: null,
+          updatedAt: reviewedAt,
+        })
+        .where(and(eq(groupOrderSessions.tenantId, tenantId), eq(groupOrderSessions.id, sessionId)));
+    });
+
+    await this.logTenantAudit({
+      tenantId,
+      actor: `staff:${staffId}`,
+      event: "group_order_approved",
+      payload: { sessionId, draftOrderId: orderId, orderId: created.order.id },
+    });
+    return groupOrderReviewResponseSchema.parse({ sessionId, status: "approved", order: created.order });
   }
 
   /**
@@ -2581,6 +3147,24 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     for (const line of lines) {
       const menuItem = itemById.get(line.menuItemId);
       if (!menuItem) {
+        // Distinguish "never existed" from "exists but is POS-only": a JOLLY
+        // item never reaches the public menu (see getPublicMenu), and its
+        // price is composed at the POS from the selected halves, so pricing it
+        // server-side here would charge 0. Reject explicitly instead of
+        // silently selling free.
+        const [hidden] = await db
+          .select({ id: menuItems.id, name: menuItems.name, isJolly: menuItems.isJolly, isOpenPrice: menuItems.isOpenPrice })
+          .from(menuItems)
+          .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, line.menuItemId)))
+          .limit(1);
+        if (hidden && hidden.isJolly === 1) {
+          throw new Error(`Public order item '${hidden.name}' is not available for online ordering`);
+        }
+        // An open-price line has no server-side price either: the waiter types
+        // it at the POS, so it can never be ordered online.
+        if (hidden && hidden.isOpenPrice === 1) {
+          throw new Error(`Public order item '${hidden.name}' is not available for online ordering`);
+        }
         throw new Error(`Public order item '${line.menuItemId}' not found in menu`);
       }
       if (menuItem.isSoldOut) {
@@ -2902,7 +3486,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     const tableRows = await db
       .select()
       .from(tables)
-      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)))
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId), eq(tables.isActive, 1)))
       .limit(1);
     const table = tableRows[0];
     if (!table) {
@@ -2979,7 +3563,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     const tableRows = await db
       .select()
       .from(tables)
-      .where(and(eq(tables.tenantId, tenant.id), eq(tables.id, session.tableId)))
+      .where(and(eq(tables.tenantId, tenant.id), eq(tables.id, session.tableId), eq(tables.isActive, 1)))
       .limit(1);
     const table = tableRows[0];
     if (!table) {
@@ -3038,7 +3622,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     const tableRows = await db
       .select()
       .from(tables)
-      .where(and(eq(tables.tenantId, tenant.id), eq(tables.id, session.tableId)))
+      .where(and(eq(tables.tenantId, tenant.id), eq(tables.id, session.tableId), eq(tables.isActive, 1)))
       .limit(1);
     const table = tableRows[0];
     if (!table) {
@@ -3231,15 +3815,26 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       }
 
       if (order.orderType === "dine_in" && order.table) {
+        // Authoritative guard: a dine-in order may only bind to an ACTIVE
+        // table. Rejects a stale client (renamed/soft-deleted table) instead
+        // of silently occupying a tombstone with the same number.
+        const targetTables = await tx
+          .select({ id: tables.id })
+          .from(tables)
+          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.table), eq(tables.isActive, 1)))
+          .limit(1);
+        if (targetTables.length === 0) {
+          throw new Error(`Table "${order.table}" not found`);
+        }
         await tx
           .update(tables)
           .set({ status: "occupied" })
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.table)));
+          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.table), eq(tables.isActive, 1)));
       } else if (isVirtualOrder && virtualTableNumber) {
         const existingVirtual = await tx
           .select()
           .from(tables)
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, virtualTableNumber)))
+          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, virtualTableNumber), eq(tables.isActive, 1)))
           .limit(1);
         if (existingVirtual.length > 0) {
           if (existingVirtual[0].isVirtual !== 1) {
@@ -3456,6 +4051,13 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           .map((entry) => entry.ingredientId);
 
         for (const ingredientId of addedIngredientIds) {
+          // Stock tracking off (inventory module disabled, e.g. simple_catalog):
+          // there is nothing to resolve these ids against — pool options carry
+          // free-text names ("Bufala") instead of inventory ids, so validating
+          // them here rejected every order that added a topping. Every reader of
+          // the consumption maps lives inside a `stockTrackingEnabled` block
+          // below, so skipping is safe.
+          if (!stockTrackingEnabled) continue;
           // Added pool options can reference a prep (componentId) or an
           // inventory ingredient. Route prep adds to the prep consumption map
           // (one unit in the prep's own output unit); ingredient adds resolve
@@ -3973,7 +4575,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
               await tx
                 .update(tables)
                 .set({ status: "free", currentOrderId: null })
-                .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber)));
+                .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber), eq(tables.isActive, 1)));
             }
           }
         }
@@ -4170,7 +4772,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
           await tx
             .update(tables)
             .set({ status: "free", currentOrderId: null })
-            .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber)));
+            .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber), eq(tables.isActive, 1)));
         }
       }
 
@@ -4214,6 +4816,9 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     const conditions: SQL[] = [];
 
     conditions.push(eq(orders.tenantId, tenantId));
+    // Draft/rejected group orders stay out of the history until approved.
+    conditions.push(ne(orders.approvalStatus, "pending_approval"));
+    conditions.push(ne(orders.approvalStatus, "rejected"));
 
     if (parsed.from) {
       conditions.push(gte(orders.timestamp, new Date(parsed.from)));
@@ -4285,6 +4890,68 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     );
   }
 
+  /**
+   * Sales aggregates for the dashboard KPI cards (Incasso / Ordini /
+   * Scontrino Medio / Top 5 Piatti).
+   *
+   * Deliberately server-side: the bootstrapped `data.orders` list only carries
+   * OPEN orders (paid/cancelled are filtered out by getPublicData), so deriving
+   * revenue from it yielded a permanent zero for every tenant.
+   */
+  async getSalesSummary(query: SalesSummaryQuery): Promise<SalesSummary> {
+    const parsed = salesSummaryQuerySchema.parse(query);
+    const tenantId = getTenantIdOrDefault();
+
+    const conditions: SQL[] = [eq(orders.tenantId, tenantId), eq(orders.status, "paid")];
+    if (parsed.from) {
+      conditions.push(gte(orders.timestamp, new Date(parsed.from)));
+    }
+    if (parsed.to) {
+      conditions.push(lte(orders.timestamp, new Date(parsed.to)));
+    }
+    const paidInRange = and(...conditions);
+
+    // numeric → float8: pg returns numeric as a string, float8 as a JS number.
+    const [totals] = await db
+      .select({
+        orders: sql<number>`count(*)::int`,
+        revenue: sql<number>`coalesce(sum(${orders.total}), 0)::float8`,
+      })
+      .from(orders)
+      .where(paidInRange);
+
+    const topRows = await db
+      .select({
+        id: orderItems.menuItemId,
+        name: orderItems.name,
+        quantity: sql<number>`sum(${orderItems.quantity})::int`,
+        revenue: sql<number>`coalesce(sum(${orderItems.price} * ${orderItems.quantity}), 0)::float8`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, and(eq(orderItems.orderId, orders.id), eq(orderItems.tenantId, tenantId)))
+      .where(paidInRange)
+      .groupBy(orderItems.menuItemId, orderItems.name)
+      .orderBy(desc(sql`sum(${orderItems.quantity})`))
+      .limit(5);
+
+    const orderCount = Number(totals?.orders ?? 0);
+    const revenue = Number(totals?.revenue ?? 0);
+
+    return salesSummarySchema.parse({
+      from: parsed.from ?? null,
+      to: parsed.to ?? null,
+      revenue,
+      orders: orderCount,
+      avgOrderValue: orderCount > 0 ? revenue / orderCount : 0,
+      topDishes: topRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        quantity: Number(row.quantity),
+        revenue: Number(row.revenue),
+      })),
+    });
+  }
+
   async getCategoryById(id: string): Promise<Category | null> {
     const tenantId = getTenantIdOrDefault();
     const rows = await db
@@ -4336,6 +5003,8 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       status: orderRow.status,
       timestamp: orderRow.timestamp.toISOString(),
       staffId: orderRow.staffId,
+      approvalStatus: orderRow.approvalStatus,
+      rejectionReason: orderRow.rejectionReason ?? undefined,
     });
   }
 

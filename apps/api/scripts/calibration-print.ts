@@ -1,6 +1,7 @@
 import { db, pool } from "../src/db/client";
 import { printJobs } from "../src/db/schema";
 import { buildCalibrationTicketPayload, buildStationFormatTestPayload } from "../src/repository/utils/escpos-builder";
+import { hasTenantOverride } from "@gustopos/shared";
 
 /**
  * One-shot calibration print.
@@ -38,7 +39,13 @@ async function main() {
   const jobId = `pj_cal_${stamp}_${Math.random().toString(36).slice(2, 6)}`;
 
   const payload = payloadKind === "format-test"
-    ? buildStationFormatTestPayload()
+    // The format test mirrors the tenant's own header/size choices (notes and
+    // table at 2x1, no `Comanda:` line — e.g. casale).
+    ? buildStationFormatTestPayload({
+        notes2x1: hasTenantOverride("stationNotes2x1", tenantId),
+        table2x1: hasTenantOverride("stationTable2x1", tenantId),
+        hideComandaLine: hasTenantOverride("stationHideComandaLine", tenantId),
+      })
     : buildCalibrationTicketPayload();
 
   await db.insert(printJobs).values({

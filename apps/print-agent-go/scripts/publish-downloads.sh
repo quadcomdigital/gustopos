@@ -8,9 +8,12 @@
 #
 # Usage:
 #   ./scripts/publish-downloads.sh [VERSION]
+#   ./scripts/publish-downloads.sh --check [VERSION]   # guard only, no writes
 #
 # Requires the release binaries to already exist in bin/ (run
-# `make linux windows darwin` first). VERSION defaults to 0.8.0.
+# `make linux windows darwin` first). VERSION defaults to the `VERSION ?= …`
+# line of the Makefile — the single source of truth — so a bare invocation
+# (the documented `--check` step) can never drift from what was built.
 #
 # NOTE: after publishing, rebuild the web app (`npm run build --workspace
 # @gustopos/web`) so Vite copies public/downloads into dist/ for the API to
@@ -18,7 +21,11 @@
 
 set -euo pipefail
 
-VERSION="${1:-0.8.0}"
+CHECK_ONLY=0
+if [[ "${1:-}" == "--check" ]]; then
+  CHECK_ONLY=1
+  shift
+fi
 AGENT="gustopos-print-agent"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +34,20 @@ BIN_DIR="$AGENT_DIR/bin"
 WEB_PUBLIC="$(cd "$AGENT_DIR/../web/public" && pwd)"
 DEST_DIR="$WEB_PUBLIC/downloads"
 DEST_BIN="$DEST_DIR/bin"
+
+# VERSION falls back to the Makefile (`VERSION ?= x.y.z`), the single source of
+# truth: a bare `./scripts/publish-downloads.sh --check` must test the version
+# that was actually built, never a hardcoded default gone stale.
+if [[ $# -ge 1 ]]; then
+  VERSION="$1"
+else
+  VERSION="$(sed -n 's/^VERSION[[:space:]]*?=[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+    "$AGENT_DIR/Makefile" | head -n 1)"
+  if [[ -z "$VERSION" ]]; then
+    echo "error: no VERSION argument and none found in $AGENT_DIR/Makefile" >&2
+    exit 1
+  fi
+fi
 
 if ! command -v sha256sum >/dev/null 2>&1; then
   echo "error: sha256sum not found" >&2
@@ -38,15 +59,55 @@ if [[ ! -d "$BIN_DIR" ]] || ! ls "$BIN_DIR"/"$AGENT"-* >/dev/null 2>&1; then
   exit 1
 fi
 
-# Guard: make sure the version passed here matches the version baked into the
-# binaries by the Makefile (-X main.version). Prevents drift when the script is
-# invoked directly with a stale/typo'd VERSION.
-if [[ -x "$BIN_DIR/${AGENT}-linux-amd64" ]]; then
-  embedded="$("$BIN_DIR/${AGENT}-linux-amd64" -version 2>/dev/null | awk '{print $NF}')"
-  if [[ -n "$embedded" && "$embedded" != "$VERSION" ]]; then
-    echo "error: VERSION '$VERSION' does not match the version baked into the binary ('$embedded'). Bump VERSION in the Makefile first." >&2
-    exit 1
+# Guard: EVERY artifact about to be published must embed VERSION. A stale
+# binary left in bin/ (say, a tenant flavor built before the bump) would be
+# published under the new manifest: agents would download a binary reporting an
+# older version, never converge, and keep burning update attempts in a loop.
+#
+# - linux/amd64 artifacts run natively here, so we ask them with -version;
+# - cross-compiled artifacts (windows/darwin/linux-arm64) can't execute, so we
+#   require the linker-injected VERSION literal to be present in their bytes.
+verify_artifact_version() {
+  local name printed
+  name="$(basename "$1")"
+  case "$name" in
+    *-linux-amd64)
+      printed="$("$1" -version 2>/dev/null | awk '{print $NF}')"
+      if [[ -n "$printed" && "$printed" != "$VERSION" ]]; then
+        echo "error: '$name' reports version '$printed', expected '$VERSION'." >&2
+        echo "       Rebuild it (make linux windows darwin [FLAVOR=...]) or delete it from bin/." >&2
+        return 1
+      fi
+      if [[ -n "$printed" ]]; then
+        return 0
+      fi
+      # Fall through: not executable on this host (or -version unsupported).
+      ;;
+  esac
+  if grep -aqF -- "$VERSION" "$1"; then
+    return 0
   fi
+  echo "error: '$name' does not embed version '$VERSION' (stale artifact?)." >&2
+  echo "       Rebuild it (make linux windows darwin [FLAVOR=...]) or delete it from bin/." >&2
+  return 1
+}
+
+version_mismatch=0
+for f in "$BIN_DIR"/"$AGENT"-*; do
+  [[ -f "$f" ]] || continue
+  verify_artifact_version "$f" || version_mismatch=1
+done
+if [[ "$version_mismatch" -ne 0 ]]; then
+  echo "error: VERSION '$VERSION' does not match every artifact in $BIN_DIR — refusing to publish." >&2
+  echo "       Bump/fix VERSION in the Makefile, rebuild, then publish again." >&2
+  exit 1
+fi
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  count=0
+  for f in "$BIN_DIR"/"$AGENT"-*; do [[ -f "$f" ]] && count=$((count + 1)); done
+  echo "==> OK: $count artifacts in $BIN_DIR all embed VERSION $VERSION"
+  exit 0
 fi
 
 # HTML-escape the version for the download page (it comes from the CLI arg).
@@ -117,8 +178,10 @@ for i in "${!ARTIFACTS[@]}"; do
   esac
   # Tenant-flavored builds (gustopos-print-agent-<flavor>-<os>-<arch>) get a
   # tag so the shared download page can show which server they pair with.
-  # Flavorless names (gustopos-print-agent-<os>-<arch>) are left untagged.
-  flavor=""
+  # Flavorless names (gustopos-print-agent-<os>-<arch>) are tagged "legacy":
+  # they exist only so agents paired BEFORE flavors existed keep self-updating
+  # onto the same artifact name (see artifactName() in updater.go).
+  flavor="legacy"
   if [[ "$name" =~ ^gustopos-print-agent-([A-Za-z0-9]+)-(windows|linux|darwin)- ]]; then
     flavor="${BASH_REMATCH[1]}"
   fi
@@ -131,8 +194,8 @@ for os in Windows Linux macOS; do
   for row in "${ROWS[@]}"; do
     IFS='|' read -r label arch name sha human flavor <<< "$row"
     [[ "$label" == "$os" ]] || continue
-    ftag=""
-    [[ -n "$flavor" ]] && ftag="<div class=\"flavor\">$flavor</div>"
+    ftag="<div class=\"flavor\">$flavor</div>"
+    [[ "$flavor" == "legacy" ]] && ftag="<div class=\"flavor legacy\">legacy</div>"
     cards+="<div class=\"card\">
   <div class=\"card-os\">$label$ftag</div>
   <div class=\"card-arch\">$arch</div>
@@ -178,6 +241,8 @@ cat > "$DEST_DIR/index.html" <<EOF
   .flavor { display:inline-block; margin-left:6px; font-size:10px; font-weight:600;
     background:rgba(0,255,136,.12); color:var(--green); border:1px solid rgba(0,255,136,.35);
     border-radius:999px; padding:1px 8px; vertical-align:middle; }
+  .flavor.legacy { background:rgba(136,136,170,.12); color:var(--muted); border-color:var(--border); }
+  .legend { margin-top:14px; font-size:12px; }
   .card-arch { color:var(--muted); font-size:13px; }
   .btn { margin-top:auto; text-align:center; background:var(--green); color:#000; font-weight:700;
          text-decoration:none; border-radius:8px; padding:10px 12px; font-size:13px;
@@ -212,6 +277,11 @@ cat > "$DEST_DIR/index.html" <<EOF
 
   <div class="grid">
 $cards  </div>
+
+  <p class="sub legend">Il tag accanto al nome del sistema indica il server con cui
+    l'agente si accoppia: scegli la card del <strong>tuo ristorante</strong>.
+    Le card <span class="flavor legacy">legacy</span> sono i binari senza flavor,
+    pubblicati solo per gli agenti già accoppiati in passato.</p>
 
   <section>
     <h2>Installazione</h2>

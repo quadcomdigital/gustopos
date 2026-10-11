@@ -5,21 +5,28 @@
  *           public menu) so the POS can compose a "mezza pizza maxi" by
  *           picking up to 2 of the existing pizzas. The group charges
  *           `priceDelta = pizza price / 2` in "sum" mode, so two halves cost
- *           (pA + pB)/2. `is_jolly` opens the POS "Prezzo ad-hoc" field,
- *           which starts at 0 and is added on top of the computed halves.
+ *           (pA + pB)/2. `is_jolly` marks the line POS-only: its price is
+ *           COMPOSED by those selections — the POS renders no ad-hoc input —
+ *           and MAXI (×2) scales that composed base.
  *
  *  MAXI   — a single category pool option on "Pizzeria" with priceMultiplier=2:
  *           it doubles whatever pizza it is attached to (base × 2, then
  *           toppings add on top). Because it is a pool, the existing pizzas
  *           AND any future pizza are covered by one option.
  *
- * Idempotent: an existing category / product / group / pool is reused rather
- * than duplicated. Run with --dry-run first.
+ * Step B6 mirrors the whole PIZZERIA pool set onto the JOLLY category (a pool
+ * can serve several categories): MAXI, the existing "Senza glutine" pool and
+ * "AGGIUNTA" — a JOLLY is two pizza halves, so anything that can go on a pizza
+ * can go on it, and the large AGGIUNTA pool is what feeds "Personalizza".
+ * B7 makes "Le due metà" required so an empty €0,00 JOLLY cannot be sold.
+ *
+ * Idempotent: an existing category / product / group / pool / link is reused
+ * rather than duplicated. Run with --dry-run first.
  *
  * Usage:
  *   DATABASE_URL=... npx tsx scripts/casale-jolly-maxi.ts [--dry-run]
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, ilike } from "drizzle-orm";
 import { db, pool } from "../src/db/client";
 import {
   categories,
@@ -36,6 +43,8 @@ import {
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const TENANT_SLUG = "casale";
+// Category names are stored uppercase in Magazzino ("PIZZERIA"): match
+// case-insensitively or the script dies at the very first lookup.
 const PIZZERIA_CATEGORY = "Pizzeria";
 const JOLLY_CATEGORY = "JOLLY";
 const JOLLY_ITEM = "JOLLY";
@@ -43,6 +52,7 @@ const HALF_GROUP = "Le due metà";
 const MAXI_POOL = "MAXI";
 const MAXI_OPTION = "MAXI";
 const MAXI_MULTIPLIER = "2";
+const GLUTEN_FREE_POOL = "senza glutine";
 
 const newId = (prefix: string) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -72,7 +82,7 @@ async function main() {
   const pizzeriaCategoryRows = await db
     .select({ id: categories.id })
     .from(categories)
-    .where(and(eq(categories.tenantId, tenantId), eq(categories.name, PIZZERIA_CATEGORY)))
+    .where(and(eq(categories.tenantId, tenantId), ilike(categories.name, PIZZERIA_CATEGORY)))
     .limit(1);
   const pizzeriaCategoryId = pizzeriaCategoryRows[0]?.id;
   if (!pizzeriaCategoryId) throw new Error(`category "${PIZZERIA_CATEGORY}" not found`);
@@ -95,10 +105,10 @@ async function main() {
   const existingJollyCategory = await db
     .select({ id: categories.id })
     .from(categories)
-    .where(and(eq(categories.tenantId, tenantId), eq(categories.name, JOLLY_CATEGORY)))
+    .where(and(eq(categories.tenantId, tenantId), ilike(categories.name, JOLLY_CATEGORY)))
     .limit(1);
 
-  let jollyCategoryId = existingJollyCategory[0]?.id;
+  let jollyCategoryId: string | undefined = existingJollyCategory[0]?.id;
   if (jollyCategoryId) {
     log(`[B1] categoria "${JOLLY_CATEGORY}" già presente: ${jollyCategoryId}`);
   } else if (DRY_RUN) {
@@ -117,14 +127,14 @@ async function main() {
     log(`[B1] categoria "${JOLLY_CATEGORY}" creata → ${jollyCategoryId}`);
   }
 
-  // ── B2: the JOLLY product (price 0, is_jolly = 1 for the ad-hoc field) ──
+  // ── B2: the JOLLY product (price 0, is_jolly = 1 → POS-only line) ──────
   const existingJollyItem = await db
     .select({ id: menuItems.id })
     .from(menuItems)
     .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.name, JOLLY_ITEM)))
     .limit(1);
 
-  let jollyItemId = existingJollyItem[0]?.id;
+  let jollyItemId: string | undefined = existingJollyItem[0]?.id;
   if (jollyItemId) {
     log(`[B2] prodotto "${JOLLY_ITEM}" già presente: ${jollyItemId}`);
   } else if (DRY_RUN) {
@@ -149,6 +159,8 @@ async function main() {
   }
 
   // ── B3: "Le due metà" group — one option per pizza at price/2, sum, ≤2 ──
+  // required + minSelections=1: the POS disables "Aggiungi" until at least one
+  // half is picked, so a JOLLY can never be sold at €0,00.
   const existingHalfGroups = await db
     .select({ id: menuModifierGroups.id })
     .from(menuModifierGroups)
@@ -164,7 +176,7 @@ async function main() {
   if (existingHalfGroups.length > 0) {
     log(`[B3] group "${HALF_GROUP}" già presente: ${existingHalfGroups[0].id} (lasciato invariato)`);
   } else if (DRY_RUN) {
-    log(`[B3] (dry-run) creerei il group "${HALF_GROUP}" con ${pizzas.length} opzioni a prezzo/2`);
+    log(`[B3] (dry-run) creerei il group "${HALF_GROUP}" con ${pizzas.length} opzioni a prezzo/2 (obbligatorio, min 1)`);
   } else {
     if (!jollyItemId) throw new Error("JOLLY product is required to create the halves group");
     const halfGroupId = newId("mg");
@@ -173,8 +185,8 @@ async function main() {
       tenantId,
       menuItemId: jollyItemId,
       name: HALF_GROUP,
-      required: 0,
-      minSelections: 0,
+      required: 1,
+      minSelections: 1,
       maxSelections: 2,
       multiSelectPriceMode: "sum",
       sortOrder: 0,
@@ -276,6 +288,130 @@ async function main() {
     log(`[B5] categoria "${JOLLY_CATEGORY}" nascosta dal menu pubblico`);
   }
 
+  // ── B6: link every PIZZERIA pool to the JOLLY category ────────────────
+  // A pool can serve several categories (category_modifier_pool_categories).
+  // The JOLLY line lives in its own category, so with no links it would offer
+  // neither the ×2 nor the gluten-free upgrade — nor the "AGGIUNTA" pool that
+  // feeds "Personalizza". A JOLLY is two pizza halves: every pool that applies
+  // to PIZZERIA applies to it (MAXI, Senza glutine, AGGIUNTA, and anything
+  // added later).
+  let jollyPoolNames: string[] = [];
+  if (!jollyCategoryId) {
+    log(`[B6] (dry-run) collegherei i pool di "${PIZZERIA_CATEGORY}" alla categoria "${JOLLY_CATEGORY}"`);
+    jollyPoolNames = [MAXI_POOL, GLUTEN_FREE_POOL];
+  } else {
+    const tenantPools = await db
+      .select({
+        id: categoryModifierPools.id,
+        name: categoryModifierPools.name,
+        categoryId: categoryModifierPools.categoryId,
+      })
+      .from(categoryModifierPools)
+      .where(eq(categoryModifierPools.tenantId, tenantId));
+    const named = (needle: string) =>
+      tenantPools.filter((pool) => pool.name.trim().toLowerCase().includes(needle));
+
+    // Pools reachable from a pizza: legacy single-category column + join rows.
+    const pizzeriaPoolIds = new Set<string>();
+    for (const pool of tenantPools) {
+      if (pool.categoryId && pool.categoryId === pizzeriaCategoryId) pizzeriaPoolIds.add(pool.id);
+    }
+    const pizzeriaLinks = await db
+      .select({ poolId: categoryModifierPoolCategories.poolId })
+      .from(categoryModifierPoolCategories)
+      .where(
+        and(
+          eq(categoryModifierPoolCategories.tenantId, tenantId),
+          eq(categoryModifierPoolCategories.categoryId, pizzeriaCategoryId),
+        ),
+      );
+    for (const link of pizzeriaLinks) pizzeriaPoolIds.add(link.poolId);
+
+    const byId = new Map<string, { id: string; name: string }>();
+    for (const pool of tenantPools) {
+      if (pizzeriaPoolIds.has(pool.id)) byId.set(pool.id, pool);
+    }
+    // Named lookups stay as a safety net (they also catch a pool created by
+    // B4 before it was ever linked to a category).
+    for (const pool of [...named(MAXI_POOL.toLowerCase()), ...named(GLUTEN_FREE_POOL)]) {
+      byId.set(pool.id, pool);
+    }
+    const targets = [...byId.values()];
+    jollyPoolNames = targets.map((pool) => pool.name);
+
+    if (named(MAXI_POOL.toLowerCase()).length === 0) {
+      log(`[B6] ATTENZIONE: pool "${MAXI_POOL}" non trovato: esegui prima B4`);
+    }
+    if (named(GLUTEN_FREE_POOL).length === 0) {
+      log(`[B6] ATTENZIONE: nessun pool "${GLUTEN_FREE_POOL}" trovato per ${TENANT_SLUG}`);
+    }
+    if (targets.length === 0) {
+      log(`[B6] ATTENZIONE: nessun pool collegato a "${PIZZERIA_CATEGORY}": niente da collegare al JOLLY`);
+    }
+
+    for (const pool of targets) {
+      const [existingLink] = await db
+        .select({ id: categoryModifierPoolCategories.id })
+        .from(categoryModifierPoolCategories)
+        .where(
+          and(
+            eq(categoryModifierPoolCategories.tenantId, tenantId),
+            eq(categoryModifierPoolCategories.poolId, pool.id),
+            eq(categoryModifierPoolCategories.categoryId, jollyCategoryId),
+          ),
+        )
+        .limit(1);
+
+      if (existingLink) {
+        log(`[B6] pool "${pool.name}" già collegato alla categoria "${JOLLY_CATEGORY}"`);
+      } else if (DRY_RUN) {
+        log(`[B6] (dry-run) collegherei il pool "${pool.name}" alla categoria "${JOLLY_CATEGORY}"`);
+      } else {
+        await db.insert(categoryModifierPoolCategories).values({
+          id: newId("cmpc"),
+          tenantId,
+          poolId: pool.id,
+          categoryId: jollyCategoryId,
+        });
+        log(`[B6] pool "${pool.name}" collegato alla categoria "${JOLLY_CATEGORY}"`);
+      }
+    }
+  }
+
+  // ── B7: "Le due metà" required → an empty (€0,00) JOLLY cannot be sold ──
+  const halfGroupRows = await db
+    .select({
+      id: menuModifierGroups.id,
+      required: menuModifierGroups.required,
+      minSelections: menuModifierGroups.minSelections,
+    })
+    .from(menuModifierGroups)
+    .where(
+      and(
+        eq(menuModifierGroups.tenantId, tenantId),
+        eq(menuModifierGroups.menuItemId, jollyItemId ?? ""),
+        eq(menuModifierGroups.name, HALF_GROUP),
+      ),
+    )
+    .limit(1);
+  const halfGroup = halfGroupRows[0];
+
+  // NB: the live `required` column is BOOLEAN (schema.ts declares integer): the
+  // driver hands back `true`, so a `=== 1` test would re-apply this on every run.
+  if (!halfGroup) {
+    log(`[B7] gruppo "${HALF_GROUP}" non trovato: esegui prima B3`);
+  } else if (Boolean(halfGroup.required) && halfGroup.minSelections >= 1) {
+    log(`[B7] gruppo "${HALF_GROUP}" già obbligatorio (min 1 selezione)`);
+  } else if (DRY_RUN) {
+    log(`[B7] (dry-run) renderei obbligatorio il gruppo "${HALF_GROUP}" (min 1 selezione)`);
+  } else {
+    await db
+      .update(menuModifierGroups)
+      .set({ required: 1, minSelections: 1 })
+      .where(eq(menuModifierGroups.id, halfGroup.id));
+    log(`[B7] gruppo "${HALF_GROUP}" ora obbligatorio (min 1 selezione)`);
+  }
+
   log("\n=== RIEPILOGO ===");
   log(
     JSON.stringify(
@@ -285,7 +421,10 @@ async function main() {
         pizzeriaCategory: pizzeriaCategoryId,
         jollyCategory: jollyCategoryId ?? "(da creare)",
         halfGroup: HALF_GROUP,
+        halfGroupRequired: "min 1 selezione",
         maxiPool: MAXI_POOL,
+        glutenFreePool: GLUTEN_FREE_POOL,
+        jollyPoolsLinked: jollyPoolNames,
         pizzas: pizzas.length,
         sampleHalves: pizzas.slice(0, 3).map((pizza) => ({
           pizza: pizza.name,

@@ -4,7 +4,7 @@ import {  tables, orders, orderItems, payments, paymentItems,
   reservations, deliveryOrders, printJobs, fiscalJobs, appSettings, menuItems,
   menuModifierGroups, menuModifierOptions, menuModifierOptionOverrides,
   categories, categoryModifierPools, categoryModifierPoolOptions, inventory,
-  printStations,
+  printStations, selfOrderSessions,
 } from "../db/schema";
 import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull, type SQL } from "drizzle-orm";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
@@ -225,7 +225,7 @@ export class TablesRepository {
     const rows = await db
       .select()
       .from(tables)
-      .where(eq(tables.tenantId, tenantId))
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.isActive, 1)))
       .orderBy(tables.number);
 
     return rows.map((row) => ({
@@ -243,11 +243,12 @@ export class TablesRepository {
     const parsed = tableCreateRequestSchema.parse(payload);
     const id = `tbl_${crypto.randomUUID()}`;
 
-    // Check for duplicate table number
+    // Check for duplicate table number (soft-deleted tables don't count: their
+    // number is free to reuse thanks to the partial unique index).
     const existing = await db
       .select()
       .from(tables)
-      .where(and(eq(tables.tenantId, tenantId), eq(tables.number, parsed.number)))
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.number, parsed.number), eq(tables.isActive, 1)))
       .limit(1);
 
     if (existing.length > 0) {
@@ -263,6 +264,7 @@ export class TablesRepository {
         status: "free",
         currentOrderId: null,
         zone: parsed.zone ?? null,
+        isActive: 1,
       })
       .returning();
 
@@ -282,11 +284,12 @@ export class TablesRepository {
     const now = new Date();
     const created: Table[] = [];
 
-    // Find the highest existing table number to continue from
+    // Find the highest existing table number to continue from. Only active
+    // tables count: a soft-deleted number is free to reuse.
     const existingRows = await db
       .select({ number: tables.number })
       .from(tables)
-      .where(eq(tables.tenantId, tenantId));
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.isActive, 1)));
 
     const existingNumbers = new Set(existingRows.map((r) => r.number));
 
@@ -316,6 +319,7 @@ export class TablesRepository {
           status: "free",
           currentOrderId: null,
           zone: parsed.zone ?? null,
+          isActive: 1,
         })
         .returning();
 
@@ -338,19 +342,19 @@ export class TablesRepository {
     const existing = await db
       .select()
       .from(tables)
-      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id)))
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id), eq(tables.isActive, 1)))
       .limit(1);
 
     if (existing.length === 0) {
       return null;
     }
 
-    // If updating number, check for duplicates
+    // If updating number, check for duplicates among active tables
     if (parsed.number !== undefined) {
       const duplicate = await db
         .select()
         .from(tables)
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.number, parsed.number), ne(tables.id, id)))
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.number, parsed.number), ne(tables.id, id), eq(tables.isActive, 1)))
         .limit(1);
 
       if (duplicate.length > 0) {
@@ -384,21 +388,55 @@ export class TablesRepository {
     const existing = await db
       .select()
       .from(tables)
-      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id)))
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id), eq(tables.isActive, 1)))
       .limit(1);
 
-    if (existing.length === 0) {
+    const table = existing[0];
+    if (!table) {
       return false;
     }
 
-    // Cannot delete table with active order
-    if (existing[0].currentOrderId) {
+    // Cannot remove a table still in service: a bound order or a non-free
+    // status (occupied/suspended/reserved) must be settled first.
+    if (table.currentOrderId || table.status !== "free") {
       throw new Error("Cannot delete a table with an active order");
     }
 
-    await db
-      .delete(tables)
-      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id)));
+    // Belt-and-braces: dine-in orders mark the table occupied but (unlike the
+    // virtual takeaway/delivery path) do NOT set current_order_id, so also
+    // block when any open order still references this table number.
+    const openOrder = await db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableNumber, table.number),
+        ne(orders.status, "paid"),
+        ne(orders.status, "cancelled"),
+      ))
+      .limit(1);
+    if (openOrder.length > 0) {
+      throw new Error("Cannot delete a table with an active order");
+    }
+
+    // Soft-delete: flip is_active and retire any self-order QR for the table.
+    // The row survives, so payment/order history and the `payments.table_id`
+    // FK (ON DELETE RESTRICT) stay valid, and the number becomes reusable.
+    await db.transaction(async (tx) => {
+      await tx
+        .update(tables)
+        .set({ isActive: 0, currentOrderId: null, status: "free" })
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id)));
+
+      await tx
+        .update(selfOrderSessions)
+        .set({ isActive: 0, updatedAt: new Date() })
+        .where(and(
+          eq(selfOrderSessions.tenantId, tenantId),
+          eq(selfOrderSessions.tableId, id),
+          eq(selfOrderSessions.isActive, 1),
+        ));
+    });
 
     return true;
   }
@@ -1605,7 +1643,7 @@ export class TablesRepository {
       const sourceRows = await tx
         .select()
         .from(tables)
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId)))
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId), eq(tables.isActive, 1)))
         .limit(1);
       const sourceTable = sourceRows[0];
       if (!sourceTable) {
@@ -1615,7 +1653,7 @@ export class TablesRepository {
       const targetRows = await tx
         .select()
         .from(tables)
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, parsed.targetTableId)))
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, parsed.targetTableId), eq(tables.isActive, 1)))
         .limit(1);
       const targetTable = targetRows[0];
       if (!targetTable) {
@@ -1650,7 +1688,7 @@ export class TablesRepository {
       const sourceRows = await tx
         .select()
         .from(tables)
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId)))
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId), eq(tables.isActive, 1)))
         .limit(1);
       const sourceTable = sourceRows[0];
       if (!sourceTable) {
@@ -1660,7 +1698,7 @@ export class TablesRepository {
       const targetRows = await tx
         .select()
         .from(tables)
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, parsed.targetTableId)))
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, parsed.targetTableId), eq(tables.isActive, 1)))
         .limit(1);
       const targetTable = targetRows[0];
       if (!targetTable) {

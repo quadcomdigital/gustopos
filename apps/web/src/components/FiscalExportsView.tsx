@@ -251,7 +251,7 @@ export default function FiscalExportsView() {
           <tr><th>ID</th><th>Stato</th><th>Generato</th></tr>
           ${items.map(item => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.generatedAt)}</td></tr>`).join('')}
         </table>
-        <p style="margin-top:20px; font-size:10px; color:#666;">Generato da GustoPOS — ${new Date().toLocaleString()}</p>
+        <p style="margin-top:20px; font-size:10px; color:#666;">Generato da OmniRestaurant — ${new Date().toLocaleString()}</p>
       </body>
       </html>
     `;

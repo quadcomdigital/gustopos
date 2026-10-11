@@ -48,7 +48,7 @@ const mockData = {
   prepItems: [],
   categories: [],
   categoryModifierPools: [],
-  uiSettings: { brandName: 'Test', theme: { bg: '#fff', textMain: '#000', textMuted: '#666', primary: '#000', accent: '#000', secondary: '#000', border: '#ccc', surface: '#f5f5f5', success: '#0f0', danger: '#f00', warning: '#ff0', info: '#00f' }, taxRate: 0.1, printing: { protocol: 'disabled' as const, logoMode: 'none' as const, logoWidth: 384, logoThreshold: 128, activeAreas: [], receiptFooter: '', autoPrintKitchen: false, autoPrintOnClose: false } },
+  uiSettings: { brandName: 'Test', theme: { bg: '#fff', textMain: '#000', textMuted: '#666', primary: '#000', accent: '#000', secondary: '#000', border: '#ccc', surface: '#f5f5f5', success: '#0f0', danger: '#f00', warning: '#ff0', info: '#00f' }, taxRate: 0.1, printing: { protocol: 'disabled' as const, logoMode: 'none' as const, logoWidth: 384, logoThreshold: 128, activeStationIds: [], receiptFooter: '', autoPrintKitchen: false, autoPrintOnClose: false } },
 };
 
 vi.mock('../../store/app-store', () => ({

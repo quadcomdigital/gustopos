@@ -16,6 +16,7 @@ import {
   SimpleCatalogRoute,
   TablesRoute,
   CustomersRoute,
+  GroupOrdersRoute,
 } from './backoffice/routes/module-routes';
 
 const SuperadminPage = lazy(() => import('../pages/SuperadminPage'));
@@ -53,6 +54,7 @@ export function AppRouter() {
         <Route path="purchasing" element={<BackofficeRouteGuard routeKey="purchasing"><PurchasingRoute /></BackofficeRouteGuard>} />
         <Route path="shifts" element={<BackofficeRouteGuard routeKey="shifts"><ShiftsRoute /></BackofficeRouteGuard>} />
         <Route path="fiscal" element={<BackofficeRouteGuard routeKey="fiscal"><FiscalRoute /></BackofficeRouteGuard>} />
+        <Route path="group-orders" element={<BackofficeRouteGuard routeKey="group-orders"><GroupOrdersRoute /></BackofficeRouteGuard>} />
         <Route path="customers" element={<BackofficeRouteGuard routeKey="customers"><CustomersRoute /></BackofficeRouteGuard>} />
         <Route path="settings" element={<BackofficeRouteGuard routeKey="settings"><SettingsRoute /></BackofficeRouteGuard>} />
         <Route path="customers/:customerId" element={<BackofficeRouteGuard routeKey="customers"><Suspense fallback={<PageFallback />}><CustomerDetailPage /></Suspense></BackofficeRouteGuard>} />
@@ -76,6 +78,7 @@ export function AppRouter() {
           <Route path="purchasing" element={<BackofficeRouteGuard routeKey="purchasing"><PurchasingRoute /></BackofficeRouteGuard>} />
           <Route path="shifts" element={<BackofficeRouteGuard routeKey="shifts"><ShiftsRoute /></BackofficeRouteGuard>} />
           <Route path="fiscal" element={<BackofficeRouteGuard routeKey="fiscal"><FiscalRoute /></BackofficeRouteGuard>} />
+          <Route path="group-orders" element={<BackofficeRouteGuard routeKey="group-orders"><GroupOrdersRoute /></BackofficeRouteGuard>} />
           <Route path="customers" element={<BackofficeRouteGuard routeKey="customers"><CustomersRoute /></BackofficeRouteGuard>} />
           <Route path="settings" element={<BackofficeRouteGuard routeKey="settings"><SettingsRoute /></BackofficeRouteGuard>} />
           <Route path="customers/:customerId" element={<BackofficeRouteGuard routeKey="customers"><Suspense fallback={<PageFallback />}><CustomerDetailPage /></Suspense></BackofficeRouteGuard>} />

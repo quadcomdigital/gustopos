@@ -38,11 +38,8 @@ function validUiSettings(): Record<string, unknown> {
       textMuted: '#64748b',
     },
     printing: {
-      kitchenPrinterName: '',
-      cashierPrinterName: '',
-      barPrinterName: '',
       protocol: 'escpos',
-      activeAreas: ['kitchen'],
+      activeStationIds: [],
       autoPrintKitchen: true,
       autoPrintOnClose: true,
       logoMode: 'none',

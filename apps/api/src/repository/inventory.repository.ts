@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { db, withTenantTx } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
+import { hasTenantOverrideFor } from "../tenant/tenant-overrides";
+import { normalizeTicketName } from "../orders/ticket-names";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { syncMenuModifierGroups } from "./utils/sync-menu-modifier-groups";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, SQL, lt, gte, lte } from "drizzle-orm";
@@ -71,6 +73,7 @@ import {
   categoryModifierPoolCategories,
   menuItems,
   menuItemComponents,
+  orderItems,
   orderStockImpacts,
   menuModifierGroups,
   menuModifierOptions,
@@ -140,6 +143,7 @@ export class InventoryRepository {
       name: row.name,
       scope: categoryScopeSchema.parse(row.scope),
       isActive: row.isActive === 1,
+      sortOrder: row.sortOrder,
       stationId: row.stationId,
       referenceId: row.referenceId,
       printAreas: parsePrintAreas(row.printAreas),
@@ -280,6 +284,15 @@ export class InventoryRepository {
   /** Full admin menu mapping: recipe (resolved names), modifiers, groups. Public so SimpleCatalogRepository can reuse it. */
   async mapMenuItemsAdmin(): Promise<MenuItemAdmin[]> {
     const tenantId = getTenantIdOrDefault();
+    // JOLLY (a POS-only line whose price is composed by its selections) is a
+    // per-tenant capability: tenants that never opted into it must not see the
+    // flag at all, so the POS treats it as an ordinary product.
+    const jollyEnabled = hasTenantOverrideFor("jolly");
+    // Open-price (waiter types the price by hand) is a per-tenant capability:
+    // tenants that never opted into it must not see the flag at all.
+    const openPriceEnabled = hasTenantOverrideFor("openPrice");
+    // The ×2 (MAXI) modifier multiplier is a per-tenant capability too.
+    const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
     const [menuRows, canonicalRows, inventoryRows, bomItemRows, prepItemRows, modifierGroupRows, modifierOptionRows, overrideRows] = await Promise.all([
       db.select().from(menuItems).where(eq(menuItems.tenantId, tenantId)),
       db.select().from(menuItemComponents).where(eq(menuItemComponents.tenantId, tenantId)),
@@ -326,8 +339,10 @@ export class InventoryRepository {
     }
     const optionsByGroupId = new Map<string, any[]>();
     for (const opt of modifierOptionRows) {
+      // The ×2 (MAXI) multiplier is a per-tenant capability: the admin editor
+      // receives null without the override, mirroring the pool read path.
       const existing = optionsByGroupId.get(opt.groupId) ?? [];
-      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, referenceId: opt.referenceId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
+      existing.push({ id: opt.id, name: opt.name, inventoryItemId: opt.inventoryItemId ?? undefined, referenceId: opt.referenceId ?? undefined, componentType: (opt.componentType as "ingredient" | "prep" | "bom") ?? "ingredient", componentId: opt.componentId ?? opt.inventoryItemId ?? undefined, quantity: Number(opt.quantity ?? 1), unit: (opt.unit as string) ?? "pz", priceDelta: Number(opt.priceDelta), priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null, isDefault: Boolean(opt.isDefault), isActive: Boolean(opt.isActive), sortOrder: opt.sortOrder ?? 0, ingredientOverrides: overridesByOptionId.get(opt.id) ?? [] });
       optionsByGroupId.set(opt.groupId, existing);
     }
     const modifierGroupsByMenuId = new Map<string, any[]>();
@@ -344,7 +359,11 @@ export class InventoryRepository {
     return menuItemAdminListResponseSchema.parse(menuRows.map((row) => menuItemAdminSchema.parse({
       id: row.id, name: row.name, price: Number(row.price), category: row.category, categoryId: row.categoryId ?? undefined,
       stationId: row.stationId, referenceId: row.referenceId,
-      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1, isJolly: row.isJolly === 1,
+      // Internal comanda name (null = print `name`); admin-only DTO, never
+      // part of the public menu payload.
+      ticketName: row.ticketName ?? null,
+      printAreas: parsePrintAreas(row.printAreas), isActive: row.isActive === 1, isJolly: jollyEnabled && row.isJolly === 1,
+      isOpenPrice: openPriceEnabled && row.isOpenPrice === 1,
       recipe: recipeByMenuId.get(row.id) ?? [], modifiers: [], modifierGroups: modifierGroupsByMenuId.get(row.id) ?? [],
     })));
   }
@@ -1296,49 +1315,99 @@ const result = await db
 return (result.rowCount ?? 0) > 0;
   }
 
-  async listCategories(scope?: Category["scope"]): Promise<{ id: string; name: string; scope: "ingredient" | "bom" | "menu"; isActive: boolean; printAreas: ("kitchen" | "bar" | "cashier")[]; createdAt: string; updatedAt: string; }[]> {
+  async listCategories(scope?: Category["scope"]): Promise<Category[]> {
 const tenantId = getTenantIdOrDefault();
+// Tenant-owned order first, name as the tie-break: rows never reordered all
+// carry 0 and therefore stay alphabetical exactly like before.
 const rows = scope
   ? await db
       .select()
       .from(categories)
       .where(and(eq(categories.tenantId, tenantId), eq(categories.scope, scope)))
-      .orderBy(categories.name)
-  : await db.select().from(categories).where(eq(categories.tenantId, tenantId)).orderBy(categories.name);
+      .orderBy(categories.sortOrder, categories.name)
+  : await db.select().from(categories).where(eq(categories.tenantId, tenantId)).orderBy(categories.sortOrder, categories.name);
 return categoriesListResponseSchema.parse(rows.map((row) => this.mapCategoryRow(row)));
   }
 
-  async createCategory(payload: CategoryCreateRequest): Promise<{ id: string; name: string; scope: "ingredient" | "bom" | "menu"; isActive: boolean; printAreas: ("kitchen" | "bar" | "cashier")[]; createdAt: string; updatedAt: string; }> {
+  /** Next free `sortOrder` inside a scope: new categories are appended. */
+  private async nextCategorySortOrder(tx: typeof db, tenantId: string, scope: Category["scope"]): Promise<number> {
+const rows = await tx
+  .select({ sortOrder: categories.sortOrder })
+  .from(categories)
+  .where(and(eq(categories.tenantId, tenantId), eq(categories.scope, scope)));
+return rows.reduce((max, row) => Math.max(max, row.sortOrder), -1) + 1;
+  }
+
+  /**
+   * Persist a tenant's category order: `ids` is the full list of one scope in
+   * the wanted order, renumbered 0..n-1 inside that scope. Ids of another
+   * tenant are ignored (no cross-tenant writes); ids of other scopes are
+   * renumbered only among themselves, so the three groups never collide.
+   */
+  async reorderCategories(ids: string[]): Promise<number> {
+const tenantId = getTenantIdOrDefault();
+let updated = 0;
+await withTenantTx(async (tx) => {
+  const rows = await tx
+    .select({ id: categories.id, scope: categories.scope })
+    .from(categories)
+    .where(eq(categories.tenantId, tenantId));
+  const known = new Map(rows.map((row) => [row.id, row.scope] as const));
+  const cursor = new Map<string, number>();
+  for (const id of ids) {
+    const scope = known.get(id);
+    if (!scope) continue;
+    const position = cursor.get(scope) ?? 0;
+    await tx
+      .update(categories)
+      .set({ sortOrder: position, updatedAt: new Date() })
+      .where(and(eq(categories.tenantId, tenantId), eq(categories.id, id)));
+    cursor.set(scope, position + 1);
+    updated += 1;
+  }
+});
+return updated;
+  }
+
+  async createCategory(payload: CategoryCreateRequest): Promise<Category> {
  const parsed = categoryCreateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
 const id = parsed.id?.trim() || `cat_${Date.now().toString(36)}`;
-const inserted = await db
-  .insert(categories)
-  .values({
-    id,
-    tenantId,
-    name: parsed.name.trim(),
-    scope: parsed.scope,
-    stationId: parsed.stationId ?? null,
-    referenceId: parsed.referenceId ?? null,
-    printAreas: JSON.stringify(parsed.printAreas),
-    isActive: 1,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  })
-  .returning();
+return withTenantTx(async (tx) => {
+  const sortOrder = parsed.sortOrder ?? (await this.nextCategorySortOrder(tx, tenantId, parsed.scope));
+  const inserted = await tx
+    .insert(categories)
+    .values({
+      id,
+      tenantId,
+      name: parsed.name.trim(),
+      scope: parsed.scope,
+      sortOrder,
+      stationId: parsed.stationId ?? null,
+      referenceId: parsed.referenceId ?? null,
+      printAreas: JSON.stringify(parsed.printAreas),
+      isActive: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .returning();
 
-return this.mapCategoryRow(inserted[0]);
+  return this.mapCategoryRow(inserted[0]);
+});
   }
 
-  async updateCategory(id: string, payload: CategoryUpdateRequest): Promise<{ id: string; name: string; scope: "ingredient" | "bom" | "menu"; isActive: boolean; printAreas: ("kitchen" | "bar" | "cashier")[]; createdAt: string; updatedAt: string; } | null> {
+  async updateCategory(id: string, payload: CategoryUpdateRequest): Promise<Category | null> {
 const parsed = categoryUpdateRequestSchema.parse(payload);
 const tenantId = getTenantIdOrDefault();
-const updated = await db
+const nextName = parsed.name ? parsed.name.trim() : undefined;
+
+return withTenantTx(async (tx) => {
+  const updated = await tx
   .update(categories)
   .set({
-    ...(parsed.name ? { name: parsed.name.trim() } : {}),
+    ...(nextName !== undefined ? { name: nextName } : {}),
     ...(parsed.isActive !== undefined ? { isActive: parsed.isActive ? 1 : 0 } : {}),
+    ...(parsed.sortOrder !== undefined ? { sortOrder: parsed.sortOrder } : {}),
     ...(parsed.stationId !== undefined ? { stationId: parsed.stationId } : {}),
     ...(parsed.referenceId !== undefined ? { referenceId: parsed.referenceId } : {}),
     ...(parsed.printAreas ? { printAreas: JSON.stringify(parsed.printAreas) } : {}),
@@ -1347,11 +1416,24 @@ const updated = await db
   .where(and(eq(categories.tenantId, tenantId), eq(categories.id, id)))
   .returning();
 
-if (updated.length === 0) {
-  return null;
-}
+  if (updated.length === 0) {
+    return null;
+  }
 
-return this.mapCategoryRow(updated[0]);
+  // `menu_items.category` holds a denormalized copy of the category NAME that
+  // legacy consumers still read (POS product cards, food-cost matrix). Renaming
+  // the category used to leave that copy behind, so name-based matching slowly
+  // drifted apart — casale's "PIZZERIA" pill filtered on the stale "Pizzeria"
+  // text and came back empty. Keep the copy in step with its source.
+  if (nextName !== undefined) {
+    await tx
+      .update(menuItems)
+      .set({ category: nextName, updatedAt: new Date() })
+      .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.categoryId, id)));
+  }
+
+  return this.mapCategoryRow(updated[0]);
+});
   }
 
   async deleteCategory(id: string): Promise<boolean> {
@@ -1400,6 +1482,10 @@ return true;
 
   async listCategoryModifierPools(categoryId?: string): Promise<CategoryModifierPool[]> {
 const tenantId = getTenantIdOrDefault();
+// The ×2 (MAXI) multiplier is a per-tenant capability: without the override
+// the editor receives null on every option and therefore cannot show (or
+// re-save) a multiplier it is not entitled to.
+const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
 const conditions: SQL[] = [eq(categoryModifierPools.tenantId, tenantId)];
 
 const groupRows = await db
@@ -1429,7 +1515,7 @@ for (const opt of optionRows) {
     unit: opt.unit ?? "pz",
     priceDelta: Number(opt.priceDelta),
     // Nullable in DB: keep "unset" as undefined so legacy pricing is unchanged.
-    priceMultiplier: opt.priceMultiplier == null ? null : Number(opt.priceMultiplier),
+    priceMultiplier: multiplierEnabled && opt.priceMultiplier != null ? Number(opt.priceMultiplier) : null,
     isActive: opt.isActive !== 0,
     sortOrder: opt.sortOrder ?? 0,
   });
@@ -1471,6 +1557,7 @@ await db.insert(categoryModifierPools).values({
   tenantId,
   categoryId: payload.categoryIds[0] ?? null,
   name: payload.name,
+  sortOrder: payload.sortOrder ?? 0,
 });
 
 if (payload.categoryIds.length > 0) {
@@ -1485,6 +1572,10 @@ if (payload.categoryIds.length > 0) {
 }
 
 if (payload.options.length > 0) {
+  // The ×2 (MAXI) multiplier is a per-tenant capability: tenants that never
+  // opted into it never persist one, so a stray payload cannot smuggle a
+  // price-scaling option into their catalog.
+  const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
   await db.insert(categoryModifierPoolOptions).values(
     payload.options.map((opt, idx) => ({
       id: `cmpo_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
@@ -1499,7 +1590,7 @@ if (payload.options.length > 0) {
       unit: opt.unit ?? "pz",
       priceDelta: String(opt.priceDelta),
       // Nullable: null keeps legacy additive-only pricing.
-      priceMultiplier: opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
+      priceMultiplier: !multiplierEnabled || opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
       isActive: opt.isActive === false ? 0 : 1,
       sortOrder: idx,
     })),
@@ -1517,6 +1608,15 @@ if (payload.name !== undefined) {
   await db
     .update(categoryModifierPools)
     .set({ name: payload.name })
+    .where(and(eq(categoryModifierPools.tenantId, tenantId), eq(categoryModifierPools.id, id)));
+}
+
+// Display order of the pool inside its category. Kept separate from the
+// options replacement below: reordering must never re-mint option ids.
+if (payload.sortOrder !== undefined) {
+  await db
+    .update(categoryModifierPools)
+    .set({ sortOrder: payload.sortOrder })
     .where(and(eq(categoryModifierPools.tenantId, tenantId), eq(categoryModifierPools.id, id)));
 }
 
@@ -1543,6 +1643,9 @@ if (payload.options !== undefined) {
     .where(and(eq(categoryModifierPoolOptions.tenantId, tenantId), eq(categoryModifierPoolOptions.poolId, id)));
 
   if (payload.options.length > 0) {
+    // Same capability gate as create: options are replaced wholesale, so a
+    // tenant without the override must not gain a ×2 through the update path.
+    const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
     await db.insert(categoryModifierPoolOptions).values(
       payload.options.map((opt, idx) => ({
         // The update contract omits `id` (options are replaced wholesale), so a
@@ -1558,7 +1661,7 @@ if (payload.options !== undefined) {
         quantity: String(opt.quantity ?? 1),
         unit: opt.unit ?? "pz",
         priceDelta: String(opt.priceDelta),
-        priceMultiplier: opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
+        priceMultiplier: !multiplierEnabled || opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
         isActive: opt.isActive === false ? 0 : 1,
         sortOrder: idx,
       })),
@@ -1743,6 +1846,7 @@ return this.mapMenuItemsAdmin();
         id: menuId,
         tenantId,
         name: parsed.name,
+        ticketName: normalizeTicketName(parsed.ticketName),
         price: String(parsed.price),
         category: parsed.category,
         categoryId: parsed.categoryId ?? null,
@@ -1774,6 +1878,7 @@ return this.mapMenuItemsAdmin();
       return menuProductResponseSchema.parse({
         id: menuId,
         name: parsed.name,
+        ticketName: normalizeTicketName(parsed.ticketName),
         price: parsed.price,
         category: parsed.category,
         categoryId: parsed.categoryId,
@@ -1809,6 +1914,7 @@ return this.mapMenuItemsAdmin();
     return withTenantTx(async (tx) => {
       const scalarUpdates: Partial<Record<string, unknown>> = {};
       if (parsed.name !== undefined) scalarUpdates.name = parsed.name;
+      if (parsed.ticketName !== undefined) scalarUpdates.ticketName = normalizeTicketName(parsed.ticketName);
       if (parsed.category !== undefined) scalarUpdates.category = parsed.category;
       if (parsed.categoryId !== undefined) scalarUpdates.categoryId = parsed.categoryId ?? null;
       if (parsed.stationId !== undefined) scalarUpdates.stationId = parsed.stationId;
@@ -1889,6 +1995,17 @@ return this.mapMenuItemsAdmin();
     await syncMenuModifierGroups(tx, tenantId, menuItemId, groups);
   }
 
+  /**
+   * Hard delete of a product.
+   *
+   * `order_items.menu_item_id` carries NO foreign key (the line keeps its own
+   * denormalised name/price), so nothing stops a blind delete — it would just
+   * orphan the order history, break any open POS tab or group cart pointing at
+   * the id, and the unique index on (tenant, name) would then refuse a
+   * re-creation of the same product. A product that was ever sold is therefore
+   * NOT deletable: the caller must archive it instead
+   * (`POST /api/menu/:id/disable`), which is reversible and keeps history.
+   */
   async deleteMenuItem(id: string): Promise<boolean> {
 const tenantId = getTenantIdOrDefault();
 const existing = await db
@@ -1900,11 +2017,24 @@ if (existing.length === 0) {
   return false;
 }
 
-await db
-  .delete(menuItems)
-  .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)));
+const usage = await db
+  .select({ count: sql<number>`count(*)::int` })
+  .from(orderItems)
+  .where(and(eq(orderItems.tenantId, tenantId), eq(orderItems.menuItemId, id)));
+const soldIn = usage[0]?.count ?? 0;
+if (soldIn > 0) {
+  throw new Error(
+    `Impossibile eliminare: il prodotto risulta in ${soldIn} ordini. ` +
+    "Disattivalo (archiviazione) per nasconderlo dal POS senza toccare lo storico.",
+  );
+}
 
-return true;
+return withTenantTx(async (tx) => {
+  await tx
+    .delete(menuItems)
+    .where(and(eq(menuItems.tenantId, tenantId), eq(menuItems.id, id)));
+  return true;
+});
   }
 
   async getFoodCostMatrix(): Promise<{ rows: { menuItemId: string; menuItemName: string; category: string; ingredientId: string; ingredientName: string; quantity: number; unit: string; ingredientCost: number; totalCost: number; menuItemPrice: number; margin: number; marginPercent: number; recommendedPrice: number; status: "ok" | "needs_change"; }[]; summary: { menuItemId: string; menuItemName: string; category: string; totalCost: number; currentPrice: number; recommendedPrice: number; margin: number; marginPercent: number; status: "ok" | "needs_change"; ingredientCount: number; }[]; }> {

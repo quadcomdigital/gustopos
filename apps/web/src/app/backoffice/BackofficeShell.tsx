@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Receipt,
   Users,
+  UsersRound,
   Menu,
   X,
   LogOut,
@@ -24,8 +25,11 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import AppMark from '../../assets/brand/AppMark';
 import ToastHost from '../../components/ToastHost';
 import PwaInstallPrompt from '../../components/PwaInstallPrompt';
+import NotificationsPermissionCard from '../../components/NotificationsPermissionCard';
+import { usePushForegroundToasts } from '../../hooks/usePushForegroundToasts';
 import { useAppStore } from '../../store/app-store';
 import type { BackofficeRouteKey, BackofficeRouteMeta, RouteDomain } from './route-guards';
 
@@ -50,6 +54,7 @@ const ICONS: Record<BackofficeRouteKey, LucideIcon> = {
   shifts: ClipboardCheck,
   fiscal: Receipt,
   customers: Users,
+  'group-orders': UsersRound,
   settings: Settings,
 };
 
@@ -83,6 +88,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
   const location = useLocation();
   const posOrderMode = useAppStore((s) => s.posOrderMode);
   const posTableNumber = useAppStore((s) => s.posTableNumber);
+  const selectPosTable = useAppStore((s) => s.selectPosTable);
   const posMenuSearch = useAppStore((s) => s.posMenuSearch);
   const data = useAppStore((s) => s.data);
   const {
@@ -113,6 +119,10 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     }, 60_000);
     return () => window.clearInterval(id);
   }, []);
+
+  // Push payloads arriving while the app is focused become in-app toasts
+  // instead of system notifications (see public/sw.js).
+  usePushForegroundToasts();
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
@@ -194,8 +204,11 @@ export default function BackofficeShell(props: BackofficeShellProps) {
         {/* Left side: brand on desktop, POS pills on mobile */}
         <div className="flex items-center gap-2">
           {/* Desktop: brand name */}
-          <div className="hidden md:flex font-bold text-lg md:text-xl tracking-wider items-center gap-2">
-            {(uiBrandName || 'GUSTOPOS').toUpperCase()} <span className="font-light opacity-70 text-xs md:text-sm">| ENTERPRISE</span>
+          <div className="hidden md:flex items-center gap-2.5">
+            <AppMark variant="light" className="h-7 w-auto shrink-0" alt={uiBrandName || 'OmniRestaurant'} />
+            <span className="font-bold text-lg md:text-xl tracking-wider uppercase">
+              {uiBrandName || 'OmniRestaurant'}
+            </span>
           </div>
           {/* POS pills (only when on POS route) — visible on mobile + tablet */}
           {activeRouteKey === 'pos' && (
@@ -225,8 +238,11 @@ export default function BackofficeShell(props: BackofficeShellProps) {
           )}
           {/* Mobile: brand name when not on POS */}
           {activeRouteKey !== 'pos' && (
-            <div className="md:hidden font-bold text-lg tracking-wider">
-              {(uiBrandName || 'GUSTOPOS').toUpperCase()}
+            <div className="md:hidden flex items-center gap-2">
+              <AppMark variant="light" className="h-6 w-auto shrink-0" alt={uiBrandName || 'OmniRestaurant'} />
+              <span className="font-bold text-base tracking-wider uppercase">
+                {uiBrandName || 'OmniRestaurant'}
+              </span>
             </div>
           )}
         </div>
@@ -456,6 +472,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
       </footer>
       <ToastHost />
       <PwaInstallPrompt />
+      <NotificationsPermissionCard />
 
       {/* ============ MODE PICKER MODAL ============ */}
       <AnimatePresence>
@@ -537,7 +554,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
                       <button
                         key={table.id}
                         onClick={() => {
-                          useAppStore.setState({ posTableNumber: table.number });
+                          selectPosTable(table.id, table.number);
                           setShowTablePicker(false);
                         }}
                         className={cn(

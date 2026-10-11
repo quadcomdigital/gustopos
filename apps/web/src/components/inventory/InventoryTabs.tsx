@@ -54,6 +54,8 @@ interface InventoryTabsProps {
   onCreateCategory?: (payload: CategoryCreateRequest) => Promise<void>;
   onUpdateCategory?: (id: string, payload: CategoryUpdateRequest) => Promise<void>;
   onDeleteCategory?: (id: string) => Promise<void>;
+  /** Full id list of one scope, in the order the tenant wants. */
+  onReorderCategories?: (ids: string[]) => Promise<void>;
   onCreateBom?: (payload: BomCreateRequest) => Promise<void>;
   onUpdateBom?: (id: string, payload: BomUpdateRequest) => Promise<void>;
   onReplaceBomComponents?: (id: string, payload: BomUpsertComponentsRequest) => Promise<void>;
@@ -162,6 +164,7 @@ export default function InventoryTabs({
   onCreateCategory,
   onUpdateCategory,
   onDeleteCategory,
+  onReorderCategories,
   onCreateBom,
   onUpdateBom,
   onReplaceBomComponents,
@@ -375,6 +378,7 @@ export default function InventoryTabs({
             onCreate={onCreateCategory}
             onUpdate={onUpdateCategory}
             onDelete={onDeleteCategory}
+            onReorder={onReorderCategories}
           />
         )}
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { printAreaSchema, bomComponentTypeSchema } from "../contracts/shared.schema";
+import { printAreaSchema, bomComponentTypeSchema, TICKET_NAME_MAX_LENGTH } from "../contracts/shared.schema";
 import {
   canonicalMenuComponentSchema,
   canonicalUnitSchema,
@@ -17,6 +17,9 @@ export const categorySchema = z.object({
   name: z.string().min(2),
   scope: categoryScopeSchema,
   isActive: z.boolean(),
+  // Tenant-owned display order, meaningful within `scope` (ties → name).
+  // Optional because legacy rows/DTOs built before this column may omit it.
+  sortOrder: z.number().int().optional(),
   stationId: z.string().nullable().optional(),
   referenceId: z.string().nullable().optional(),
   // @deprecated superseded by stationId
@@ -31,6 +34,8 @@ export const categoryCreateRequestSchema = z.object({
   id: z.string().min(1).optional(),
   name: z.string().min(2),
   scope: categoryScopeSchema,
+  // Omitted → appended at the end of its scope.
+  sortOrder: z.number().int().optional(),
   stationId: z.string().min(1).optional(),
   referenceId: z.string().min(1).optional(),
   printAreas: z.array(printAreaSchema).default(["kitchen"]),
@@ -39,9 +44,20 @@ export const categoryCreateRequestSchema = z.object({
 export const categoryUpdateRequestSchema = z.object({
   name: z.string().min(2).optional(),
   isActive: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
   stationId: z.string().min(1).nullable().optional(),
   referenceId: z.string().min(1).nullable().optional(),
   printAreas: z.array(printAreaSchema).optional(),
+});
+
+/**
+ * Whole-group reorder: `ids` is the full list of a scope's categories in the
+ * order the tenant wants. The server numbers them 0..n-1 within their scope,
+ * so unknown ids (other tenant) are ignored and missing ones keep their old
+ * position value.
+ */
+export const categoryOrderRequestSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1),
 });
 
 // ─── Category Modifier Pools ────────────────────────────────────────────────
@@ -78,12 +94,18 @@ export const categoryModifierPoolCreateRequestSchema = z.object({
   categoryIds: z.array(z.string().min(1)).min(1),
   name: z.string().min(1),
   options: z.array(categoryModifierPoolOptionSchema.omit({ id: true })).default([]),
+  // Display order within the category (POS containers / public sheet).
+  // Optional: omitted = first position (0), the caller can reorder later.
+  sortOrder: z.number().int().optional(),
 });
 
 export const categoryModifierPoolUpdateRequestSchema = z.object({
   name: z.string().min(1).optional(),
   categoryIds: z.array(z.string().min(1)).min(1).optional(),
   options: z.array(categoryModifierPoolOptionSchema.omit({ id: true })).optional(),
+  // Pool display order within a category (POS containers / public sheet).
+  // Optional so a plain rename never reorders the pool list; omitted = keep.
+  sortOrder: z.number().int().optional(),
 });
 
 // ─── Modifier Options ───────────────────────────────────────────────────────
@@ -167,6 +189,9 @@ export const menuItemSchema = z.object({
   // @deprecated superseded by stationId
   printAreas: z.array(printAreaSchema),
   isJolly: z.boolean().optional().default(false),
+  // POS-only line whose price the waiter types by hand (gated by the
+  // `openPrice` tenant override; never orderable online).
+  isOpenPrice: z.boolean().optional().default(false),
   ingredients: z.array(z.string()),
   recipe: z.array(menuRecipeComponentSchema).default([]),
   modifiers: z.array(menuItemModifierSchema).default([]),
@@ -183,8 +208,13 @@ export const menuItemAdminSchema = z.object({
   referenceId: z.string().nullable().optional(),
   // @deprecated superseded by stationId
   printAreas: z.array(printAreaSchema),
+  // Internal short name for the production comanda (2xl ≈ 21 chars/line).
+  ticketName: z.string().max(TICKET_NAME_MAX_LENGTH).nullable().optional(),
   isActive: z.boolean(),
   isJolly: z.boolean().optional().default(false),
+  // POS-only open-price flag (admin DTO); masked by the API for tenants
+  // without the `openPrice` override, exactly like `isJolly`.
+  isOpenPrice: z.boolean().optional().default(false),
   recipe: z.array(menuRecipeComponentSchema),
   modifiers: z.array(menuItemModifierSchema).default([]),
   modifierGroups: z.array(modifierGroupSchema).default([]),
@@ -194,6 +224,8 @@ export const menuItemAdminListResponseSchema = z.array(menuItemAdminSchema);
 
 export const menuItemCreateRequestSchema = z.object({
   name: z.string().min(2),
+  // Internal short name printed on production comande only. Empty = use `name`.
+  ticketName: z.string().max(TICKET_NAME_MAX_LENGTH).optional(),
   price: z.number().nonnegative(),
   category: z.string().min(2),
   categoryId: z.string().optional(),
@@ -207,6 +239,8 @@ export const menuItemCreateRequestSchema = z.object({
 
 export const menuItemUpdateRequestSchema = z.object({
   name: z.string().min(2).optional(),
+  // Nullable so an internal ticket name can be cleared back to `name`.
+  ticketName: z.string().max(TICKET_NAME_MAX_LENGTH).nullable().optional(),
   price: z.number().positive().optional(),
   category: z.string().min(2).optional(),
   categoryId: z.string().optional(),
@@ -238,6 +272,7 @@ export type Category = z.infer<typeof categorySchema>;
 export type CategoriesListResponse = z.infer<typeof categoriesListResponseSchema>;
 export type CategoryCreateRequest = z.infer<typeof categoryCreateRequestSchema>;
 export type CategoryUpdateRequest = z.infer<typeof categoryUpdateRequestSchema>;
+export type CategoryOrderRequest = z.infer<typeof categoryOrderRequestSchema>;
 export type CategoryModifierPool = z.infer<typeof categoryModifierPoolSchema>;
 export type CategoryModifierPoolOption = z.infer<typeof categoryModifierPoolOptionSchema>;
 export type CategoryModifierPoolCreateRequest = z.infer<typeof categoryModifierPoolCreateRequestSchema>;

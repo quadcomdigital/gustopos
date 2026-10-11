@@ -1,4 +1,4 @@
-// ESLint v9 Flat Config for GustoPOS web app (React 19 + Vite + TypeScript)
+// ESLint v9 Flat Config for OmniRestaurant web app (React 19 + Vite + TypeScript)
 // Replaces the legacy typecheck-only setup with proper lint rules covering:
 //   - core JS correctness (js.configs.recommended)
 //   - TypeScript correctness (typescript-eslint recommended)

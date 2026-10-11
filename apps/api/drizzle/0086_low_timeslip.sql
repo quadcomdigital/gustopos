@@ -1,0 +1,1 @@
+ALTER TABLE "menu_items" ADD COLUMN "is_open_price" integer DEFAULT 0 NOT NULL;

@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { db } from "../db/client";
 import { customers, customerAddresses, orders } from "../db/schema";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
@@ -269,10 +269,14 @@ export class CustomerRepository {
     const parsed = customerAnalyticsRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
     const customerRows = await db.select().from(customers).where(eq(customers.tenantId, tenantId));
+    // Activity is measured on every paid-ish order carrying a customer: the old
+    // `orderType = "takeaway"` filter silently dropped the whole dine-in base
+    // (dine_in rows have no customer_id, so takeaway was the only usable source,
+    // but excluding cancelled kept test/voided tickets out of the KPI).
     const orderRows = await db
       .select()
       .from(orders)
-      .where(and(eq(orders.tenantId, tenantId), eq(orders.orderType, "takeaway")));
+      .where(and(eq(orders.tenantId, tenantId), ne(orders.status, "cancelled")));
 
     const filteredOrders = orderRows.filter((row) => {
       if (parsed.from && row.timestamp < new Date(parsed.from)) return false;

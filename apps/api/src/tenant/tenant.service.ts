@@ -40,7 +40,8 @@ const DEFAULT_MODULES: ModuleKey[] = [
   "public_takeaway",
   "consumer_accounts",
   "self_order_qr",
-  "public_group_order",
+  // `public_group_order` is deliberately NOT a default module: the shared cart
+  // is opt-in per tenant (Superadmin) and only works as a child of `public_menu`.
   "loyalty_points",
   "reservations",
   "delivery",

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { ModifierGroupInput } from "@gustopos/shared";
 import type { db as dbClient } from "../../db/client";
 import { menuModifierGroups, menuModifierOptions, menuModifierOptionOverrides } from "../../db/schema";
+import { hasTenantOverrideFor } from "../../tenant/tenant-overrides";
 
 /**
  * Replace a menu item's modifier groups (delete + reinsert) in one transaction.
@@ -36,6 +37,11 @@ export async function syncMenuModifierGroups(
     .delete(menuModifierGroups)
     .where(and(eq(menuModifierGroups.tenantId, tenantId), eq(menuModifierGroups.menuItemId, menuItemId)));
 
+  // The ×2 (MAXI) multiplier on per-item options is a per-tenant capability:
+  // tenants without the override persist null, so a payload can never smuggle
+  // price scaling into the base catalog (and the read path mirrors this gate).
+  const multiplierEnabled = hasTenantOverrideFor("modifierMultiplier");
+
   for (let groupIdx = 0; groupIdx < groups.length; groupIdx++) {
     const group = groups[groupIdx];
     const groupId = group.id || `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -66,6 +72,7 @@ export async function syncMenuModifierGroups(
         componentType: opt.componentType ?? "ingredient",
         componentId: opt.componentId ?? opt.inventoryItemId ?? null,
         priceDelta: String(opt.priceDelta),
+        priceMultiplier: !multiplierEnabled || opt.priceMultiplier == null ? null : String(opt.priceMultiplier),
         isDefault: opt.isDefault ? 1 : 0,
         isActive: opt.isActive ? 1 : 0,
         sortOrder: optIdx,

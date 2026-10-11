@@ -12,6 +12,7 @@ export type BackofficeRouteKey =
   | 'purchasing'
   | 'shifts'
   | 'fiscal'
+  | 'group-orders'
   | 'settings'
   | 'customers';
 
@@ -42,6 +43,7 @@ export const BACKOFFICE_ROUTES: BackofficeRouteMeta[] = [
   { key: 'purchasing', path: '/app/purchasing', label: 'Acquisti', roles: ['admin'], module: 'purchasing_suppliers', domain: 'operations' },
   { key: 'shifts', path: '/app/shifts', label: 'Turni', roles: ['admin'], module: 'staff_shifts_timeclock', domain: 'operations' },
   { key: 'fiscal', path: '/app/fiscal', label: 'Fiscale', roles: ['admin'], module: 'fiscal_exports', domain: 'finance' },
+  { key: 'group-orders', path: '/app/group-orders', label: 'Gruppo', roles: ['admin', 'waiter'], module: 'public_group_order', domain: 'operations' },
   { key: 'customers', path: '/app/customers', label: 'Clienti', roles: ['admin', 'waiter'], module: 'customers', domain: 'operations' },
   { key: 'settings', path: '/app/settings', label: 'Impostazioni', roles: ['admin'], module: null, domain: 'admin' },
 ];

@@ -134,7 +134,7 @@ export default function RegisterLocalBridgeModal({ onClose }: Props) {
         <div>
           <h3 className="text-base font-bold">Registra questo PC come bridge di stampa</h3>
           <p className="text-[11px] text-text-muted mt-1">
-            Zero installazioni. Funziona con QZ Tray già in esecuzione e GustoPOS aperto qui.
+            Zero installazioni. Funziona con QZ Tray già in esecuzione e OmniRestaurant aperto qui.
             La tab resta &ldquo;sveglia&rdquo; via Web Worker + Wake Lock.
           </p>
         </div>

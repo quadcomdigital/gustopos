@@ -4,6 +4,7 @@ import type { OrderStatus, PublicMenuResponse } from '@gustopos/shared';
 import { API_URL, getPublicTakeawayTracking, trackPublicFunnelEvent } from '../shared/api/client';
 import { BrandFooter, BrandHeader, resolvePublicBrand } from '../menu/brand';
 import { formatPrice } from '../menu/lib/display';
+import ConsumerPushToggle from '../components/push/ConsumerPushToggle';
 
 const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   pending: 'Ricevuto',
@@ -308,6 +309,14 @@ export default function PublicTakeawayTrackingPage() {
               ))}
             </div>
           </section>
+        )}
+
+        {order && hasCredentials && (
+          <ConsumerPushToggle
+            tenantSlug={tenantSlug}
+            context={{ kind: 'takeaway', orderId, trackingToken }}
+            categories={['takeaway_status']}
+          />
         )}
       </div>
 

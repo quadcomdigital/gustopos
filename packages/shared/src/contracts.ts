@@ -86,6 +86,9 @@ export * from "./contracts/production.schema";
 export * from "./contracts/food-cost.schema";
 export * from "./contracts/loyalty.schema";
 
+// ─── Re-export Web Push notifications ─────────────────────────────────────
+export * from "./contracts/push.schema";
+
 // ─── AppData (ties all domains together) ─────────────────────────────────
 
 export const appDataSchema = z.object({

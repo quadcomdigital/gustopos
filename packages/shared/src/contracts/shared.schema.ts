@@ -11,6 +11,13 @@ export const printAreaSchema = z.enum(["kitchen", "bar", "cashier"]);
 
 export const bomComponentTypeSchema = z.enum(["ingredient", "bom", "prep"]);
 
+/**
+ * Max length of a product's internal ticket name ("nome interno"). Production
+ * comande print the label at 2xl (≈21 chars per line on Font A), so anything
+ * longer starts wrapping on the second line of the ticket.
+ */
+export const TICKET_NAME_MAX_LENGTH = 24;
+
 // ─── Print Stations (dynamic, per-tenant) ───────────────────────────────────
 //
 // A station is a named print destination (Cucina, Pizzeria, Bar, …). Its `id`
@@ -32,6 +39,15 @@ export const printStationSchema = z.object({
   sortOrder: z.number().int().default(0),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
+  // How many products/categories currently route to this station. Populated by
+  // `GET /print-stations` (list only) so Settings → Zone di stampa can show the
+  // footprint and warn before deleting; omitted by single-station reads.
+  usage: z
+    .object({
+      menuItems: z.number().int().nonnegative(),
+      categories: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 
 export const printStationsListResponseSchema = z.array(printStationSchema);

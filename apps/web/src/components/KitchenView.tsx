@@ -362,13 +362,32 @@ export default function KitchenView({ orders, updateOrder }: KitchenViewProps) {
     () => stations.filter((s) => s.isActive && s.kind !== 'cashier'),
     [stations],
   );
+  // Product → category → tenant default, the SAME order the API uses when it
+  // routes print jobs (app.repository `resolveStationForMenuIds`). Reading only
+  // `item.stationId` made every product that inherits its zone from the
+  // category (casale's pizzas: 1 of 159 items carries an explicit station)
+  // invisible to its own zone filter.
+  const categoryStationById = React.useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const category of data?.categories ?? []) {
+      map.set(category.id, category.stationId ?? null);
+    }
+    return map;
+  }, [data?.categories]);
+
+  const defaultStationId = React.useMemo(
+    () => stations.find((station) => station.isDefault)?.id ?? null,
+    [stations],
+  );
+
   const menuItemStationIdById = React.useMemo(() => {
     const map = new Map<string, string | null>();
     for (const mi of data?.menu ?? []) {
-      map.set(mi.id, mi.stationId ?? null);
+      const categoryStationId = mi.categoryId ? categoryStationById.get(mi.categoryId) ?? null : null;
+      map.set(mi.id, mi.stationId ?? categoryStationId ?? defaultStationId);
     }
     return map;
-  }, [data?.menu]);
+  }, [data?.menu, categoryStationById, defaultStationId]);
 
   // Per-order station membership: an order is shown under a station if at
   // least one of its items is assigned to it (mixed tables appear in several).

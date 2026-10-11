@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, UsersRound } from 'lucide-react';
 import type { ConsumerUser, PublicMenuResponse } from '@gustopos/shared';
 import {
   API_URL,
+  createPublicGroupOrderSession,
   createPublicTakeawayOrder,
   fetchConsumerMe,
   getConsumerAccessToken,
@@ -30,6 +31,15 @@ type PublicMenuItem = PublicMenuResponse['items'][number];
 
 function cartStorageKey(tenantSlug: string): string {
   return `${TAKEAWAY_CART_STORAGE_PREFIX}${tenantSlug}`;
+}
+
+/**
+ * Identity store shared with `PublicGroupOrderPage`: the master creates the
+ * session here and the group-order page restores the participant token from
+ * the same key, so the master never has to re-enter the name.
+ */
+function groupOrderIdentityKey(tenantSlug: string, joinCode: string): string {
+  return `gustopos:group-order:${tenantSlug}:${joinCode}`;
 }
 
 /** Stable line id: same item + same modifier set collapses into one line. */
@@ -67,7 +77,12 @@ export default function TenantMenuPage() {
   const [authPassword, setAuthPassword] = useState('');
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'customer' | 'confirm'>('cart');
   const [modifierItem, setModifierItem] = useState<PublicMenuItem | null>(null);
+  const [groupOrderOpen, setGroupOrderOpen] = useState(false);
+  const [groupOrderName, setGroupOrderName] = useState('');
+  const [groupOrderError, setGroupOrderError] = useState('');
+  const [groupOrderLoading, setGroupOrderLoading] = useState(false);
 
+  const navigate = useNavigate();
   const pendingTakeawayOrderKeys = useRef(new Map<string, string>());
 
   useEffect(() => {
@@ -158,6 +173,7 @@ export default function TenantMenuPage() {
   }, [isCartOpen]);
 
   const takeawayEnabled = menu?.capabilities.takeawayOrder ?? false;
+  const groupOrderEnabled = menu?.capabilities.groupOrder ?? false;
   const takeawayConfig = menu?.capabilities.takeawayConfig ?? {
     minOrderAmount: 0,
     maxItems: 20,
@@ -320,6 +336,37 @@ export default function TenantMenuPage() {
       );
     } finally {
       setSubmittingTakeaway(false);
+    }
+  };
+
+  /**
+   * Distance group order entry point. The master creates the live session here
+   * (so the shared cart is a `public_group_order` concern), then shares the
+   * WhatsApp link from the group-order page. Never tied to the QR flow.
+   */
+  const startGroupOrder = async () => {
+    if (!tenantSlug || !groupOrderEnabled || groupOrderName.trim().length < 2) return;
+    setGroupOrderLoading(true);
+    setGroupOrderError('');
+    try {
+      const created = await createPublicGroupOrderSession(tenantSlug, { displayName: groupOrderName.trim() });
+      const identity = {
+        sessionId: created.session.id,
+        participantToken: created.participantToken,
+        participantId: created.participant.id,
+        joinCode: created.session.joinCode,
+      };
+      localStorage.setItem(
+        groupOrderIdentityKey(tenantSlug, created.session.joinCode),
+        JSON.stringify(identity),
+      );
+      setGroupOrderOpen(false);
+      setGroupOrderName('');
+      navigate(`/${tenantSlug}/group-order/${created.session.joinCode}`);
+    } catch (createError) {
+      setGroupOrderError(createError instanceof Error ? createError.message : 'Creazione sessione non riuscita');
+    } finally {
+      setGroupOrderLoading(false);
     }
   };
 
@@ -533,6 +580,88 @@ export default function TenantMenuPage() {
 
       <AnimatePresence>
         {isCartOpen && <CartDrawerView key="cart-drawer" {...cartOverlay} />}
+      </AnimatePresence>
+
+      {groupOrderEnabled && (
+        <button
+          type="button"
+          onClick={() => {
+            setGroupOrderError('');
+            setGroupOrderOpen(true);
+          }}
+          className="fixed bottom-24 left-4 z-40 flex min-h-[44px] items-center gap-2 rounded-full px-4 text-[11px] font-extrabold uppercase tracking-[0.16em] shadow-lg transition active:scale-[0.98] md:bottom-6 md:left-8"
+          style={{ backgroundColor: appearance.ink, color: appearance.surface }}
+        >
+          <UsersRound className="h-4 w-4" aria-hidden="true" />
+          Ordina insieme
+        </button>
+      )}
+
+      <AnimatePresence>
+        {groupOrderOpen && (
+          <motion.div
+            key="group-order-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => {
+              if (!groupOrderLoading) setGroupOrderOpen(false);
+            }}
+            className="fixed inset-0 z-[70] flex items-end justify-center bg-black/40 p-4 md:items-center"
+          >
+            <motion.div
+              initial={{ y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl border p-5 shadow-xl"
+              style={{ backgroundColor: appearance.surface, borderColor: appearance.border, color: appearance.ink }}
+            >
+              <h2 className="text-base font-extrabold">Ordina insieme</h2>
+              <p className="mt-1 text-sm" style={{ color: appearance.muted }}>
+                Crea una sessione condivisa, poi invia il link agli amici. Ognuno aggiunge i propri piatti.
+              </p>
+              <label className="mt-4 block">
+                <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: appearance.muted }}>
+                  Il tuo nome
+                </span>
+                <input
+                  value={groupOrderName}
+                  onChange={(event) => setGroupOrderName(event.target.value)}
+                  placeholder="Nome"
+                  autoFocus
+                  className="mt-1.5 min-h-[48px] w-full rounded-xl border px-3 text-sm outline-none focus:ring-2"
+                  style={{ backgroundColor: appearance.pageBg, borderColor: appearance.border, color: appearance.ink }}
+                />
+              </label>
+              {groupOrderError && (
+                <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  {groupOrderError}
+                </p>
+              )}
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGroupOrderOpen(false)}
+                  disabled={groupOrderLoading}
+                  className="min-h-[48px] flex-1 rounded-xl border text-xs font-bold uppercase tracking-[0.14em] disabled:opacity-50"
+                  style={{ borderColor: appearance.border, color: appearance.ink }}
+                >
+                  Annulla
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void startGroupOrder()}
+                  disabled={groupOrderLoading || groupOrderName.trim().length < 2}
+                  className="min-h-[48px] flex-1 rounded-xl text-xs font-extrabold uppercase tracking-[0.14em] transition active:scale-[0.99] disabled:opacity-50"
+                  style={{ backgroundColor: appearance.accent, color: appearance.accentForeground }}
+                >
+                  {groupOrderLoading ? 'Creo…' : 'Crea e condividi'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {modifierItem && (

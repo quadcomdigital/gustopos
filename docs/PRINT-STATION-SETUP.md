@@ -9,7 +9,7 @@ This guide walks you through installing and configuring QZ Tray on the restauran
 - A Windows PC or Linux machine (Ubuntu/Debian) on the same local network as the VPS
 - One or more thermal printers (USB or network)
 - Google Chrome (recommended) or another Chromium-based browser
-- Network connectivity to the GustoPOS VPS
+- Network connectivity to the OmniRestaurant VPS
 
 ---
 
@@ -176,7 +176,7 @@ Use clear, area-specific names:
 
 ## Print Station Setup
 
-The Print Station is a browser-based interface that polls the GustoPOS API for pending print jobs and sends them to local printers via QZ Tray.
+The Print Station is a browser-based interface that polls the OmniRestaurant API for pending print jobs and sends them to local printers via QZ Tray.
 
 ### 1. Access the Print Station
 
@@ -223,7 +223,7 @@ Once connected, the Print Station lists all available printers detected by QZ Tr
 
 ```
 ┌─────────────┐     HTTP Poll     ┌──────────────┐     Print Job     ┌──────────┐
-│   GustoPOS   │ ◄──────────────► │ Print Station │ ──────────────►  │  QZ Tray │
+│   OmniRestaurant   │ ◄──────────────► │ Print Station │ ──────────────►  │  QZ Tray │
 │   (VPS)      │                   │  (Browser)    │                   │ (Local)  │
 │  Port 11901  │                   │  Chrome       │                   │ WS:8181  │
 └─────────────┘                    └──────────────┘                   └────┬─────┘
@@ -235,7 +235,7 @@ Once connected, the Print Station lists all available printers detected by QZ Tr
                                                                      └──────────┘
 ```
 
-1. **GustoPOS** creates print jobs when orders are placed
+1. **OmniRestaurant** creates print jobs when orders are placed
 2. **Print Station** polls `GET /api/print-jobs/poll?areas=kitchen,bar,cashier` every few seconds
 3. Pending jobs are sent to **QZ Tray** via WebSocket
 4. **QZ Tray** sends the ESC/POS data to the physical printer
@@ -253,7 +253,7 @@ Once connected, the Print Station lists all available printers detected by QZ Tr
 | **Jobs not appearing** | Check the API Base URL is correct and the VPS is reachable from the local network |
 | **QZ Tray certificate error** | Run the preflight: agent dashboard → "Verifica QZ Tray", or `https://<tenant>/signing/debug-qz-cert.ps1`. It tells you whether `override.crt` is missing/foreign, the chain fails, the clock is wrong or `allowed.dat` is not writable |
 | **Browser blocks connection** | Use `http://` (not `https://`) for local network, or add a security exception for the QZ Tray WebSocket |
-| **Prints blank pages** | Ensure the printer paper is loaded correctly and the ESC/POS protocol is selected in GustoPOS settings |
+| **Prints blank pages** | Ensure the printer paper is loaded correctly and the ESC/POS protocol is selected in OmniRestaurant settings |
 
 ---
 
@@ -262,7 +262,7 @@ Once connected, the Print Station lists all available printers detected by QZ Tr
 | Port   | Service            | Direction |
 |--------|--------------------|-----------|
 | 8181–8484 | QZ Tray WebSocket | Local only |
-| 11901  | GustoPOS API       | From local network to VPS |
+| 11901  | OmniRestaurant API       | From local network to VPS |
 | 11905  | Print Bridge       | Optional (spool fallback) |
 | 9100   | Printer raw TCP    | Local network |
 
