@@ -451,7 +451,7 @@ export default function POSProductModal({
   }, [groupPriceDelta, inlineModifierGroups, modifierPriceDelta, selectedModifiers, pricingBase]);
 
   const inlineSelectedModifiers = useMemo(() => {
-    const directGroupIds = new Set(inlineModifierGroups.map((group) => group.id));
+    const inlineGroupById = new Map(inlineModifierGroups.map((group) => [group.id, group]));
     // Defense-in-depth: keep only modifiers that belong to this product —
     // either its own inline groups or a pool option of its category. Stale
     // selections from a previously opened product (e.g. Bun from a burger's
@@ -460,7 +460,14 @@ export default function POSProductModal({
     // groupSelections as well (multi-select groups can hold several options).
     const byKey = new Map<string, { groupId: string; optionId: string }>();
     for (const selected of selectedModifiers) {
-      if (!directGroupIds.has(selected.groupId) && !categoryPoolOptionIds.has(selected.optionId)) continue;
+      if (!inlineGroupById.has(selected.groupId) && !categoryPoolOptionIds.has(selected.optionId)) continue;
+      // Single-select inline group: `groupSelections` is the live source of
+      // truth, so a persisted option of the same group is the PREVIOUS choice
+      // and must be dropped as soon as the operator picks another one.
+      // Without this, re-opening a line (e.g. Base "Bun") and switching to
+      // "Panino" kept BOTH options on the line and printed/charged both.
+      const group = inlineGroupById.get(selected.groupId);
+      if (group && !isMultiSelectGroup(group) && (groupSelections[group.id]?.length ?? 0) > 0) continue;
       byKey.set(`${selected.groupId}:${selected.optionId}`, selected);
     }
     for (const [groupId, optionIds] of Object.entries(groupSelections)) {
