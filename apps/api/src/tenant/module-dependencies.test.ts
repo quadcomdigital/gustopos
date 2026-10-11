@@ -52,3 +52,14 @@ test("disabling kitchen disables course_rounds", () => {
   const result = plan("kitchen", false, ["kitchen", "course_rounds"]);
   assert.deepEqual(result.disable, ["course_rounds"]);
 });
+
+test("enabling public_group_order auto-enables public_menu (dependency)", () => {
+  const result = plan("public_group_order", true, []);
+  assert.deepEqual(new Set(result.enable), new Set(["public_group_order", "public_menu"]));
+  assert.deepEqual(result.disable, []);
+});
+
+test("disabling public_menu disables public_group_order", () => {
+  const result = plan("public_menu", false, ["public_menu", "public_group_order"]);
+  assert.deepEqual(result.disable, ["public_group_order"]);
+});

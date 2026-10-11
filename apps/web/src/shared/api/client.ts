@@ -16,6 +16,7 @@ import {
   categoriesListResponseSchema,
   categoryCreateRequestSchema,
   categoryUpdateRequestSchema,
+  categoryOrderRequestSchema,
   categoryModifierPoolSchema,
   categoryModifierPoolCreateRequestSchema,
   categoryModifierPoolUpdateRequestSchema,
@@ -35,8 +36,23 @@ import {
   operationalSummaryQuerySchema,
   reservationsSummarySchema,
   deliverySummarySchema,
+  salesSummaryQuerySchema,
+  salesSummarySchema,
+  dashboardVisibilityLogRequestSchema,
   orderHistoryFiltersSchema,
   orderHistoryListResponseSchema,
+  pushConfigResponseSchema,
+  pushSubscriptionResponseSchema,
+  pushSubscriptionStateResponseSchema,
+  pushTestResponseSchema,
+  pushUnsubscribeResponseSchema,
+  type PushConfigResponse,
+  type PushSubscribeRequest,
+  type PushSubscriptionResponse,
+  type PushSubscriptionStateResponse,
+  type PushTestResponse,
+  type PushUnsubscribeResponse,
+  type PushUpdateRequest,
   loginRequestSchema,
   loginResponseSchema,
   logoutResponseSchema,
@@ -107,8 +123,11 @@ import {
   groupOrderJoinSessionResponseSchema,
   groupOrderPatchCartRequestSchema,
   groupOrderPatchCartResponseSchema,
+  groupOrderSessionSchema,
   groupOrderSubmitRequestSchema,
   groupOrderSubmitResponseSchema,
+  groupOrderReviewQueueResponseSchema,
+  groupOrderReviewResponseSchema,
   consumerAuthResponseSchema,
   consumerLoginRequestSchema,
   consumerOrderHistoryResponseSchema,
@@ -142,6 +161,9 @@ import {
   printStationsListResponseSchema,
   printStationCreateRequestSchema,
   printStationUpdateRequestSchema,
+  printEndpointSchema,
+  printEndpointsListResponseSchema,
+  printEndpointUpdateRequestSchema,
   productionReferenceSchema,
   productionReferencesListResponseSchema,
   productionReferenceCreateRequestSchema,
@@ -198,6 +220,8 @@ import {
   type OperationalSummaryQuery,
   type ReservationsSummary,
   type DeliverySummary,
+  type SalesSummary,
+  type DashboardVisibilityAction,
   type CustomersQuery,
   type OrderHistoryFilters,
   type LoginResponse,
@@ -263,8 +287,11 @@ import {
   type GroupOrderJoinSessionResponse,
   type GroupOrderPatchCartRequest,
   type GroupOrderPatchCartResponse,
+  type GroupOrderSession,
   type GroupOrderSubmitRequest,
   type GroupOrderSubmitResponse,
+  type GroupOrderReviewQueueResponse,
+  type GroupOrderReviewResponse,
   type ConsumerAuthResponse,
   type ConsumerLoginRequest,
   type ConsumerOrderHistoryResponse,
@@ -303,10 +330,17 @@ import {
   type PrintStation,
   type PrintStationCreateRequest,
   type PrintStationUpdateRequest,
+  type PrintEndpoint,
+  type PrintEndpointsListResponse,
+  type PrintEndpointUpdateRequest,
   type ProductionReference,
   type ProductionReferenceCreateRequest,
   type ProductionReferenceUpdateRequest,
   type PrintLogoUploadResponse,
+  type PrintProfilesState,
+  type PrintProfileCreateRequest,
+  type PrintProfileUpdateRequest,
+  type PrintProfileActivateResponse,
   type FiscalPrinterConfig,
   type FiscalPrinterConfigUpdateRequest,
   type FiscalJob,
@@ -912,6 +946,22 @@ export async function deleteCategory(id: string): Promise<{ success: true }> {
   return response.json() as Promise<{ success: true }>;
 }
 
+/**
+ * Persist the tenant's category order for ONE scope: `ids` is that scope's
+ * full list in display order (the server renumbers 0..n-1 per scope).
+ */
+export async function reorderCategories(ids: string[]): Promise<{ success: boolean; updated: number }> {
+  const request = categoryOrderRequestSchema.parse({ ids });
+  const response = await authorizedFetch(`${API_URL}/api/categories/order`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, z.object({ success: z.boolean(), updated: z.number() }));
+}
+
 export async function fetchCategoryModifierPools(categoryId?: string): Promise<CategoryModifierPool[]> {
   const query = new URLSearchParams();
   if (categoryId) query.set('categoryId', categoryId);
@@ -1063,6 +1113,34 @@ export async function fetchDeliverySummary(queryPayload: OperationalSummaryQuery
   return readJson(response, deliverySummarySchema);
 }
 
+/**
+ * Sales aggregates behind the dashboard KPI cards. `from`/`to` are the period
+ * the numbers refer to (null = everything).
+ */
+export async function fetchSalesSummary(queryPayload: OperationalSummaryQuery = {}): Promise<SalesSummary> {
+  const parsed = salesSummaryQuerySchema.parse(queryPayload);
+  const query = new URLSearchParams();
+  if (parsed.from) query.set('from', parsed.from);
+  if (parsed.to) query.set('to', parsed.to);
+  const suffix = query.toString().length > 0 ? `?${query.toString()}` : '';
+  const response = await authorizedFetch(`${API_URL}/api/analytics/sales-summary${suffix}`);
+  return readJson(response, salesSummarySchema);
+}
+
+/**
+ * Audit trail for the dashboard €-mask toggle (admin, analytics module). The
+ * API writes `dashboard.counters.revealed` / `.hidden` with the acting staff.
+ */
+export async function logDashboardVisibility(action: DashboardVisibilityAction): Promise<{ success: true }> {
+  const request = dashboardVisibilityLogRequestSchema.parse({ action });
+  const response = await authorizedFetch(`${API_URL}/api/analytics/visibility-log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, z.object({ success: z.literal(true) }));
+}
+
 export async function fetchOrderHistory(filters: OrderHistoryFilters = {}): Promise<Order[]> {
   const parsed = orderHistoryFiltersSchema.parse(filters);
   const query = new URLSearchParams();
@@ -1168,6 +1246,33 @@ export async function updatePrintStation(id: string, payload: PrintStationUpdate
 
 export async function deletePrintStation(id: string): Promise<{ success: boolean; id: string }> {
   const response = await authorizedFetch(`${API_URL}/api/print-stations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  return response.json() as Promise<{ success: boolean; id: string }>;
+}
+
+// ─── Acquired printer registry ───────────────────────────────────────────
+//
+// Populated automatically by bridge heartbeats (QZ enumeration) and LAN
+// scans. Listings stay selectable in a configuration even while the printer
+// is off or its bridge is offline.
+
+export async function fetchPrintEndpoints(): Promise<PrintEndpoint[]> {
+  const response = await authorizedFetch(`${API_URL}/api/print-endpoints`);
+  return readJson(response, printEndpointsListResponseSchema);
+}
+
+export async function updatePrintEndpoint(id: string, payload: PrintEndpointUpdateRequest): Promise<PrintEndpoint> {
+  const response = await authorizedFetch(`${API_URL}/api/print-endpoints/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(printEndpointUpdateRequestSchema.parse(payload)),
+  });
+  return readJson(response, printEndpointSchema);
+}
+
+export async function deletePrintEndpoint(id: string): Promise<{ success: boolean; id: string }> {
+  const response = await authorizedFetch(`${API_URL}/api/print-endpoints/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
   return response.json() as Promise<{ success: boolean; id: string }>;
@@ -1339,6 +1444,55 @@ export async function updateQzTrayConfig(payload: { qzTray: Partial<QzTrayConfig
     body: JSON.stringify(payload),
   });
   return response.json() as Promise<QzTrayConfigResponse>;
+}
+
+// ─── Print configurations (switchable routing profiles) ──────────────────
+// Named snapshots of the per-bridge routing. Exactly one is active per
+// tenant; activating re-applies it, deactivating keeps the live routing.
+
+export async function listPrintProfilesRequest(): Promise<PrintProfilesState> {
+  return authedJson<PrintProfilesState>('/api/printing/print-profiles', { method: 'GET' });
+}
+
+export async function createPrintProfileRequest(
+  payload: PrintProfileCreateRequest,
+): Promise<PrintProfilesState> {
+  return authedJson<PrintProfilesState>('/api/printing/print-profiles', {
+    method: 'POST',
+    json: payload,
+  });
+}
+
+export async function updatePrintProfileRequest(
+  id: string,
+  payload: PrintProfileUpdateRequest,
+): Promise<PrintProfilesState> {
+  return authedJson<PrintProfilesState>(
+    `/api/printing/print-profiles/${encodeURIComponent(id)}`,
+    { method: 'PATCH', json: payload },
+  );
+}
+
+export async function deletePrintProfileRequest(id: string): Promise<PrintProfilesState> {
+  return authedJson<PrintProfilesState>(
+    `/api/printing/print-profiles/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export async function activatePrintProfileRequest(
+  id: string,
+): Promise<PrintProfileActivateResponse> {
+  return authedJson<PrintProfileActivateResponse>(
+    `/api/printing/print-profiles/${encodeURIComponent(id)}/activate`,
+    { method: 'POST' },
+  );
+}
+
+export async function deactivatePrintProfileRequest(): Promise<PrintProfilesState> {
+  return authedJson<PrintProfilesState>('/api/printing/print-profiles/deactivate', {
+    method: 'POST',
+  });
 }
 
 // ─── Order idempotency (H2) ─────────────────────────────────────────────
@@ -2262,6 +2416,14 @@ export async function deleteMenuItem(id: string): Promise<LogoutResponse> {
   return readJson(response, logoutResponseSchema);
 }
 
+export async function deleteSimpleCatalogItem(id: string): Promise<LogoutResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/simple-catalog/items/${id}`, {
+    method: 'DELETE',
+  });
+
+  return readJson(response, logoutResponseSchema);
+}
+
 export async function setSimpleCatalogItemActiveState(id: string, active: boolean): Promise<LogoutResponse> {
   const endpoint = active ? 'enable' : 'disable';
   const response = await authorizedFetch(`${API_URL}/api/simple-catalog/items/${id}/${endpoint}`, {
@@ -2411,6 +2573,39 @@ export async function submitPublicGroupOrder(
     body: JSON.stringify(request),
   });
   return readJson(response, groupOrderSubmitResponseSchema);
+}
+
+export async function fetchPublicGroupOrderSession(
+  tenantSlug: string,
+  sessionId: string,
+  sessionCode: string,
+  participantToken: string,
+): Promise<GroupOrderSession> {
+  const response = await fetch(`${API_URL}/api/public/${encodeURIComponent(tenantSlug)}/group-orders/${encodeURIComponent(sessionId)}`, {
+    headers: {
+      'X-Group-Order-Code': sessionCode,
+      'X-Group-Order-Token': participantToken,
+    },
+  });
+  return readJson(response, groupOrderSessionSchema);
+}
+
+/** Staff review queue: submitted group-order drafts awaiting approval. */
+export async function fetchGroupOrderDrafts(): Promise<GroupOrderReviewQueueResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/group-order-drafts`);
+  return readJson(response, groupOrderReviewQueueResponseSchema);
+}
+
+export async function reviewGroupOrderDraft(
+  orderId: string,
+  payload: { action: 'approve' | 'reject'; reason?: string },
+): Promise<GroupOrderReviewResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/group-order-drafts/${encodeURIComponent(orderId)}/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJson(response, groupOrderReviewResponseSchema);
 }
 
 export async function registerConsumer(tenantSlug: string, payload: ConsumerRegisterRequest): Promise<ConsumerAuthResponse> {
@@ -2934,6 +3129,101 @@ export type {
   PrintBridgeTestPrintResponse,
 } from '@gustopos/shared';
 
+
+// ─── Web Push (notifiche PWA) ──────────────────────────────────────────────
+// Staff endpoints carry the staff JWT; the public ones are plain fetches on
+// purpose — sending a staff token there would make the middleware resolve the
+// tenant from the JWT instead of the :tenantSlug path segment.
+
+export async function fetchPushConfig(): Promise<PushConfigResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/push/config`);
+  return readJson(response, pushConfigResponseSchema);
+}
+
+/** The record stored server-side for this device (`null` = not registered). */
+export async function fetchPushSubscription(endpoint: string): Promise<PushSubscriptionStateResponse> {
+  const response = await authorizedFetch(
+    `${API_URL}/api/push/subscriptions?endpoint=${encodeURIComponent(endpoint)}`,
+  );
+  return readJson(response, pushSubscriptionStateResponseSchema);
+}
+
+export async function subscribePush(payload: PushSubscribeRequest): Promise<PushSubscriptionResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/push/subscriptions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJson(response, pushSubscriptionResponseSchema);
+}
+
+export async function updatePushCategories(payload: PushUpdateRequest): Promise<PushSubscriptionResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/push/subscriptions`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJson(response, pushSubscriptionResponseSchema);
+}
+
+export async function unsubscribePush(endpoint: string): Promise<PushUnsubscribeResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/push/subscriptions/unsubscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint }),
+  });
+  return readJson(response, pushUnsubscribeResponseSchema);
+}
+
+export async function sendPushTest(endpoint?: string): Promise<PushTestResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/push/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(endpoint ? { endpoint } : {}),
+  });
+  return readJson(response, pushTestResponseSchema);
+}
+
+// Public (consumer) counterparts — no auth headers, tenant from the path.
+
+async function publicPushJson<T>(
+  tenantSlug: string,
+  path: string,
+  init: RequestInit,
+  parser: { parse: (x: unknown) => T },
+): Promise<T> {
+  const response = await fetch(`${API_URL}/api/public/${encodeURIComponent(tenantSlug)}/push/${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init.headers as Record<string, string> | undefined) },
+  });
+  return readJson(response, parser);
+}
+
+export function fetchPublicPushConfig(tenantSlug: string): Promise<PushConfigResponse> {
+  return publicPushJson(tenantSlug, 'config', { method: 'GET' }, pushConfigResponseSchema);
+}
+
+export function subscribePublicPush(
+  tenantSlug: string,
+  flow: 'takeaway' | 'group-order',
+  payload: PushSubscribeRequest,
+): Promise<PushSubscriptionResponse> {
+  return publicPushJson(
+    tenantSlug,
+    `subscriptions/${flow}`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    pushSubscriptionResponseSchema,
+  );
+}
+
+export function unsubscribePublicPush(tenantSlug: string, endpoint: string): Promise<PushUnsubscribeResponse> {
+  return publicPushJson(
+    tenantSlug,
+    'subscriptions/unsubscribe',
+    { method: 'POST', body: JSON.stringify({ endpoint }) },
+    pushUnsubscribeResponseSchema,
+  );
+}
 
 // ─── Bare-name re-exports (Phase E: Pool) ───────────────────────────────────
 export {

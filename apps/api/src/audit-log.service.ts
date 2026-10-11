@@ -18,6 +18,9 @@ type AuditEvent =
   | "table.resume"
   | "table.updated"
   | "table.deleted"
+  | "menu.deleted"
+  | "menu.disabled"
+  | "menu.enabled"
   | "payment.refund"
   | "order.void"
   | "reservation.created"
@@ -27,7 +30,7 @@ type AuditEvent =
   | "reservation.no_show"
   | "delivery.upserted"
   | "delivery.status.updated"
-  | "delivery.dispatched" | "print_bridge.first_bind" | "print_bridge.onboarding_secret.created" | "print_bridge.onboarding_secret.revoked" | "print_bridge.deleted" | "fiscal.export.retried" | "timeclock.entry.resolved";
+  | "delivery.dispatched" | "print_bridge.first_bind" | "print_bridge.onboarding_secret.created" | "print_bridge.onboarding_secret.revoked" | "print_bridge.deleted" | "fiscal.export.retried" | "timeclock.entry.resolved" | "dashboard.counters.revealed" | "dashboard.counters.hidden";
 
 interface AuditPayload {
   actorStaffId?: string;

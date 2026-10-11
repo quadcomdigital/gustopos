@@ -4,6 +4,7 @@ import type {
   MenuItemModifier, PrintArea, ModifierGroup, CategoryModifierPool,
   IngredientCreateRequest, UnitConversion,
 } from '@gustopos/shared';
+import { TICKET_NAME_MAX_LENGTH } from '@gustopos/shared';
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { RotateCcw, Plus, UtensilsCrossed, X } from 'lucide-react';
 import Button from '../../shared/ui/atoms/Button';
@@ -18,7 +19,7 @@ import ModifierGroupsEditor from './ModifierGroupsEditor';
 import CustomerPreview from './CustomerPreview';
 import { useDebounce } from '../../hooks/useDebounce';
 import FormField from '../../shared/ui/molecules/FormField';
-import { required, minLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
+import { required, minLength, maxLength, positiveNumber, getErrorClass, type ValidationErrors } from '../../shared/ui/hooks/useFieldValidation';
 import { useConfirm } from '../../shared/ui/hooks/useConfirm';
 import ConfirmDialog from '../ConfirmDialog';
 import MenuCards from './MenuCards';
@@ -126,6 +127,7 @@ export default function MenuItemsTab({
 
   // Edit form state
   const [editName, setEditName] = useState('');
+  const [editTicketName, setEditTicketName] = useState('');
   const [editCategory, setEditCategory] = useState('');
   const [editCategoryId, setEditCategoryId] = useState('');
   const [editPrice, setEditPrice] = useState('0');
@@ -236,6 +238,7 @@ export default function MenuItemsTab({
   useEffect(() => {
     if (!selectedMenu) return;
     setEditName(selectedMenu.name); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize edit form fields from selected menu item; safe because all values are primitives or read-only arrays
+    setEditTicketName(selectedMenu.ticketName ?? '');
     setEditCategory(selectedMenu.category);  
     setEditCategoryId(selectedMenu.categoryId ?? '');  
     setEditPrice(String(selectedMenu.price));  
@@ -253,6 +256,7 @@ export default function MenuItemsTab({
     const modifierGroupsChanged = JSON.stringify(editModifierGroups) !== JSON.stringify(selectedMenu.modifierGroups ?? []);
     return (
       editName.trim() !== selectedMenu.name
+      || editTicketName.trim() !== (selectedMenu.ticketName ?? '')
       || editCategoryId !== (selectedMenu.categoryId ?? '')
       || editPrice !== String(selectedMenu.price)
       || JSON.stringify(editPrintAreas) !== JSON.stringify(selectedMenu.printAreas)
@@ -260,7 +264,7 @@ export default function MenuItemsTab({
       || modifiersChanged
       || modifierGroupsChanged
     );
-  }, [selectedMenu, editName, editCategoryId, editPrice, editPrintAreas, editRecipe, editModifiers, editModifierGroups]);
+  }, [selectedMenu, editName, editTicketName, editCategoryId, editPrice, editPrintAreas, editRecipe, editModifiers, editModifierGroups]);
 
   const [editErrors, setEditErrors] = useState<ValidationErrors>({});
 
@@ -268,12 +272,15 @@ export default function MenuItemsTab({
     if (!selectedMenu || !onUpdate) return;
     const errors: ValidationErrors = {};
     errors.name = required(editName, 'Nome') ?? minLength(editName, 2, 'Nome');
+    errors.ticketName = maxLength(editTicketName, TICKET_NAME_MAX_LENGTH, 'Nome interno');
     errors.price = positiveNumber(editPrice, 'Prezzo');
     setEditErrors(errors);
     if (Object.values(errors).some(Boolean)) return;
     const price = Number(editPrice);
     await onUpdate(selectedMenu.id, {
       name: editName.trim(),
+      // Empty = clear: production comande fall back to the real name.
+      ticketName: editTicketName.trim() || null,
       category: editCategoryId ? (menuCategories.find((c) => c.id === editCategoryId)?.name ?? editCategory.trim()) : editCategory.trim(),
       categoryId: editCategoryId || undefined,
       price,
@@ -304,11 +311,21 @@ export default function MenuItemsTab({
 
   const removeItem = async (id: string) => {
     if (!onDelete) return;
-    requestConfirm('Eliminare questo prodotto?', async () => {
-      await onDelete(id);
-      if (selectedMenuId === id) setSelectedMenuId('');
-      void onRefresh?.();
-    });
+    // "Elimina" is the exceptional path: a product that was ever ordered is
+    // refused by the API (history + unique name), the everyday way to take it
+    // off the POS is "Disattiva" (archiviazione), which is reversible.
+    requestConfirm(
+      'Eliminare definitivamente questo prodotto? Se risulta in ordini esistenti l\'operazione verrà rifiutata: usa "Disattiva" per archiviarlo.',
+      async () => {
+        try {
+          await onDelete(id);
+          if (selectedMenuId === id) setSelectedMenuId('');
+          void onRefresh?.();
+        } catch {
+          // Reason already surfaced by the store (banner).
+        }
+      },
+    );
   };
 
   const handleCloseModal = useCallback(() => setSelectedMenuId(''), []);
@@ -338,6 +355,37 @@ export default function MenuItemsTab({
     setEditBuilderItem(null);
     onOpenBomTab?.(bomId);
   }, [onOpenBomTab]);
+
+  /**
+   * Which builder edits a given product.
+   *
+   * Products with only modifier groups (no recipe, no 'Formato' variants) are
+   * plain items with choice groups (e.g. VASCHETTA 'A scelta'): the
+   * FoodProductModal handles and persists them. VariableProductModal is
+   * reserved for true variant products (group named 'Formato').
+   *
+   * simple_catalog has no recipe editor of its own (the API returns no
+   * inventory/prep/BoM rows there), so composed dishes must open in
+   * SimpleProductModal, where the composition names live: sending them to
+   * FoodProductModal would show an empty picker and a 403 on "Crea
+   * ingrediente". The inventory flow is unchanged.
+   */
+  const openBuilderFor = useCallback((item: MenuItemAdmin) => {
+    const hasRecipe = item.recipe && item.recipe.length > 0;
+    const hasModifierGroups = item.modifierGroups && item.modifierGroups.length > 0;
+    const isVariantProduct = hasModifierGroups && item.modifierGroups.some((g) => g.name === 'Formato');
+    setEditBuilderItem(item);
+    if (simpleCatalogMode) {
+      if (isVariantProduct) setShowVariableModal(true);
+      else setShowSimpleModal(true);
+    } else if (hasRecipe || (hasModifierGroups && !isVariantProduct)) {
+      setShowFoodModal(true);
+    } else if (isVariantProduct) {
+      setShowVariableModal(true);
+    } else {
+      setShowSimpleModal(true);
+    }
+  }, [simpleCatalogMode]);
 
   return (
     <>
@@ -375,21 +423,7 @@ export default function MenuItemsTab({
           onEdit={(id) => {
             const item = menuItems.find((m) => m.id === id);
             if (!item) return;
-            const hasRecipe = item.recipe && item.recipe.length > 0;
-            const hasModifierGroups = item.modifierGroups && item.modifierGroups.length > 0;
-            // Products with only modifier groups (no recipe, no 'Formato' variants)
-            // are plain items with choice groups (e.g. VASCHETTA 'A scelta'): the
-            // FoodProductModal handles and persists them. VariableProductModal is
-            // reserved for true variant products (group named 'Formato').
-            const isVariantProduct = hasModifierGroups && item.modifierGroups.some((g) => g.name === 'Formato');
-            setEditBuilderItem(item);
-            if (hasRecipe || (hasModifierGroups && !isVariantProduct)) {
-              setShowFoodModal(true);
-            } else if (isVariantProduct) {
-              setShowVariableModal(true);
-            } else {
-              setShowSimpleModal(true);
-            }
+            openBuilderFor(item);
           }}
           onDelete={(id) => void removeItem(id)}
           onToggleActive={(id, active) => void onSetMenuItemActive?.(id, active)}
@@ -463,23 +497,7 @@ export default function MenuItemsTab({
                     <Button variant="ghost" onClick={() => void onSetMenuItemActive?.(item.id, !item.isActive)}>
                       {item.isActive ? 'Disattiva' : 'Attiva'}
                     </Button>
-                    <Button variant="secondary" onClick={() => {
-                      const hasRecipe = item.recipe && item.recipe.length > 0;
-                      const hasModifierGroups = item.modifierGroups && item.modifierGroups.length > 0;
-                      // Products with only modifier groups (no recipe, no 'Formato' variants)
-                      // are plain items with choice groups (e.g. VASCHETTA 'A scelta'): the
-                      // FoodProductModal handles and persists them. VariableProductModal is
-                      // reserved for true variant products (group named 'Formato').
-                      const isVariantProduct = hasModifierGroups && item.modifierGroups.some((g) => g.name === 'Formato');
-                      setEditBuilderItem(item);
-                      if (hasRecipe || (hasModifierGroups && !isVariantProduct)) {
-                        setShowFoodModal(true);
-                      } else if (isVariantProduct) {
-                        setShowVariableModal(true);
-                      } else {
-                        setShowSimpleModal(true);
-                      }
-                    }}>
+                    <Button variant="secondary" onClick={() => openBuilderFor(item)}>
                       Modifica
                     </Button>
                     {onDelete && (
@@ -569,6 +587,20 @@ export default function MenuItemsTab({
                       <input value={editPrice} onChange={(e) => setEditPrice(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" min="0.01" step="0.10" aria-label="Prezzo" className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.price)}`} />
                     </FormField>
                   </div>
+
+                  <FormField label="Nome interno (comanda)" error={editErrors.ticketName?.message}>
+                    <input
+                      value={editTicketName}
+                      onChange={(e) => setEditTicketName(e.target.value)}
+                      maxLength={TICKET_NAME_MAX_LENGTH + 8}
+                      placeholder="Es. MEDITERR"
+                      aria-label="Nome interno (comanda)"
+                      className={`px-3 py-2 rounded border border-border text-sm ${getErrorClass(editErrors.ticketName)}`}
+                    />
+                  </FormField>
+                  <p className="text-[11px] text-text-muted -mt-1">
+                    Stampa sulla comanda di cucina al posto del nome completo (max {TICKET_NAME_MAX_LENGTH} caratteri). Conto, scontrino e menu pubblico restano col nome completo. Vuoto = nome completo.
+                  </p>
 
                   <div className="flex flex-wrap gap-2">
                     {(['kitchen', 'bar', 'cashier'] as const).map((area) => (
@@ -766,6 +798,7 @@ export default function MenuItemsTab({
       <NewProductSelectionModal
         open={showSelectionModal}
         onClose={() => setShowSelectionModal(false)}
+        simpleCatalogMode={simpleCatalogMode}
         onSelectSimple={() => { setShowSelectionModal(false); setShowSimpleModal(true); }}
         onSelectVariable={() => { setShowSelectionModal(false); setShowVariableModal(true); }}
         onSelectFood={() => { setShowSelectionModal(false); setShowFoodModal(true); }}
@@ -779,6 +812,7 @@ export default function MenuItemsTab({
         inventory={inventory}
         categoryModifierPools={categoryModifierPools}
         prepItems={prepItems}
+        simpleCatalogMode={simpleCatalogMode}
         onCreateCategory={onCreateCategory}
         onCreate={onCreate}
         onCreateMenuProduct={onCreateMenuProduct}

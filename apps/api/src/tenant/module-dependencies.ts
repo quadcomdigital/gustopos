@@ -19,6 +19,9 @@ export const MODULE_DEPENDENCIES: Array<[ModuleKey, ModuleKey]> = [
   ["loyalty_points", "customers"],
   ["purchasing_suppliers", "inventory"],
   ["course_rounds", "kitchen"],
+  // Group order is a child of the public menu: enabling it auto-enables
+  // `public_menu`, and disabling the menu cascades to the shared cart.
+  ["public_group_order", "public_menu"],
 ];
 
 export interface ModuleTogglePlan {

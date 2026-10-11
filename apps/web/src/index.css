@@ -247,10 +247,15 @@ html[data-input="touch"] {
   -webkit-tap-highlight-color: rgba(49, 130, 206, 0.18);
 }
 
-/* Finger-friendly momentum scrolling inside scroll containers. */
+/* Finger-friendly momentum scrolling inside scroll containers.
+   NOTE: `touch-action` must match the scroll axis of the container. A blanket
+   `pan-y` blocks horizontal swiping on every `.overflow-x-auto` row (category
+   pills, tabs, filters) because the value is intersected along the ancestor
+   chain. `pan-x pan-y` allows panning in both directions while still blocking
+   double-tap zoom (already disabled by the viewport meta anyway). */
 html[data-input="touch"] .overflow-auto,
 html[data-input="touch"] .overflow-y-auto,
 html[data-input="touch"] .overflow-x-auto {
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { printAreaSchema, bomComponentTypeSchema } from "./shared.schema";
+import { printAreaSchema, bomComponentTypeSchema, TICKET_NAME_MAX_LENGTH } from "./shared.schema";
 
 /** Canonical units accepted by recipe, production, and stock operations. */
 export const canonicalUnitSchema = z.enum(["mg", "g", "kg", "ml", "L", "pz"]);
@@ -132,6 +132,8 @@ export type CreateMenuProductRequest = z.infer<typeof createMenuProductRequestSc
  */
 export const canonicalCreateMenuProductRequestSchema = z.object({
   name: z.string().min(2),
+  // Internal short name printed on production comande only. Empty = use `name`.
+  ticketName: z.string().max(TICKET_NAME_MAX_LENGTH).optional(),
   price: z.number().nonnegative(),
   category: z.string().min(2),
   categoryId: z.string().min(1).optional(),
@@ -152,6 +154,8 @@ export const menuComponentResponseSchema = canonicalMenuComponentSchema.extend({
 export const menuProductResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
+  // Internal short name for production comande (null = print `name`).
+  ticketName: z.string().max(TICKET_NAME_MAX_LENGTH).nullable().optional(),
   price: z.number().nonnegative(),
   category: z.string(),
   categoryId: z.string().optional(),

@@ -30,11 +30,7 @@ import {
 // 0072). They must never be treated as a routing key again: jobs, claimed
 // areas and mappings all use station ids now. Values are normalized away on
 // read so stale rows can never resurrect the old routing.
-const LEGACY_AREA_KEYS = new Set(["kitchen", "pizzeria", "bar", "cashier"]);
-
-function isLegacyAreaKey(value: unknown): boolean {
-  return typeof value === "string" && LEGACY_AREA_KEYS.has(value.trim().toLowerCase());
-}
+import { isLegacyAreaKey } from "./print-areas";
 
 @Injectable()
 export class PrintBridgeRepository {

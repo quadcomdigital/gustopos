@@ -44,7 +44,10 @@ export default function FranksModifierSheet({
               name: pool.name,
               required: false,
               minSelections: 0,
-              maxSelections: Math.max(1, activeOptions.length),
+              // Pools are OPTIONAL MULTI-SELECT even with a single option
+              // (Senza glutine, MAXI): max=1 would make them single-select and
+              // the active chip could never be deselected.
+              maxSelections: Math.max(2, activeOptions.length),
               multiSelectPriceMode: 'sum',
               sortOrder: pool.sortOrder,
               options: activeOptions.map<ModifierOption>((option) => ({

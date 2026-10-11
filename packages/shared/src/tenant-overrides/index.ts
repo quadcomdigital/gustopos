@@ -24,10 +24,20 @@
  */
 
 export type TenantOverrideKey =
-  /** POS "Prezzo ad-hoc": a waiter types the price of a JOLLY item. */
+  /** POS JOLLY product: a POS-only line whose price is composed by the selections (no ad-hoc typing). */
   | "jolly"
   /** Modifier options that scale the item price instead of adding to it (MAXI ×2). */
-  | "modifierMultiplier";
+  | "modifierMultiplier"
+  /** POS product grid sorted alphabetically instead of catalog (insertion/sortOrder) order. */
+  | "posAlphabeticalSort"
+  /** Station-ticket item notes (`* nota`) printed at GS 2x1 instead of the normal Font A size. */
+  | "stationNotes2x1"
+  /** Station-ticket `Comanda: <numero>` line dropped (it repeats `Ordine:` when the order has no ticket number). */
+  | "stationHideComandaLine"
+  /** Station-ticket `Tavolo:` value printed at GS 2x1 (double width, same height). */
+  | "stationTable2x1"
+  /** POS-only line whose price is typed BY HAND on the product modal (open price). */
+  | "openPrice";
 
 export type TenantOverrides = Readonly<Record<TenantOverrideKey, boolean>>;
 
@@ -35,6 +45,11 @@ export type TenantOverrides = Readonly<Record<TenantOverrideKey, boolean>>;
 const BASE_BEHAVIOUR: TenantOverrides = Object.freeze({
   jolly: false,
   modifierMultiplier: false,
+  posAlphabeticalSort: false,
+  stationNotes2x1: false,
+  stationHideComandaLine: false,
+  stationTable2x1: false,
+  openPrice: false,
 });
 
 /**
@@ -44,9 +59,33 @@ const BASE_BEHAVIOUR: TenantOverrides = Object.freeze({
  * default. Keys may be a slug or a tenant id.
  */
 const TENANT_OVERRIDES: Readonly<Record<string, Partial<TenantOverrides>>> = Object.freeze({
-  // Antico Casale — the only tenant with a JOLLY product and a ×2 (MAXI) pool.
-  casale: { jolly: true, modifierMultiplier: true },
-  "ten_2ad3a695-8893-411f-b922-f28c9b30a6d8": { jolly: true, modifierMultiplier: true },
+  // Antico Casale — the only tenant with a JOLLY product, a ×2 (MAXI) pool, an
+  // alphabetically sorted POS product grid, 2x1 notes on station tickets, no
+  // `Comanda:` line and a 2x1 table number in the kitchen header.
+  casale: {
+    jolly: true,
+    modifierMultiplier: true,
+    posAlphabeticalSort: true,
+    stationNotes2x1: true,
+    stationHideComandaLine: true,
+    stationTable2x1: true,
+  },
+  "ten_2ad3a695-8893-411f-b922-f28c9b30a6d8": {
+    jolly: true,
+    modifierMultiplier: true,
+    posAlphabeticalSort: true,
+    stationNotes2x1: true,
+    stationHideComandaLine: true,
+    stationTable2x1: true,
+  },
+  // Franks — the only tenant with an open-price product (PRODOTTO): a POS-only
+  // line whose price the waiter types by hand.
+  franks: {
+    openPrice: true,
+  },
+  "ten_26ed333e-9dbd-43f7-85b1-fe57054e9e6f": {
+    openPrice: true,
+  },
 });
 
 /**

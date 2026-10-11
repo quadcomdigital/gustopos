@@ -31,14 +31,16 @@ test("casale (by tenant id only) has both capabilities", () => {
   });
 });
 
-test("franks gets base behaviour: both capabilities off", () => {
+test("franks gets the open-price capability only", () => {
   runAs("ten_26ed333e-9dbd-43f7-85b1-fe57054e9e6f", "franks", () => {
     assert.equal(hasTenantOverrideFor("jolly"), false);
     assert.equal(hasTenantOverrideFor("modifierMultiplier"), false);
+    assert.equal(hasTenantOverrideFor("openPrice"), true);
   });
 });
 
 test("no tenant context at all falls back to base behaviour", () => {
   assert.equal(hasTenantOverrideFor("jolly"), false);
   assert.equal(hasTenantOverrideFor("modifierMultiplier"), false);
+  assert.equal(hasTenantOverrideFor("openPrice"), false);
 });

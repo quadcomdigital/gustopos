@@ -10,6 +10,7 @@ import {
   buildCashierReceiptPayload,
   buildPreBillPayload,
   buildCalibrationTicketPayload,
+  buildStationFormatTestPayload,
   formatRomeTime,
   formatRomeDateTime,
   formatRomeDate,
@@ -45,6 +46,20 @@ test("sanitizeForCp437 strips Italian accents", () => {
 test("sanitizeForCp437 handles euro sign", () => {
   assert.equal(sanitizeForCp437("€10.00"), "EUR10.00");
   assert.equal(sanitizeForCp437("Totale: €5,50"), "Totale: EUR5,50");
+});
+
+test("sanitizeForCp437 folds ordinal indicators (CP437 printers can't draw them)", () => {
+  // The round labels are "1ª portata": U+00AA is two UTF-8 bytes a CP437
+  // printer renders as garbage, so the ticket must read "1a portata" while the
+  // screen keeps the proper ª.
+  assert.equal(sanitizeForCp437("1ª portata"), "1a portata");
+  assert.equal(sanitizeForCp437("2ª / 3ª"), "2a / 3a");
+  assert.equal(sanitizeForCp437("nº 4"), "no 4");
+  // The ordinal pass composes with accents and the euro sign in one call.
+  assert.equal(sanitizeForCp437("Caffè ª €2"), "Caffe a EUR2");
+  // The encoded payload is plain ASCII from there on: no stray 0xC2 0xAA pair.
+  const bytes = escPosEncode("1ª portata");
+  assert.deepEqual([...bytes], [...Buffer.from("1a portata", "ascii")]);
 });
 
 test("sanitizeForCp437 passes ASCII through unchanged", () => {
@@ -265,6 +280,50 @@ test("calibration ticket includes every format, the sample and all size commands
       `GS ! 0x${size.toString(16)} present`,
     );
   }
+});
+
+// ─── Kitchen format test: mirrors the tenant's header choices ──────────────
+
+/** True when `sequence` appears in `bytes` (GS ! commands, mostly). */
+function hasSequence(bytes: number[], sequence: number[]): boolean {
+  return bytes.some((_, index) => sequence.every((byte, offset) => bytes[index + offset] === byte));
+}
+
+test("format test keeps the Comanda line by default and drops it on request", () => {
+  const base = Buffer.from(buildStationFormatTestPayload({}), "base64").toString("latin1");
+  const hidden = Buffer.from(
+    buildStationFormatTestPayload({ hideComandaLine: true }),
+    "base64",
+  ).toString("latin1");
+  assert.ok(base.includes("Comanda: TEST"), "base behaviour prints the comanda number");
+  assert.ok(!hidden.includes("Comanda: TEST"), "stationHideComandaLine drops the line");
+  assert.ok(hidden.includes("Tavolo: GAZEBO 2"), "the table line is still there");
+});
+
+test("format test prints the table number at GS 2x1 only when stationTable2x1 is on", () => {
+  const big = payloadBytes(buildStationFormatTestPayload({ table2x1: true }));
+  const normal = payloadBytes(buildStationFormatTestPayload({}));
+  const GS_2x1 = [0x1d, 0x21, 0x10];
+  const GS_1x1 = [0x1d, 0x21, 0x00];
+
+  const bigText = Buffer.from(big).toString("latin1");
+  const bigIndex = bigText.indexOf("GAZEBO 2");
+  assert.ok(bigIndex > 0, "table line present");
+  assert.ok(hasSequence(big.slice(bigIndex - 3, bigIndex), GS_2x1), "GS 2x1 right before the table number");
+  assert.ok(
+    hasSequence(big.slice(bigIndex + "GAZEBO 2".length), GS_1x1),
+    "size reset after the table number",
+  );
+
+  const normalText = Buffer.from(normal).toString("latin1");
+  const normalIndex = normalText.indexOf("GAZEBO 2");
+  assert.ok(!hasSequence(normal.slice(normalIndex - 3, normalIndex), GS_2x1), "default stays Font A");
+});
+
+test("format test folds the round-header ordinal so it reads on paper", () => {
+  const text = Buffer.from(buildStationFormatTestPayload({}), "base64").toString("latin1");
+  assert.ok(text.includes("--- 1a portata ---"), "the header must print as 1a portata");
+  assert.ok(!text.includes("\u00AA"), "no raw ª byte in the payload");
 });
 
 test("EscPosBuilder style commands emit underline/double-strike/reverse/upside-down", () => {

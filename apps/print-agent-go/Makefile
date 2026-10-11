@@ -56,6 +56,6 @@ install-service: install
 
 # Copy release binaries + generate checksums/version.json/downloads page into
 # apps/web/public/downloads (served at /downloads/). Requires binaries in bin/.
-# Usage: make publish-downloads VERSION=0.8.0
+# Usage: make publish-downloads VERSION=0.14.0
 publish-downloads:
 	./scripts/publish-downloads.sh $(VERSION)

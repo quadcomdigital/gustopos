@@ -10,7 +10,8 @@
     "lint": "tsc --noEmit",
     "lint:eslint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "assets:generate": "bash scripts/generate-assets.sh"
   },
   "dependencies": {
     "@gustopos/shared": "0.1.0",

@@ -37,10 +37,20 @@ const ACCENT_MAP: Record<string, string> = {
 
 /**
  * Sanitize text for CP437 thermal printers:
- * strips Italian accents and converts the euro sign to "EUR".
+ * strips Italian accents, folds the ordinal indicators and converts the euro
+ * sign to "EUR".
+ *
+ * `ª`/`º` matter on kitchen tickets: casale's round labels are "1ª portata",
+ * but U+00AA/U+00BA encode to two UTF-8 bytes that a CP437 printer renders as
+ * garbage — the ordinal is unreadable on paper, so it folds to a plain letter
+ * while the UI keeps the proper glyph.
  */
 export function sanitizeForCp437(text: string): string {
-  return text.replace(/[\u00C0-\u024F]/g, (ch) => ACCENT_MAP[ch] ?? ch).replace(/\u20AC/g, "EUR");
+  return text
+    .replace(/[\u00C0-\u024F]/g, (ch) => ACCENT_MAP[ch] ?? ch)
+    // Below the accent range above, so they need their own pass.
+    .replace(/[\u00AA\u00BA]/g, (ch) => (ch === "\u00AA" ? "a" : "o"))
+    .replace(/\u20AC/g, "EUR");
 }
 
 /**
@@ -468,7 +478,7 @@ export function buildPreBillPayload(params: {
  * combinations, alignments (ESC a) and row widths (Font A=42 / Font B=56).
  */
 export function buildCalibrationTicketPayload(params?: { brandName?: string }): string {
-  const brandName = params?.brandName?.trim() || "GUSTOPOS";
+  const brandName = params?.brandName?.trim() || "OMNIRESTAURANT";
   const ep = new EscPosBuilder();
   ep.init();
 
@@ -550,10 +560,21 @@ export function buildCalibrationTicketPayload(params?: { brandName?: string }): 
  * chosen sizes so an operator can validate them in context:
  *   - "Consegna HH:mm"                      -> GRANDE x2 (GS 2x2)
  *   - modifiers + ALL sandwich changes (+/-) -> GS 2x1 + bold
+ *   - item note (`* …`)                     -> GS 2x1 when `notes2x1`, Font A otherwise
+ *   - table number                          -> GS 2x1 when `table2x1`, Font A otherwise
+ *   - `Comanda:` line                       -> omitted when `hideComandaLine`
  * One-shot test artifact, not used by real order printing.
  */
-export function buildStationFormatTestPayload(params?: { stationName?: string }): string {
+export function buildStationFormatTestPayload(params?: {
+  stationName?: string;
+  notes2x1?: boolean;
+  table2x1?: boolean;
+  hideComandaLine?: boolean;
+}): string {
   const stationName = params?.stationName?.trim() || "CUCINA";
+  const notes2x1 = params?.notes2x1 === true;
+  const table2x1 = params?.table2x1 === true;
+  const hideComandaLine = params?.hideComandaLine === true;
   const ep = new EscPosBuilder();
   ep.init();
   ep.font("a");
@@ -563,18 +584,36 @@ export function buildStationFormatTestPayload(params?: { stationName?: string })
   ep.align("left").line("TEST FORMATTAZIONE COMANDA");
   ep.line(formatRomeDateTime(new Date()));
   ep.line();
-  ep.line("Ordine: TEST | Take away");
-  ep.line("Cliente: TEST");
+  ep.line("Ordine: TEST | Dine-in");
+  if (table2x1) {
+    // The line `stationTable2x1` resizes: label stays Font A, the table number
+    // runs at GS 2x1 — double width, SAME height, so the header stays one line.
+    ep.text("Tavolo: ").charSize(2, 1).text("GAZEBO 2").charSize(1, 1).line();
+  } else {
+    ep.line("Tavolo: GAZEBO 2");
+  }
+  if (!hideComandaLine) {
+    ep.line("Comanda: TEST");
+  }
   ep.line();
   ep.doubleSize(true).line("Consegna 19:30").doubleSize(false);
   ep.line();
 
   const mod = (text: string) => ep.charSize(2, 1).bold(true).line(text).bold(false).charSize(1, 1);
+  // Round header, exactly as a real ticket prints it: the ª in "1ª portata" is
+  // a two-byte char a CP437 printer can't draw — sanitize folds it to "1a".
+  ep.bold(true).align("center").line("--- 1ª portata ---").align("left").bold(false);
   ep.charSize(2, 2).line("2x Margherita").charSize(1, 1);
   mod("  + Mozzarella");
   mod("  + Bacon");
   mod("  - Cipolla");
   mod("  Ben cotta");
+  // Item note — the line the tenant override resizes (`stationNotes2x1`).
+  if (notes2x1) {
+    ep.charSize(2, 1).line("  * Senza glutine").charSize(1, 1);
+  } else {
+    ep.line("  * Senza glutine");
+  }
   ep.line();
 
   ep.charSize(2, 2).line("1x Coca Cola").charSize(1, 1);

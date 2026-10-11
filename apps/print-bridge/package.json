@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/server.test.ts"
+    "test": "tsx --test src/server.test.ts src/signing-tenants.test.ts"
   },
   "dependencies": {
     "express": "^4.21.2",

@@ -10,7 +10,7 @@ import { getTenantContext, getTenantIdOrDefault } from "./tenant-context.store";
  * call defaults to `false` for an unknown tenant — the base behaviour.
  *
  * Used by the read/write paths that must not expose or persist a capability a
- * tenant never opted into (JOLLY ad-hoc pricing, ×2 modifier multiplier).
+ * tenant never opted into (JOLLY POS-only pricing, ×2 modifier multiplier).
  */
 export function hasTenantOverrideFor(override: TenantOverrideKey): boolean {
   const context = getTenantContext();

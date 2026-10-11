@@ -68,7 +68,7 @@ export async function seedInitialData(): Promise<void> {
   await db.insert(tenants).values({
     id: "tenant_legacy",
     slug: "legacy",
-    name: "GustoPOS Legacy",
+    name: "OmniRestaurant Legacy",
     subdomain: "legacy",
     domain: null,
     isActive: 1,

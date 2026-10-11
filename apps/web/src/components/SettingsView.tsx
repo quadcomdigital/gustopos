@@ -18,12 +18,14 @@ import StaffView from './StaffView';
 import PaymentsView from './PaymentsView';
 import TablesManagementView from './TablesManagementView';
 import PrintBridgesPanel from './print/PrintBridgesPanel';
+import PrintProfilesPanel from './print/PrintProfilesPanel';
 import PrintStationsManager from './print/PrintStationsManager';
 import PrintSettingsSection from './print/PrintSettingsSection';
+import PrintOpsSection from './print/PrintOpsSection';
 import PublicMenuDesignEditor from './PublicMenuDesignEditor';
+import NotificationSettingsPanel from './notifications/NotificationSettingsPanel';
 import { useAppStore } from '../store/app-store';
 import { usePermission } from '../shared/authz/usePermission';
-import { fetchQzTrayConfig, updateQzTrayConfig, type QzTrayConfig } from '../shared/api/client';
 import { useTerminalProfile } from '../hooks/useTerminalProfile';
 
 interface SettingsViewProps {
@@ -109,9 +111,10 @@ export default function SettingsView({
 }: SettingsViewProps) {
   const enabledModules = useAppStore((state) => state.enabledModules);
   const storeError = useAppStore((state) => state.error);
+  const printBridges = useAppStore((state) => state.printBridges);
   const { can } = usePermission();
   const terminal = useTerminalProfile();
-  const [activeTab, setActiveTab] = useState<'theme' | 'staff' | 'printing' | 'tables' | 'menu'>('theme');
+  const [activeTab, setActiveTab] = useState<'theme' | 'staff' | 'printing' | 'tables' | 'menu' | 'notifications'>('theme');
   const [draft, setDraftInternal] = useState<UiSettings>(settings);
   const isDirtyRef = useRef(false);
   const setDraft = useCallback<typeof setDraftInternal>((value) => {
@@ -121,11 +124,11 @@ export default function SettingsView({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [printingSuccess, setPrintingSuccess] = useState('');
-  const [qzConfig, setQzConfig] = useState<QzTrayConfig | null>(null);
-  const [qzConfigLoading, setQzConfigLoading] = useState(false);
-  const [qzConfigSaving, setQzConfigSaving] = useState(false);
-  const [qzConfigError, setQzConfigError] = useState('');
-  const [qzConfigSuccess, setQzConfigSuccess] = useState('');
+  // Printing sections: setup (what makes the configurations work) · operations
+  // (runtime) · advanced (receipt layout).
+  const [printingSection, setPrintingSection] = useState<'setup' | 'ops' | 'advanced'>('setup');
+  // A bridge card handed its bridge over to the configuration editor.
+  const [routingFocus, setRoutingFocus] = useState<{ bridgeId: string } | null>(null);
   const idPrefix = useId();
   const fieldId = (key: string) => `${idPrefix}-${key}`;
 
@@ -141,67 +144,6 @@ export default function SettingsView({
   const printingEnabled = hasModule('printing');
   const analyticsEnabled = hasModule('analytics');
   const publicMenuEnabled = hasModule('public_menu');
-
-  useEffect(() => {
-    if (activeTab === 'printing' && printingEnabled && !qzConfig) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] loading flag set synchronously to show spinner; setter receives constant primitive, no stale-closure risk
-      setQzConfigLoading(true);
-      fetchQzTrayConfig()
-        .then((res) => setQzConfig(res.qzTray))  
-        .catch(() => setQzConfigError('Impossibile caricare la configurazione QZ Tray'))  
-        .finally(() => setQzConfigLoading(false));  
-    }
-  }, [activeTab, printingEnabled, qzConfig]);
-
-  const saveQzConfig = async () => {
-    if (!qzConfig) return;
-    setQzConfigSaving(true);
-    setQzConfigError('');
-    setQzConfigSuccess('');
-    try {
-      const res = await updateQzTrayConfig({ qzTray: qzConfig });
-      setQzConfig(res.qzTray);
-      setQzConfigSuccess('Configurazione QZ Tray salvata con successo');
-    } catch {
-      setQzConfigError('Errore nel salvataggio della configurazione QZ Tray');
-    } finally {
-      setQzConfigSaving(false);
-    }
-  };
-
-  const addQzHost = () => {
-    if (!qzConfig) return;
-    setQzConfig({ ...qzConfig, hosts: [...qzConfig.hosts, ''] });
-  };
-
-  const updateQzHost = (index: number, value: string) => {
-    if (!qzConfig) return;
-    const newHosts = [...qzConfig.hosts];
-    newHosts[index] = value;
-    setQzConfig({ ...qzConfig, hosts: newHosts });
-  };
-
-  const removeQzHost = (index: number) => {
-    if (!qzConfig || qzConfig.hosts.length <= 1) return;
-    setQzConfig({ ...qzConfig, hosts: qzConfig.hosts.filter((_, i) => i !== index) });
-  };
-
-  const addQzPort = (type: 'securePorts' | 'insecurePorts') => {
-    if (!qzConfig) return;
-    setQzConfig({ ...qzConfig, [type]: [...qzConfig[type], 0] });
-  };
-
-  const updateQzPort = (type: 'securePorts' | 'insecurePorts', index: number, value: number) => {
-    if (!qzConfig) return;
-    const newPorts = [...qzConfig[type]];
-    newPorts[index] = value;
-    setQzConfig({ ...qzConfig, [type]: newPorts });
-  };
-
-  const removeQzPort = (type: 'securePorts' | 'insecurePorts', index: number) => {
-    if (!qzConfig || qzConfig[type].length <= 1) return;
-    setQzConfig({ ...qzConfig, [type]: qzConfig[type].filter((_, i) => i !== index) });
-  };
 
   const checks = useMemo(
     () => [
@@ -260,9 +202,6 @@ export default function SettingsView({
   const validatePrintingDraft = (): string | null => {
     // Mirror backend validatePrintingSettings() to avoid "silent" 400s.
     if (draft.printing.protocol === 'escpos') {
-      if (draft.printing.activeAreas.length === 0) {
-        return 'ESC/POS richiede almeno un\'area di stampa attiva.';
-      }
       if (draft.printing.logoMode === 'bitmap' && !draft.printing.logoBitmap) {
         return 'Modalità logo bitmap richiede di caricare un logo (sezione Layout scontrino).';
       }
@@ -375,6 +314,14 @@ export default function SettingsView({
           >
             Menu Digitale
           </button>
+          <button
+            onClick={() => setActiveTab('notifications')}
+            className={`px-3 py-2 rounded text-xs font-bold uppercase tracking-wider ${
+              activeTab === 'notifications' ? 'bg-primary text-white' : 'border border-border'
+            }`}
+          >
+            Notifiche
+          </button>
         </div>
 
         {!staffEnabled && activeTab === 'staff' && (
@@ -421,7 +368,7 @@ export default function SettingsView({
               <div className="rounded-lg border border-border p-3" style={{ background: draft.theme.bg, color: draft.theme.textMain }}>
                 <p className="text-[10px] uppercase font-bold tracking-widest" style={{ color: draft.theme.textMuted }}>Preview Header</p>
                 <div className="mt-2 px-3 py-2 rounded" style={{ background: draft.theme.primary, color: '#ffffff' }}>
-                  {draft.brandName || 'GUSTOPOS'}
+                  {draft.brandName || 'OMNIRESTAURANT'}
                 </div>
               </div>
             </div>
@@ -495,38 +442,82 @@ export default function SettingsView({
         )}
 
         {activeTab === 'printing' && printingEnabled && (
-          <div className="space-y-6">
-            <PrintStationsManager />
-            <PrintBridgesPanel />
-            <PrintSettingsSection
-              draft={draft}
-              printingSuccess={printingSuccess}
-              saving={saving}
-              onSetDraft={setDraft}
-              onSavePrinting={savePrinting}
-              printJobs={printJobs}
-              onRefreshPrintJobs={onRefreshPrintJobs}
-              onDispatchPrintJob={(id) => onDispatchPrintJob(id)}
-              qzConfig={qzConfig}
-              qzConfigLoading={qzConfigLoading}
-              qzConfigSaving={qzConfigSaving}
-              qzConfigError={qzConfigError}
-              qzConfigSuccess={qzConfigSuccess}
-              onSaveQzConfig={saveQzConfig}
-              onAddQzHost={addQzHost}
-              onUpdateQzHost={updateQzHost}
-              onRemoveQzHost={removeQzHost}
-              onAddQzPort={addQzPort}
-              onUpdateQzPort={updateQzPort}
-              onRemoveQzPort={removeQzPort}
-              onSetQzUseSecure={(value) => setQzConfig((prev) => (prev ? { ...prev, useSecure: value } : prev))}
-            />
+          <div className="space-y-5">
+            {/* ── Sezioni: setup · operazioni · avanzate ─────────────────── */}
+            <div className="flex flex-wrap gap-2 border-b border-border pb-3">
+              {(
+                [
+                  { key: 'setup', label: 'Setup', hint: 'Configurazioni · Zone · Collegamenti' },
+                  { key: 'ops', label: 'Operazioni', hint: 'Coda di stampa e diagnostica agenti' },
+                  { key: 'advanced', label: 'Avanzate', hint: 'Protocollo, logo e footer scontrino' },
+                ] as const
+              ).map((entry) => (
+                <button
+                  key={entry.key}
+                  type="button"
+                  onClick={() => setPrintingSection(entry.key)}
+                  title={entry.hint}
+                  className={`px-3 py-2 rounded text-xs font-bold uppercase tracking-wider ${
+                    printingSection === entry.key ? 'bg-primary text-white' : 'border border-border'
+                  }`}
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+
+            {printingSection === 'setup' && (
+              <div className="space-y-6">
+                {/* 1 · Configurazioni: fonte unica del routing, in cima */}
+                <PrintProfilesPanel
+                  focusRequest={routingFocus}
+                  onFocusRequestHandled={() => setRoutingFocus(null)}
+                />
+                {/* 2 · Zone: registry + quali zone stampano */}
+                <PrintStationsManager
+                  draft={draft}
+                  onSetDraft={setDraft}
+                  onSavePrinting={savePrinting}
+                  savingSettings={saving}
+                  printingSuccess={printingSuccess}
+                />
+                {/* 3 · Collegamenti: agent, stampanti collegate, QZ del browser */}
+                <PrintBridgesPanel
+                  onOpenConfiguration={(bridge) => setRoutingFocus({ bridgeId: bridge.id })}
+                />
+              </div>
+            )}
+
+            {printingSection === 'ops' && (
+              <PrintOpsSection
+                printJobs={printJobs}
+                printBridges={printBridges}
+                onRefreshPrintJobs={onRefreshPrintJobs}
+                onDispatchPrintJob={(id) => onDispatchPrintJob(id)}
+              />
+            )}
+
+            {printingSection === 'advanced' && (
+              <PrintSettingsSection
+                draft={draft}
+                printingSuccess={printingSuccess}
+                saving={saving}
+                onSetDraft={setDraft}
+                onSavePrinting={savePrinting}
+              />
+            )}
           </div>
         )}
 
         {activeTab === 'menu' && publicMenuEnabled && (
           <div className="space-y-6">
             <PublicMenuDesignEditor />
+          </div>
+        )}
+
+        {activeTab === 'notifications' && (
+          <div className="space-y-6">
+            <NotificationSettingsPanel />
           </div>
         )}
 

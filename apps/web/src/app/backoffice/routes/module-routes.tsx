@@ -1,4 +1,4 @@
-import { lazy, useCallback, useState } from 'react';
+import { lazy, useCallback, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '../../../store/app-store';
 import { useBackofficeContext } from '../BackofficeContext';
@@ -17,6 +17,7 @@ const ShiftsView = lazy(() => import('../../../components/ShiftsView'));
 const FiscalExportsView = lazy(() => import('../../../components/FiscalExportsView'));
 const SettingsView = lazy(() => import('../../../components/SettingsView'));
 const CustomersView = lazy(() => import('../../../components/CustomersView'));
+const GroupOrderReviewView = lazy(() => import('../../../components/GroupOrderReviewView'));
 
 export function TablesRoute() {
   const data = useAppStore((s) => s.data);
@@ -99,7 +100,7 @@ export function PosRoute() {
       categoryModifierPools={data.categoryModifierPools}
       onSearchCustomers={refreshCustomers}
       onCreateOrReuseCustomer={createOrReuseCustomer}
-      initialTable={selectedTable || '1'}
+      initialTable={selectedTable || ''}
       initialOrderId={initialOrderId}
       onOrderContextChange={(orderId) => {
         const next = new URLSearchParams(searchParams);
@@ -131,8 +132,30 @@ export function PosRoute() {
 export function KitchenRoute() {
   const data = useAppStore((s) => s.data);
   const updateOrder = useAppStore((s) => s.updateOrder);
+  const menuItemsAdmin = useAppStore((s) => s.menuItemsAdmin);
+  // The kitchen screen mirrors the comanda: production tickets print the
+  // product's internal name ("nome interno"), so the chef must read the same
+  // label on screen and on paper. Receipts/POS keep the real name.
+  const ticketNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of menuItemsAdmin) {
+      const ticketName = item.ticketName?.trim();
+      if (ticketName) map.set(item.id, ticketName);
+    }
+    return map;
+  }, [menuItemsAdmin]);
+  const orders = useMemo(() => {
+    if (!data) return [];
+    return data.orders.map((order) => ({
+      ...order,
+      items: order.items.map((item) => {
+        const ticketName = ticketNameById.get(item.id);
+        return ticketName ? { ...item, name: ticketName } : item;
+      }),
+    }));
+  }, [data, ticketNameById]);
   if (!data) return null;
-  return <KitchenView orders={data.orders} updateOrder={updateOrder} />;
+  return <KitchenView orders={orders} updateOrder={updateOrder} />;
 }
 
 export function InventoryRoute() {
@@ -154,6 +177,7 @@ export function InventoryRoute() {
   const createCategory = useAppStore((s) => s.createCategory);
   const updateCategory = useAppStore((s) => s.updateCategory);
   const deleteCategory = useAppStore((s) => s.deleteCategory);
+  const reorderCategories = useAppStore((s) => s.reorderCategories);
   const createBomItem = useAppStore((s) => s.createBomItem);
   const updateBomItem = useAppStore((s) => s.updateBomItem);
   const replaceBomComponents = useAppStore((s) => s.replaceBomComponents);
@@ -249,6 +273,7 @@ export function InventoryRoute() {
       onCreateCategory={createCategory}
       onUpdateCategory={updateCategory}
       onDeleteCategory={deleteCategory}
+      onReorderCategories={reorderCategories}
       onCreateBom={createBomItem}
       onUpdateBom={updateBomItem}
       onReplaceBomComponents={replaceBomComponents}
@@ -283,10 +308,12 @@ export function SimpleCatalogRoute() {
   const createCategory = useAppStore((s) => s.createCategory);
   const updateCategory = useAppStore((s) => s.updateCategory);
   const deleteCategory = useAppStore((s) => s.deleteCategory);
+  const reorderCategories = useAppStore((s) => s.reorderCategories);
   const refreshMenuItemsAdmin = useAppStore((s) => s.refreshMenuItemsAdmin);
   const createSimpleCatalogItem = useAppStore((s) => s.createSimpleCatalogItem);
   const updateMenuItem = useAppStore((s) => s.updateMenuItem);
   const setMenuItemActiveAdmin = useAppStore((s) => s.setMenuItemActiveAdmin);
+  const deleteMenuItemAdmin = useAppStore((s) => s.deleteMenuItemAdmin);
   const refreshCategoryModifierPools = useAppStore((s) => s.refreshCategoryModifierPools);
   const createCategoryModifierPool = useAppStore((s) => s.createCategoryModifierPool);
   const updateCategoryModifierPool = useAppStore((s) => s.updateCategoryModifierPool);
@@ -302,10 +329,12 @@ export function SimpleCatalogRoute() {
       onCreateCategory={(payload) => createCategory({ ...payload, scope: 'menu' })}
       onUpdateCategory={updateCategory}
       onDeleteCategory={deleteCategory}
+      onReorderCategories={reorderCategories}
       onRefreshMenu={refreshMenuItemsAdmin}
       onCreateMenuItem={(payload) => createSimpleCatalogItem(payload)}
       onUpdateMenuItem={updateMenuItem}
       onSetMenuItemActive={setMenuItemActiveAdmin}
+      onDeleteMenuItem={deleteMenuItemAdmin}
       // Category modifier pools (e.g. MAXI) must be manageable in
       // simple_catalog too — the "Mod. Categoria" tab is in SIMPLE_TABS and
       // the API gates on RequiresAnyOfModules("inventory","simple_catalog").
@@ -333,7 +362,7 @@ export function DashboardRoute() {
   const voidOrder = useAppStore((s) => s.voidOrder);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const currentUser = useAppStore((s) => s.currentUser);
-  const { reservationsSummary, deliverySummary, refreshOperationalSummaries } = useBackofficeContext();
+  const { reservationsSummary, deliverySummary, refreshOperationalSummaries, salesSummary, salesSummaryLoading, salesPeriod, setSalesPeriod, refreshSalesSummary } = useBackofficeContext();
   const navigate = useNavigate();
   if (!data || !currentUser) return null;
   const canVoidOrders = enabledModules.includes('kitchen') &&
@@ -350,6 +379,11 @@ export function DashboardRoute() {
       reservationsSummary={reservationsSummary}
       deliverySummary={deliverySummary}
       onRefreshOperationalSummaries={refreshOperationalSummaries}
+      salesSummary={salesSummary}
+      salesSummaryLoading={salesSummaryLoading}
+      salesPeriod={salesPeriod}
+      onSalesPeriodChange={setSalesPeriod}
+      onRefreshSalesSummary={refreshSalesSummary}
       canVoidOrders={canVoidOrders}
       onViewCustomer={(customerId) => navigate(`/app/customers/${customerId}`)}
     />
@@ -450,4 +484,8 @@ export function CustomersRoute() {
       onDeleteCustomer={deleteCustomer}
     />
   );
+}
+
+export function GroupOrdersRoute() {
+  return <GroupOrderReviewView />;
 }

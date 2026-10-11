@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Staff } from '@gustopos/shared';
 import { Lock, User, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
+import AppLogo from '../assets/brand/AppLogo';
 
 interface LoginViewProps {
   staff: Staff[];
@@ -42,8 +43,8 @@ export default function LoginView({ staff, onLogin }: LoginViewProps) {
           selectedUser ? "hidden md:flex" : "flex h-full md:h-auto"
         )}>
           <div className="mb-8 md:mb-12 text-center md:text-left shrink-0">
-            <h1 className="text-2xl md:text-3xl font-bold text-primary tracking-tight">GUSTOPOS</h1>
-            <p className="text-[10px] md:text-sm text-text-muted font-medium uppercase tracking-widest">Enterprise Management</p>
+            <AppLogo variant="dark" className="h-8 md:h-10 w-auto mx-auto md:mx-0" />
+            <p className="mt-2 text-[10px] md:text-sm text-text-muted font-medium uppercase tracking-widest">Enterprise Management</p>
           </div>
 
           <div className="flex-1 space-y-3 md:space-y-4 overflow-y-auto pr-1 no-scrollbar">

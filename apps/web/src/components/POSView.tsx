@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, MoveRight, GitMerge } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { buildComponentNameById, buildModifierOptionNameById } from '../lib/catalog-names';
+import { sortPosMenuAlphabetically, usesAlphabeticalPosOrder } from '../lib/pos-menu-order';
+import { isOpenPriceItem } from '../lib/open-price';
 import { useAppStore } from '../store/app-store';
 import { useViewport } from '../hooks/useViewport';
 import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
@@ -69,7 +71,7 @@ export default function POSView({
   categoryModifierPools = [],
   onSearchCustomers,
   onCreateOrReuseCustomer,
-  initialTable = '1',
+  initialTable = '',
   initialOrderId,
   onOrderContextChange,
   onOpenTablesView,
@@ -79,11 +81,16 @@ export default function POSView({
   onSuspendTable,
   onResumeTable,
 }: POSViewProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string>('Tutti');
+  // The pill selection holds the CATEGORY ID (not the label): labels are
+  // display-only and are free to be renamed, while `menu_items.category` is a
+  // denormalized text that does NOT follow a category rename — matching on it
+  // emptied entire pills (e.g. casale "PIZZERIA" vs stored "Pizzeria").
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const orderMode = useAppStore((s) => s.posOrderMode);
   const setOrderMode = (mode: 'dine_in' | 'takeaway' | 'delivery') => useAppStore.setState({ posOrderMode: mode });
   const posTableNumber = useAppStore((s) => s.posTableNumber);
-  const setTableNumber = (num: string) => useAppStore.setState({ posTableNumber: num });
+  const posTableId = useAppStore((s) => s.posTableId);
+  const selectPosTable = useAppStore((s) => s.selectPosTable);
   const posCart = useAppStore((s) => s.posCart);
   const addToPosCart = useAppStore((s) => s.addToPosCart);
   const updatePosCartItem = useAppStore((s) => s.updatePosCartItem);
@@ -125,13 +132,60 @@ export default function POSView({
 
   const [showCustomerDetailsModal, setShowCustomerDetailsModal] = useState(false);
   const [showTableActions, setShowTableActions] = useState(false);
+  // True when the selected dine-in table disappeared from the (realtime)
+  // tables list while the cart still holds items. Send is blocked so the
+  // dishes can never be re-bound to a different table by a silent fallback.
+  const [selectedTableMissing, setSelectedTableMissing] = useState(false);
   const [relocateMode, setRelocateMode] = useState<TableRelocateMode | null>(null);
   const [relocateSourceTableId, setRelocateSourceTableId] = useState('');
+
+  // Select a table by NUMBER (what the tables map / deep links hand us),
+  // resolving its stable id. If we were flagged "table gone" and the waiter
+  // picks a new one, the orphaned dine-in cart follows to the new table so the
+  // dishes are never silently stranded.
+  const selectTableByNumber = React.useCallback(
+    (number: string) => {
+      const target = data.tables.find((t) => t.number === number);
+      const targetId = target?.id ?? '';
+      if (selectedTableMissing) {
+        const state = useAppStore.getState();
+        // The orphaned cart may live under the id-keyed context or a legacy
+        // number-keyed one; take whichever holds items.
+        const candidateKeys = [
+          state.posTableId ? `dine_in:${state.posTableId}` : '',
+          state.posTableNumber ? `dine_in:${state.posTableNumber}` : '',
+        ].filter(Boolean);
+        const sourceKey = candidateKeys.find((k) => (state.cartStore[k]?.length ?? 0) > 0);
+        if (sourceKey && targetId && sourceKey !== `dine_in:${targetId}`) {
+          state.relocateCart(sourceKey, `dine_in:${targetId}`);
+        }
+        setSelectedTableMissing(false);
+      }
+      selectPosTable(targetId, number);
+    },
+    [data.tables, selectedTableMissing, selectPosTable],
+  );
   const menuSearch = useAppStore((s) => s.posMenuSearch);
   const setMenuSearch = (v: string) => useAppStore.setState({ posMenuSearch: v });
 
+  // Casale renders its product grid A→Z (per-tenant capability); every other
+  // tenant keeps the curated catalog order.
+  const tenantContext = useAppStore((s) => s.tenantContext);
+  const alphabeticalPosOrder = usesAlphabeticalPosOrder(tenantContext);
+
   // Per-item "Salta stampa cucina" toggles (set of cart item IDs)
   const [skipKitchenById, setSkipKitchenById] = useState<Set<string>>(new Set());
+
+  // Open-price lines never reach a production ticket: the price is typed at the
+  // POS, so they are forced down the "skip kitchen print" path (they still show
+  // on the cashier/order ticket).
+  const openPriceMenuItemIds = useMemo(
+    () =>
+      new Set(
+        data.menu.filter((item) => isOpenPriceItem(item, tenantContext?.tenantId)).map((item) => item.id),
+      ),
+    [data.menu, tenantContext?.tenantId],
+  );
 
   // Latest delivery address, readable inside async callbacks without stale
   // closures (used to avoid clobbering a conto address with a customer default).
@@ -147,11 +201,34 @@ export default function POSView({
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
     modifierPriceDelta: number;
+    /** Open-price line: the price typed by the waiter, carried across the
+     *  product modal → "Personalizza" modal hand-off. */
+    customPrice?: number;
     cartItemId?: string;
   };
   const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
   const [modifierDraft, setModifierDraft] = useState<ModifierDraft | null>(null);
+
+  // Stable identities for the modal callbacks: inline closures re-created on
+  // every render churn the modal effect deps (and with the latest-ref pattern
+  // in the modals this is belt-and-braces, it also avoids needless prop
+  // re-renders on every viewport/socket update).
+  const closeProductModal = React.useCallback(() => setModalItem(null), []);
+  const closeModifierModal = React.useCallback(() => {
+    setModifierDraft(null);
+    setModifierModalItem(null);
+  }, []);
+  const openModifierFromProduct = React.useCallback(
+    (draft?: ModifierDraft) => {
+      if (!modalItem) return;
+      setModifierDraft(draft ?? null);
+      setModifierModalItem(modalItem.item);
+      setModalItem(null);
+    },
+    [modalItem],
+  );
+
   const courseRoundsConfig = useAppStore((s) => s.courseRoundsConfig);
   const courseRoundsModuleEnabled = useAppStore((s) => s.courseRoundsModuleEnabled);
   const roundsActive = courseRoundsModuleEnabled && courseRoundsConfig.enabled && orderMode === 'dine_in';
@@ -159,7 +236,7 @@ export default function POSView({
   // Sync table from external navigation (e.g. tables view → POS)
   React.useEffect(() => {
     if (initialTable && initialTable !== posTableNumber) {
-      setTableNumber(initialTable);
+      selectTableByNumber(initialTable);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTable]);
@@ -185,7 +262,7 @@ export default function POSView({
   React.useEffect(() => {
     if (!orderContext) return;
     if (orderContext.orderType !== orderMode) setOrderMode(orderContext.orderType);
-    if (orderContext.table) setTableNumber(orderContext.table);
+    if (orderContext.table) selectTableByNumber(orderContext.table);
     if (orderContext.customerId) setSelectedCustomerId(orderContext.customerId);
     setTakeawayCustomerName(orderContext.customerName ?? '');
     setTakeawayCustomerPhone(orderContext.customerPhone ?? '');
@@ -222,15 +299,34 @@ export default function POSView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deliveryAddress is read+written inside the effect (default pick on first load); adding to deps would cause infinite re-run loop
   }, [effectiveOrderMode, selectedCustomerId]);
 
-  // Sync cart context when mode, table or open conto changes
+  // Selected table, resolved by STABLE ID first (so a rename follows) then by
+  // number (legacy persisted selection). data.tables already excludes
+  // soft-deleted rows, so a missing id/number means the table is gone.
+  const selectedTable =
+    (posTableId ? data.tables.find((t) => t.id === posTableId) : undefined)
+    ?? data.tables.find((t) => t.number === posTableNumber)
+    ?? null;
+  const physicalDineInTable =
+    effectiveOrderMode === 'dine_in' && selectedTable && !selectedTable.isVirtual ? selectedTable : null;
+
+  // Table NUMBER the cart is bound to, used to match open orders (orders store
+  // the table by number).
   const activeGroupTable = contextMatchesMode
     ? orderContext?.table
-    : (effectiveOrderMode === 'dine_in' && !data.tables.find((table) => table.number === posTableNumber)?.isVirtual
-        ? posTableNumber
-        : undefined);
-  const cartContextKey = activeGroupTable
-    ? `${effectiveOrderMode}:${activeGroupTable}`
-    : effectiveOrderMode;
+    : physicalDineInTable
+      ? physicalDineInTable.number
+      : undefined;
+
+  // Dine-in cart context keyed by the table ID. Because the id does NOT change
+  // when a table is renamed or temporarily disappears from a realtime snapshot,
+  // the cart stays bound to it instead of being stashed-and-emptied.
+  const cartContextKey = contextMatchesMode
+    ? `${effectiveOrderMode}:${orderContext?.table ?? ''}`
+    : effectiveOrderMode === 'dine_in'
+      ? posTableId
+        ? `dine_in:${posTableId}`
+        : 'dine_in'
+      : effectiveOrderMode;
 
   const orderHeaderLabel = contextMatchesMode
     ? `${effectiveOrderMode === 'delivery' ? 'Consegna' : 'Asporto'}${orderContext?.customerName ? ` · ${orderContext.customerName}` : orderContext?.ticketNumber ? ` · ${orderContext.ticketNumber}` : ''}`
@@ -252,18 +348,60 @@ export default function POSView({
 
   React.useEffect(() => {
     if (data.tables.length === 0) return;
-    // In sala a virtual asporto/delivery conto is not a valid table.
-    const exists = data.tables.some(
-      (table) => table.number === posTableNumber && (effectiveOrderMode !== 'dine_in' || !table.isVirtual),
-    );
-    if (!exists) {
-      const fallback = [...data.tables]
-        .filter((table) => !table.isVirtual)
-        .sort((a, b) => a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' }))[0]
-        ?.number;
-      if (fallback) setTableNumber(fallback);
+
+    // 1) Resolve and sync: follow a rename (same id, new number) and adopt a
+    //    legacy persisted number once.
+    if (selectedTable) {
+      if (posTableId !== selectedTable.id) {
+        useAppStore.setState({ posTableId: selectedTable.id });
+      }
+      if (posTableNumber !== selectedTable.number) {
+        useAppStore.setState({ posTableNumber: selectedTable.number });
+      }
+      setSelectedTableMissing(false);
+      return;
     }
-  }, [data.tables, posTableNumber, effectiveOrderMode]);
+
+    // An open takeaway/delivery/dine-in conto drives its own context.
+    if (contextMatchesMode) return;
+
+    // 2) A previously stored selection no longer exists (deleted on another
+    //    terminal). NEVER silently re-bind to another table — that is exactly
+    //    how dishes end up on the wrong table (e.g. jumping to the first
+    //    active table after A1/A2/… are deleted). Flag it and block Send; the
+    //    waiter re-picks a table and the orphaned cart follows.
+    if (posTableId || posTableNumber) {
+      setSelectedTableMissing(true);
+      return;
+    }
+
+    // 3) Truly no selection yet (fresh device): pick the first active table
+    //    ONCE. From then on the id is stored, so this branch never re-runs.
+    const fallback = [...data.tables]
+      .filter((table) => !table.isVirtual)
+      .sort((a, b) => a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' }))[0];
+    if (fallback) {
+      useAppStore.setState({ posTableId: fallback.id, posTableNumber: fallback.number });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedTable identity is stable per data.tables render
+  }, [data.tables, posTableId, posTableNumber, selectedTable, contextMatchesMode]);
+
+  // One-time migration of carts saved before contexts were keyed by table ID
+  // (legacy key = `dine_in:<number>`). Once the table resolves, move any unsent
+  // cart onto its new id-keyed context so an upgrade doesn't lose it.
+  React.useEffect(() => {
+    if (effectiveOrderMode !== 'dine_in' || contextMatchesMode || !physicalDineInTable) return;
+    const legacyKey = `dine_in:${physicalDineInTable.number}`;
+    const newKey = `dine_in:${physicalDineInTable.id}`;
+    if (legacyKey === newKey) return;
+    const { cartStore } = useAppStore.getState();
+    const legacyCart = cartStore[legacyKey];
+    if (!legacyCart || legacyCart.length === 0) return;
+    const current = cartStore[newKey];
+    if (current && current.length > 0) return;
+    relocateCart(legacyKey, newKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolved table id; relocateCart is a stable store setter
+  }, [physicalDineInTable?.id, effectiveOrderMode, contextMatchesMode]);
 
   React.useEffect(() => {
     if (!['takeaway', 'delivery'].includes(effectiveOrderMode) || !onSearchCustomers) return;
@@ -292,18 +430,37 @@ export default function POSView({
   }, [categories, data.menu]);
 
   const categoryFilterOptions = useMemo(() => {
-    return ['Tutti', ...menuCategories.map((c) => c.name)];
+    return [{ value: 'all', label: 'Tutti' }, ...menuCategories.map((c) => ({ value: c.id, label: c.name }))];
   }, [menuCategories]);
+
+  const selectedCategoryLabel = useMemo(
+    () => categoryFilterOptions.find((option) => option.value === selectedCategoryId)?.label ?? '',
+    [categoryFilterOptions, selectedCategoryId],
+  );
 
   const filteredMenu = useMemo(() => {
     let items = data.menu;
-    if (selectedCategory !== 'Tutti') items = items.filter((item) => item.category === selectedCategory);
+    if (selectedCategoryId !== 'all') {
+      // Prefer the id; the label clause is only a safety net for rows with no
+      // categoryId (legacy data) and for the no-registry fallback above, where
+      // the pill "id" IS the category text.
+      items = items.filter(
+        (item) =>
+          item.categoryId === selectedCategoryId ||
+          (!item.categoryId && item.category === selectedCategoryLabel),
+      );
+    }
     if (menuSearch.trim()) {
       const q = menuSearch.trim().toLowerCase();
       items = items.filter((item) => item.name.toLowerCase().includes(q));
     }
+    // Casale's capability: A→Z by name (also across "Tutti" and search hits).
+    // Copy happens inside the helper, so `data.menu` keeps its own order.
+    if (alphabeticalPosOrder) {
+      items = sortPosMenuAlphabetically(items);
+    }
     return items;
-  }, [data.menu, selectedCategory, menuSearch]);
+  }, [data.menu, selectedCategoryId, selectedCategoryLabel, menuSearch, alphabeticalPosOrder]);
 
   // Track order context for inline editing (orderId + orderItemId per item)
   type OrderedItem = OrderItem & { _orderId: string; _orderItemId: number };
@@ -366,21 +523,25 @@ export default function POSView({
     customPrice?: number,
     round?: number | null,
   ) => {
+    // Open-price lines carry the price typed by the waiter; every other product
+    // resyncs to its catalog price (a line saved before the JOLLY ad-hoc price
+    // was removed could still carry a stale typed basePrice).
+    const basePrice = customPrice ?? item.price;
     if (modalItem?.editCartItem) {
       updatePosCartItem(modalItem.editCartItem.cartItemId, {
+        basePrice,
         quantity,
         notes,
         ingredientOverrides,
         selectedModifiers,
         modifierPriceDelta,
         ...(roundsActive ? { round: round ?? null } : { round: undefined }),
-        ...(customPrice !== undefined ? { basePrice: customPrice } : {}),
       });
     } else {
       addToPosCart({
         menuItemId: item.id,
         name: item.name,
-        basePrice: customPrice !== undefined ? customPrice : item.price,
+        basePrice,
         quantity,
         notes,
         ingredientOverrides,
@@ -411,7 +572,9 @@ export default function POSView({
       addToPosCart({
         menuItemId: modifierModalItem.id,
         name: modifierModalItem.name,
-        basePrice: modifierModalItem.price,
+        // Open-price line keeps the typed amount; every other product uses the
+        // catalog price.
+        basePrice: draft?.customPrice ?? modifierModalItem.price,
         quantity: draft?.quantity ?? 1,
         notes: draft?.notes ?? '',
         ...(roundsActive ? { round: draft?.round ?? null } : {}),
@@ -443,6 +606,13 @@ export default function POSView({
   // --- Order submission ---
   const handleSendToKitchen = async () => {
     if (posCart.length === 0) return;
+    // Dine-in orders must target an ACTIVE table. Guards against a stale
+    // selection (table renamed/removed on another terminal) so items can never
+    // be sent to the wrong table; the API rejects it too, as a backstop.
+    if (effectiveOrderMode === 'dine_in' && (!selectedTable || selectedTable.isVirtual)) {
+      setActionError('Il tavolo selezionato non è più disponibile: scegli di nuovo il tavolo prima di inviare.');
+      return;
+    }
     setIsProcessing(true);
     setActionError('');
     setActionSuccess('');
@@ -481,7 +651,9 @@ export default function POSView({
           quantity: ci.quantity,
           ...(roundsActive && ci.round !== undefined ? { round: ci.round } : {}),
           notes: ci.notes || undefined,
-          skipKitchenPrint: skipKitchenById.has(ci.cartItemId) || undefined,
+          // An open-price line is POS-only and never prints on a production
+          // station, whatever the station's own-items setting: force the skip.
+          skipKitchenPrint: skipKitchenById.has(ci.cartItemId) || openPriceMenuItemIds.has(ci.menuItemId) || undefined,
           ingredientOverrides: ci.ingredientOverrides.length > 0 ? ci.ingredientOverrides : undefined,
           selectedModifiers: ci.selectedModifiers.length > 0 ? ci.selectedModifiers : undefined,
         })),
@@ -552,7 +724,6 @@ export default function POSView({
     [data.menu, categoryModifierPools, componentNameById],
   );
 
-  const selectedTable = data.tables.find((t) => t.number === posTableNumber);
   const canRelocateCurrentTable =
     effectiveOrderMode === 'dine_in' &&
     (selectedTable?.status === 'occupied' || selectedTable?.status === 'suspended') &&
@@ -609,10 +780,10 @@ export default function POSView({
   const relocateCartToTarget = (targetTableId: string) => {
     const targetTable = data.tables.find((t) => t.id === targetTableId);
     if (!targetTable) return;
-    const sourceKey = `dine_in:${posTableNumber}`;
-    const targetKey = `dine_in:${targetTable.number}`;
-    relocateCart(sourceKey, targetKey);
-    setTableNumber(targetTable.number);
+    const sourceKey = posTableId ? `dine_in:${posTableId}` : `dine_in:${posTableNumber}`;
+    const targetKey = `dine_in:${targetTable.id}`;
+    if (sourceKey !== targetKey) relocateCart(sourceKey, targetKey);
+    selectPosTable(targetTable.id, targetTable.number);
   };
 
   const handleTransferTable = async (sourceTableId: string, targetTableId: string) => {
@@ -666,18 +837,18 @@ export default function POSView({
           {/* Category Pills */}
           <div className="overflow-x-auto no-scrollbar">
             <div className="flex gap-1.5">
-              {categoryFilterOptions.map((cat) => (
+              {categoryFilterOptions.map((option) => (
                 <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
+                  key={option.value}
+                  onClick={() => setSelectedCategoryId(option.value)}
                   className={cn(
                     'min-h-[44px] px-3 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap shrink-0',
-                    selectedCategory === cat
+                    selectedCategoryId === option.value
                       ? 'bg-accent text-white shadow-sm'
                       : 'bg-white text-secondary border border-border',
                   )}
                 >
-                  {cat}
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -714,18 +885,18 @@ export default function POSView({
         {/* Desktop Header */}
         <div className="hidden md:flex items-center justify-between mb-6">
           <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar flex-1 mr-4">
-            {categoryFilterOptions.map((cat) => (
+            {categoryFilterOptions.map((option) => (
               <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
+                key={option.value}
+                onClick={() => setSelectedCategoryId(option.value)}
                 className={cn(
                   'px-6 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap',
-                  selectedCategory === cat
+                  selectedCategoryId === option.value
                     ? 'bg-accent text-white shadow-sm'
                     : 'bg-white text-secondary hover:bg-gray-50 border border-border',
                 )}
               >
-                {cat}
+                {option.label}
               </button>
             ))}
           </div>
@@ -827,9 +998,9 @@ export default function POSView({
             <span className="bg-accent/10 text-accent px-2 py-0.5 rounded font-bold">
               {filteredMenu.length} / {data.menu.length}
             </span>
-            {selectedCategory !== 'Tutti' && (
+            {selectedCategoryId !== 'all' && (
               <span className="text-text-muted text-[10px]">
-                (filtrato: {selectedCategory})
+                (filtrato: {selectedCategoryLabel})
               </span>
             )}
           </div>
@@ -1113,7 +1284,7 @@ export default function POSView({
           </div>
 
           <button
-            disabled={posCart.length === 0 || isProcessing || (effectiveOrderMode === 'delivery' && deliveryAddress.trim().length < 5)}
+            disabled={posCart.length === 0 || isProcessing || selectedTableMissing || (effectiveOrderMode === 'delivery' && deliveryAddress.trim().length < 5)}
             onClick={() => setShowSendConfirm(true)}
             className="w-full flex items-center justify-center gap-2 py-3.5 bg-accent text-white rounded-xl active:bg-blue-800 shadow-md transition-all disabled:opacity-50 text-xs font-bold uppercase tracking-widest active:scale-[0.98]"
           >
@@ -1127,6 +1298,9 @@ export default function POSView({
           )}
           {posCart.length > 0 && effectiveOrderMode === 'delivery' && deliveryAddress.trim().length < 5 && (
             <p className="text-[9px] text-danger text-center font-medium">Inserisci un indirizzo di consegna</p>
+          )}
+          {selectedTableMissing && (
+            <p className="text-[9px] text-danger text-center font-medium" role="alert">Tavolo non più disponibile: riseleziona un tavolo (il carrello verrà spostato)</p>
           )}
           {canCloseTable && (selectedTable?.status === 'occupied' || selectedTable?.status === 'suspended') && (effectiveOrderMode === 'dine_in' || contextMatchesMode) && (
             <button
@@ -1438,7 +1612,7 @@ export default function POSView({
       <POSProductModal
         item={modalItem?.item ?? null}
         isOpen={modalItem !== null}
-        onClose={() => setModalItem(null)}
+        onClose={closeProductModal}
         onAddToCart={handleModalAddToCart}
         inventory={data.inventory}
         orderMode={effectiveOrderMode}
@@ -1447,13 +1621,7 @@ export default function POSView({
         courseRoundsConfig={courseRoundsConfig}
         courseRoundsModuleEnabled={courseRoundsModuleEnabled}
         categoryModifierPools={categoryModifierPools}
-        onOpenModifierModal={(draft) => {          if (modalItem?.item) {
-            const itemToEdit = modalItem.item;
-            setModifierDraft(draft ?? null);
-            setModalItem(null);
-            setModifierModalItem(itemToEdit);
-          }
-        }}
+        onOpenModifierModal={openModifierFromProduct}
       />
 
       {/* ============ MODIFIER MODAL ============ */}
@@ -1461,7 +1629,7 @@ export default function POSView({
         <ModifierModal
           item={modifierModalItem}
           isOpen={Boolean(modifierModalItem)}
-          onClose={() => { setModifierDraft(null); setModifierModalItem(null); }}
+          onClose={closeModifierModal}
           onConfirm={handleModifierConfirm}
           inventory={data.inventory}
           bomItems={data.bomItems}

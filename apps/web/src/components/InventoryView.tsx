@@ -38,6 +38,7 @@ interface InventoryViewProps {
   onCreateCategory?: (payload: CategoryCreateRequest) => Promise<void>;
   onUpdateCategory?: (id: string, payload: CategoryUpdateRequest) => Promise<void>;
   onDeleteCategory?: (id: string) => Promise<void>;
+  onReorderCategories?: (ids: string[]) => Promise<void>;
   onCreateBom?: (payload: BomCreateRequest) => Promise<void>;
   onUpdateBom?: (id: string, payload: BomUpdateRequest) => Promise<void>;
   onReplaceBomComponents?: (id: string, payload: BomUpsertComponentsRequest) => Promise<void>;
@@ -143,6 +144,7 @@ export default function InventoryView({
   onCreateCategory,
   onUpdateCategory,
   onDeleteCategory,
+  onReorderCategories,
   onCreateBom,
   onUpdateBom,
   onReplaceBomComponents,
@@ -199,6 +201,7 @@ export default function InventoryView({
       onCreateCategory={onCreateCategory}
       onUpdateCategory={onUpdateCategory}
       onDeleteCategory={onDeleteCategory}
+      onReorderCategories={onReorderCategories}
       onCreateBom={onCreateBom}
       onUpdateBom={onUpdateBom}
       onReplaceBomComponents={onReplaceBomComponents}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import AppLogo from '../assets/brand/AppLogo';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -63,9 +64,12 @@ export default function PwaInstallPrompt() {
   return (
     <div className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 right-4 md:bottom-4 md:left-auto md:right-4 md:w-80 z-[900] bg-white border border-border rounded-xl shadow-2xl p-4 space-y-3">
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="text-sm font-bold text-primary">Installa GustoPOS</p>
-          <p className="text-xs text-text-muted mt-1">Aggiungi alla schermata Home per un accesso rapido</p>
+        <div className="flex items-start gap-2.5">
+          <AppLogo variant="dark" className="mt-0.5 h-7 w-auto shrink-0" />
+          <div>
+            <p className="text-sm font-bold text-primary">Installa OmniRestaurant</p>
+            <p className="text-xs text-text-muted mt-1">Aggiungi alla schermata Home per un accesso rapido</p>
+          </div>
         </div>
         <button onClick={handleDismiss} className="text-text-muted hover:text-primary text-lg leading-none">&times;</button>
       </div>

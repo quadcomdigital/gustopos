@@ -66,20 +66,12 @@ export const uiSettingsSchema = z.object({
   taxRate: z.number().min(0).max(1).default(0.10),
   theme: uiThemeSchema,
   printing: z.object({
-    kitchenPrinterName: z.string().max(80),
-    kitchenPrinterIp: z.string().max(45).optional(),
-    kitchenPrinterPort: z.number().int().min(1).max(65535).optional(),
-    cashierPrinterName: z.string().max(80),
-    cashierPrinterIp: z.string().max(45).optional(),
-    cashierPrinterPort: z.number().int().min(1).max(65535).optional(),
-    barPrinterName: z.string().max(80),
-    barPrinterIp: z.string().max(45).optional(),
-    barPrinterPort: z.number().int().min(1).max(65535).optional(),
     protocol: z.enum(["escpos", "disabled"]),
-    // Dynamic station ids that should receive order tickets (supersedes
-    // activeAreas). Empty falls back to activeAreas for legacy settings.
+    // Which zones (print stations) receive order tickets. EMPTY = every active
+    // station — the read path treats [] as "no filter". Resolved against the
+    // live registry on write (unknown/deactivated ids are dropped), so a stale
+    // id can never silently swallow every ticket.
     activeStationIds: z.array(z.string()).default([]),
-    activeAreas: z.array(printAreaSchema),
     autoPrintKitchen: z.boolean(),
     autoPrintOnClose: z.boolean(),
     logoMode: z.enum(["none", "bitmap"]),
@@ -312,6 +304,154 @@ export const printBridgeJobFailResponseSchema = z.object({
 
 export const printBridgePrintBridgesListResponseSchema = z.array(printBridgeSchema);
 
+// ─── Acquired printer registry ───────────────────────────────────────────
+//
+// Every printer a bridge has EVER reported (QZ enumeration) or found on the
+// LAN, kept tenant-wide and upsert-only. Unlike `print_bridges.printers` — a
+// transient snapshot each scan replaces — an acquired endpoint survives the
+// printer being off and the bridge being offline, which is what lets a
+// configuration reference `192.168.1.40:9100` and be applied later.
+
+export const printEndpointKindSchema = z.enum(["net", "qz"]);
+
+export const printEndpointSchema = z.object({
+  id: z.string(),
+  kind: printEndpointKindSchema,
+  name: z.string().min(1).max(120),
+  ip: z.string().nullable().optional(),
+  port: z.number().int().nullable().optional(),
+  vendor: z.string().nullable().optional(),
+  mac: z.string().nullable().optional(),
+  // Machine identity that reported it (instanceId survives re-pairing).
+  instanceId: z.string().nullable().optional(),
+  bridgeId: z.string().nullable().optional(),
+  // Denormalised for the list: which bridge last reported it.
+  bridgeName: z.string().optional(),
+  isActive: z.boolean().default(true),
+  firstSeenAt: z.string(),
+  lastSeenAt: z.string(),
+});
+
+export const printEndpointsListResponseSchema = z.array(printEndpointSchema);
+
+export const printEndpointUpdateRequestSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  isActive: z.boolean().optional(),
+});
+
+// ─── Print configurations (profiles) ───────────────────────────────────
+//
+// A print configuration is a named snapshot of the per-bridge routing
+// (station → printer mappings + claimed stations) stored per tenant under
+// the `printing` module config. Exactly ONE configuration is active per
+// tenant: activating it re-applies its snapshot to every bridge it still
+// knows about, deactivating leaves the live routing untouched.
+//
+// Bridges are matched on the agent's stable `instanceId` first so re-pairing
+// the same PC keeps working; `bridgeId` is the fallback (browser bridges).
+
+export const printProfileBridgeSchema = z.object({
+  bridgeId: z.string().min(1),
+  instanceId: z.string().nullable().optional(),
+  // Denormalised display name: kept so the UI can still label an entry whose
+  // bridge has been deleted from the pool.
+  label: z.string().max(120).optional(),
+  mappings: z.array(printBridgePrinterMappingSchema).default([]),
+  claimedAreas: z.array(z.string()).default([]),
+});
+
+export const printProfileSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().trim().min(1).max(60),
+  description: z.string().max(200).optional(),
+  bridges: z.array(printProfileBridgeSchema).default([]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const printProfilesStateSchema = z.object({
+  activeId: z.string().nullable().default(null),
+  // When the active configuration was applied. The agent picks mappings up on
+  // its NEXT heartbeat, so the UI can tell "applied" (heartbeat after this)
+  // from "waiting for an offline bridge" without any extra table.
+  activeAt: z.string().nullable().default(null),
+  profiles: z.array(printProfileSchema).default([]),
+});
+
+// `bridgeIds` limits the snapshot to part of the pool; omitted = whole pool.
+// `bridges` builds the configuration COLD: endpoints come from the acquired
+// printer registry, so a configuration can be assembled while every bridge is
+// offline (no live snapshot involved).
+export const printProfileCreateRequestSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  description: z.string().max(200).optional(),
+  bridgeIds: z.array(z.string().min(1)).optional(),
+  bridges: z.array(printProfileBridgeSchema).optional(),
+});
+
+export const printProfileUpdateRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(60).optional(),
+    description: z.string().max(200).nullable().optional(),
+    // Re-snapshot the configuration from the CURRENT live pool (keeps name/id).
+    snapshot: z.boolean().optional(),
+    // Full replacement of the profile's content — the editor saves name +
+    // description + bridges in ONE atomic call. Live routing never changes
+    // here: only activation applies it.
+    //
+    // Deliberately permissive: entries pointing at a bridge that left the pool
+    // and station ids that are currently unknown are KEPT, not rejected (they
+    // carry enough context to be reported as `missing`/`droppedStations` on
+    // activation). A saved configuration must stay editable whenever and
+    // however we want.
+    bridges: z.array(printProfileBridgeSchema).optional(),
+  })
+  .refine(
+    (payload) =>
+      payload.name !== undefined ||
+      payload.description !== undefined ||
+      payload.snapshot ||
+      payload.bridges !== undefined,
+    { message: "Nothing to update" },
+  );
+
+// Result of activating a configuration. `missing` (bridge no longer in the
+// pool) and `droppedStations` (claimed station deleted/deactivated since the
+// snapshot) are surfaced so the UI can warn instead of silently stranding
+// jobs; `overlaps` flags a station claimed by more than one bridge, which
+// makes pending jobs race between agents.
+export const printProfileActivationIssueSchema = z.object({
+  bridgeId: z.string(),
+  label: z.string().optional(),
+});
+
+export const printProfileActivateResponseSchema = z.object({
+  activeId: z.string(),
+  // When the configuration was applied: the agent receives the new routing on
+  // its NEXT heartbeat, which is what the UI needs to say "waiting".
+  activeAt: z.string().optional(),
+  applied: z.array(printProfileActivationIssueSchema).default([]),
+  missing: z.array(printProfileActivationIssueSchema).default([]),
+  // Profile entries carrying no routing at all: applied as-is would wipe a
+  // mapping configured after the snapshot, so they are left untouched.
+  skipped: z.array(printProfileActivationIssueSchema).default([]),
+  droppedStations: z
+    .array(
+      printProfileActivationIssueSchema.extend({
+        stationIds: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+  overlaps: z
+    .array(
+      z.object({
+        stationId: z.string(),
+        bridgeIds: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+});
+
 // ─── Agent diagnostics (logs + health) ─────────────────────────────────
 //
 // The Go agent keeps a local ring buffer of logs/status (local dashboard on
@@ -376,7 +516,7 @@ export const localBridgeConfigSchema = z.object({
 // ─── Default UI Settings ───────────────────────────────────────────────
 
 export const defaultUiSettings: UiSettings = {
-  brandName: "GUSTOPOS",
+  brandName: "OMNIRESTAURANT",
   taxRate: 0.10,
   theme: {
     primary: "#1a365d",
@@ -391,25 +531,15 @@ export const defaultUiSettings: UiSettings = {
     textMuted: "#718096",
   },
   printing: {
-    kitchenPrinterName: "Kitchen-01",
-    kitchenPrinterIp: undefined,
-    kitchenPrinterPort: undefined,
-    cashierPrinterName: "Cashier-01",
-    cashierPrinterIp: undefined,
-    cashierPrinterPort: undefined,
-    barPrinterName: "Bar-01",
-    barPrinterIp: undefined,
-    barPrinterPort: undefined,
     protocol: "escpos",
     activeStationIds: [],
-    activeAreas: ["kitchen", "cashier"],
     autoPrintKitchen: true,
     autoPrintOnClose: false,
     logoMode: "none",
     logoBitmap: undefined,
     logoWidth: 384,
     logoThreshold: 160,
-    receiptFooter: "Grazie per aver scelto GustoPOS",
+    receiptFooter: "Grazie per aver scelto OmniRestaurant",
   },
 };
 
@@ -454,6 +584,16 @@ export type PrintBridgeOnboardingSecretsListResponse = z.infer<typeof printBridg
 export type PrintBridgeJobCompleteResponse = z.infer<typeof printBridgeJobCompleteResponseSchema>;
 export type PrintBridgeJobFailResponse = z.infer<typeof printBridgeJobFailResponseSchema>;
 export type PrintBridgePrintBridgesListResponse = z.infer<typeof printBridgePrintBridgesListResponseSchema>;
+export type PrintProfileBridge = z.infer<typeof printProfileBridgeSchema>;
+export type PrintProfile = z.infer<typeof printProfileSchema>;
+export type PrintProfilesState = z.infer<typeof printProfilesStateSchema>;
+export type PrintProfileCreateRequest = z.infer<typeof printProfileCreateRequestSchema>;
+export type PrintProfileUpdateRequest = z.infer<typeof printProfileUpdateRequestSchema>;
+export type PrintProfileActivateResponse = z.infer<typeof printProfileActivateResponseSchema>;
+export type PrintEndpointKind = z.infer<typeof printEndpointKindSchema>;
+export type PrintEndpoint = z.infer<typeof printEndpointSchema>;
+export type PrintEndpointsListResponse = z.infer<typeof printEndpointsListResponseSchema>;
+export type PrintEndpointUpdateRequest = z.infer<typeof printEndpointUpdateRequestSchema>;
 export type PrintBridgeLogLevel = z.infer<typeof printBridgeLogLevelSchema>;
 export type PrintBridgeLogEntry = z.infer<typeof printBridgeLogEntrySchema>;
 export type PrintBridgeDiagnosticsRequest = z.infer<typeof printBridgeDiagnosticsRequestSchema>;

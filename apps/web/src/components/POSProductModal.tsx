@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Plus, Minus, ShoppingCart, Settings, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { computeGroupModifierDelta, isMultiSelectGroup, modifierOptionPriceBadge } from '../lib/modifier-pricing';
-import { hasTenantOverride } from '@gustopos/shared';
+import { composedPricingBase, isJollyItem } from '../lib/jolly';
+import { isOpenPriceItem } from '../lib/open-price';
 import { useAppStore } from '../store/app-store';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 import { lockBodyScroll, unlockBodyScroll } from '../shared/ui/utils/scrollLock';
@@ -50,6 +51,8 @@ interface POSProductModalProps {
     ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
     modifierPriceDelta: number;
+    /** Open-price line: the price typed by the waiter, carried into "Personalizza". */
+    customPrice?: number;
     cartItemId?: string;
   }) => void;
   categoryModifierPools?: CategoryModifierPool[];
@@ -88,41 +91,73 @@ export default function POSProductModal({
   const backdropDismiss = useBackdropDismiss(onClose);
 
   const resolvedItem = menuItems.find((m) => m.id === item?.id) ?? item;
-  // JOLLY (ad-hoc price) is a per-tenant capability, not base behaviour. The
-  // API already masks the flag for tenants without the override, this keeps the
-  // input hidden even if a cached payload still carries it.
+  // JOLLY (price composed by the selections, no ad-hoc typing) is a per-tenant
+  // capability, not base behaviour. The API already masks the flag for tenants
+  // without the override, this keeps the modal consistent even if a cached
+  // payload still carries it.
   const tenantId = useAppStore((state) => state.tenantContext?.tenantId);
-  const isJolly =
-    Boolean((resolvedItem as any)?.isJolly) && hasTenantOverride('jolly', undefined, tenantId);
+  const isJolly = isJollyItem(resolvedItem, tenantId);
+  // Open price: a POS-only line whose unit price the waiter types by hand.
+  const isOpenPrice = isOpenPriceItem(resolvedItem, tenantId);
 
   const inventoryById = useMemo(() => new Map(inventory.map((e) => [e.id, e])), [inventory]);
 
-  const visiblePools = useMemo(() => {
+  // Pools of this item's category, ordered as the POS/public sheet render them.
+  const categoryPools = useMemo(() => {
     if (!resolvedItem?.categoryId) return [];
-    return categoryModifierPools.filter((p) => {
-      const belongsToCategory = p.categoryIds?.includes(resolvedItem.categoryId!) || p.categoryId === resolvedItem.categoryId;
-      if (!belongsToCategory) return false;
+    return categoryModifierPools
+      .filter((p) => p.categoryIds?.includes(resolvedItem.categoryId!) || p.categoryId === resolvedItem.categoryId)
       // Disabled options are not purchasable; a pool left with none disappears.
-      const activeOptions = (p.options ?? []).filter((o) => o.isActive !== false);
-      if (activeOptions.length === 0) return false;
-      const name = p.name.toLowerCase();
-      const isLegacyInline = name.includes('salsa') || name.includes('salse') || name.includes('topping');
-      // Inline chips are NOTE-ONLY: they never reach the price calculation.
-      // Any pool whose options carry a cost (priceDelta or priceMultiplier,
-      // e.g. MAXI doubling) must therefore be chosen in "Personalizza",
-      // where the modifier modal prices it.
-      const isPriced = activeOptions.some(
-        (o) => (o.priceDelta ?? 0) !== 0 || (o.priceMultiplier != null && o.priceMultiplier !== 1),
-      );
-      if (isPriced) return false;
-      // Inline: pool salsa/topping (legacy) + pool piccoli (≤8 opzioni, es. Granella).
-      // I pool grossi (es. AGGIUNTA 35 opzioni) restano solo nel modale Personalizza.
-      return isLegacyInline || activeOptions.length <= 8;
-    });
+      .filter((p) => (p.options ?? []).some((o) => o.isActive !== false))
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   }, [categoryModifierPools, resolvedItem?.categoryId]);
 
+  // A pool "carries a cost" when any option has a priceDelta or a
+  // priceMultiplier (e.g. MAXI doubling the pizza).
+  const isPricedPool = (pool: CategoryModifierPool): boolean =>
+    (pool.options ?? [])
+      .filter((o) => o.isActive !== false)
+      .some((o) => (o.priceDelta ?? 0) !== 0 || (o.priceMultiplier != null && o.priceMultiplier !== 1));
+
+  // NOTE-ONLY inline chips (never reach the price calculation): unpriced pools
+  // only — the legacy salsa/topping pools plus the small ones (≤8 opzioni,
+  // es. Granella). Their label is appended to the free-text notes.
+  const notePools = useMemo(
+    () =>
+      categoryPools.filter((pool) => {
+        if (isPricedPool(pool)) return false;
+        const name = pool.name.toLowerCase();
+        const isLegacyInline = name.includes('salsa') || name.includes('salse') || name.includes('topping');
+        return isLegacyInline || (pool.options ?? []).filter((o) => o.isActive !== false).length <= 8;
+      }),
+    [categoryPools],
+  );
+
+  // Small PRICED pools (≤8 opzioni: MAXI, Senza glutine…) get their own
+  // container too, but their chips are real selections: they are wired into
+  // `groupSelections` through a synthesised modifier group, so the price is
+  // computed, persisted as selectedModifiers and re-priced server side.
+  // Bigger priced pools (es. AGGIUNTA, 49 opzioni) stay in "Personalizza".
+  const pricedPools = useMemo(
+    () =>
+      categoryPools.filter((pool) => {
+        if (!isPricedPool(pool)) return false;
+        return (pool.options ?? []).filter((o) => o.isActive !== false).length <= 8;
+      }),
+    [categoryPools],
+  );
+
+  // Containers in display order, mixing note-only and priced pools.
+  const inlineContainers = useMemo(
+    () =>
+      [...notePools.map((pool) => ({ pool, priced: false })), ...pricedPools.map((pool) => ({ pool, priced: true }))].sort(
+        (a, b) => (a.pool.sortOrder ?? 0) - (b.pool.sortOrder ?? 0),
+      ),
+    [notePools, pricedPools],
+  );
+
   const toppingPoolOptions = useMemo(() => {
-    return visiblePools.flatMap((pool) =>
+    return notePools.flatMap((pool) =>
       pool.options.filter((opt) => opt.isActive !== false).map((opt) => ({
         id: opt.id,
         name: opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? '',
@@ -130,7 +165,7 @@ export default function POSProductModal({
         componentId: opt.componentId,
       })),
     );
-  }, [visiblePools, inventoryById]);
+  }, [notePools, inventoryById]);
 
   // All pool option ids belonging to this product's category (visible inline
   // pools AND large "Personalizza" pools). Used to discard stale modifiers
@@ -159,44 +194,57 @@ export default function POSProductModal({
     return map;
   }, [toppingPoolOptions]);
 
-  React.useEffect(() => {
-    if (isOpen) {
-      setQuantity(existingCartItem?.quantity ?? 1); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize POS product modal from existing cart item
-      setIngredientOverrides(existingCartItem?.ingredientOverrides ?? []);  
-      setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);  
-      setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);
-      setCustomPrice(existingCartItem?.basePrice ?? ((item as any)?.isJolly ? Number((item as any)?.price ?? 0) : 0));
-      setSelectedRound(existingCartItem?.round ?? null);
-      // Reset group selections when the modal opens: a previous product's
-      // inline modifier choices (e.g. Bun from a burger's "Base" group) must
-      // NOT leak into a product without modifier groups (e.g. a drink).
-      // Without this, a drink would inherit the burger's groupSelections and
-      // print modifiers that don't belong to it (regression: Bun on bar tickets).
-      setGroupSelections({});
+  // Form init runs ONLY on the closed -> open transition. The old deps
+  // (`toppingPoolOptions`, `poolChipByComponentId`) are derived from
+  // `data.inventory`, which gets a fresh identity on every socket
+  // `dataUpdate`: re-running on identity changes reset the in-progress "Note"
+  // text and deselected the chips while the modal was open.
+  const wasOpenRef = React.useRef(false);
 
-      const rawNotes = existingCartItem?.notes ?? '';
-      let selectedIds: string[] = [];
-      if (toppingPoolOptions.length > 0) {
-        const { cleanNotes, selectedIds: noteIds } = parseExistingToppings(rawNotes, toppingPoolOptions);
-        setNotes(cleanNotes);
-        selectedIds = noteIds;
-      } else {
-        setNotes(rawNotes);
-      }
-      // Preselect chips from persisted selected modifiers (pool options
-      // tracked as groupId/optionId) and ingredient overrides (add), so
-      // additions made via "Personalizza" stay selected on re-open.
-      const fromModifiers = (existingCartItem?.selectedModifiers ?? [])
-        .map((sm) => toppingPoolOptions.find((o) => o.id === sm.optionId)?.id)
-        .filter(Boolean) as string[];
-      const fromOverrides = (existingCartItem?.ingredientOverrides ?? [])
-        .filter((entry) => entry.action === 'add')
-        .map((entry) => poolChipByComponentId.get(entry.ingredientId))
-        .filter(Boolean) as string[];
-      const merged = new Set([...selectedIds, ...fromModifiers, ...fromOverrides]);
-      setSelectedToppingIds([...merged]);
+  React.useEffect(() => {
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      return;
     }
-  }, [isOpen, existingCartItem, toppingPoolOptions, poolChipByComponentId]);
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
+    setQuantity(existingCartItem?.quantity ?? 1); // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize POS product modal from existing cart item
+    setIngredientOverrides(existingCartItem?.ingredientOverrides ?? []);
+    setSelectedModifiers(existingCartItem?.selectedModifiers ?? []);
+    setModifierPriceDelta(existingCartItem?.modifierPriceDelta ?? 0);
+    // Open-price line: restore the typed price being edited, else start at 0.
+    setCustomPrice(existingCartItem?.basePrice ?? 0);
+    setSelectedRound(existingCartItem?.round ?? null);
+    // Reset group selections when the modal opens: a previous product's
+    // inline modifier choices (e.g. Bun from a burger's "Base" group) must
+    // NOT leak into a product without modifier groups (e.g. a drink).
+    // Without this, a drink would inherit the burger's groupSelections and
+    // print modifiers that don't belong to it (regression: Bun on bar tickets).
+    setGroupSelections({});
+
+    const rawNotes = existingCartItem?.notes ?? '';
+    let selectedIds: string[] = [];
+    if (toppingPoolOptions.length > 0) {
+      const { cleanNotes, selectedIds: noteIds } = parseExistingToppings(rawNotes, toppingPoolOptions);
+      setNotes(cleanNotes);
+      selectedIds = noteIds;
+    } else {
+      setNotes(rawNotes);
+    }
+    // Preselect chips from persisted selected modifiers (pool options
+    // tracked as groupId/optionId) and ingredient overrides (add), so
+    // additions made via "Personalizza" stay selected on re-open.
+    const fromModifiers = (existingCartItem?.selectedModifiers ?? [])
+      .map((sm) => toppingPoolOptions.find((o) => o.id === sm.optionId)?.id)
+      .filter(Boolean) as string[];
+    const fromOverrides = (existingCartItem?.ingredientOverrides ?? [])
+      .filter((entry) => entry.action === 'add')
+      .map((entry) => poolChipByComponentId.get(entry.ingredientId))
+      .filter(Boolean) as string[];
+    const merged = new Set([...selectedIds, ...fromModifiers, ...fromOverrides]);
+    setSelectedToppingIds([...merged]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- init-on-open only: derived maps are read at open time, their later identity churn must NOT reset the form
+  }, [isOpen]);
 
   const rawModifierGroups: ModifierGroup[] = useMemo(
     () => resolvedItem ? ((resolvedItem.modifierGroups ?? []) as ModifierGroup[]) : [],
@@ -234,57 +282,124 @@ export default function POSProductModal({
     );
   }, [modifierGroups.length, hasCategoryPools, hasLegacyModifiers, noIngredientOverrides]);
 
+  // Small priced pools are modelled as ordinary modifier groups so every piece
+  // of existing machinery — selection restore from selectedModifiers, price
+  // delta, persistence, required-group validation — applies to them unchanged.
+  const pricedPoolGroups = useMemo<ModifierGroup[]>(
+    () =>
+      pricedPools.map((pool) => {
+        const activeOptions = (pool.options ?? []).filter((o) => o.isActive !== false);
+        return {
+          id: pool.id,
+          name: pool.name,
+          required: false,
+          minSelections: 0,
+          // A pool is always an OPTIONAL MULTI-SELECT, even when it carries a
+          // single option (Senza glutine, MAXI): maxSelections=1 would make it
+          // single-select, and a single-select chip can never be deselected.
+          // Pricing is unaffected: one selected option costs the same either way.
+          maxSelections: Math.max(2, activeOptions.length),
+          // Toppings/add-ons accumulate: each selected option is charged.
+          multiSelectPriceMode: 'sum',
+          sortOrder: pool.sortOrder ?? 0,
+          options: activeOptions.map<ModifierOption>((opt) => ({
+            id: opt.id,
+            name: opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? opt.id,
+            inventoryItemId: opt.inventoryItemId,
+            referenceId: opt.referenceId ?? undefined,
+            componentType: opt.componentType ?? 'ingredient',
+            componentId: opt.componentId,
+            quantity: opt.quantity ?? 1,
+            unit: (opt.unit ?? 'pz') as ModifierOption['unit'],
+            priceDelta: opt.priceDelta ?? 0,
+            priceMultiplier: opt.priceMultiplier ?? undefined,
+            isDefault: false,
+            isActive: true,
+            sortOrder: opt.sortOrder ?? 0,
+            ingredientOverrides: [],
+          })),
+        };
+      }),
+    [pricedPools, inventoryById],
+  );
+
   const inlineModifierGroups = useMemo(
     // I group del prodotto (Grandezza, Tipo, Formato, Gusto, Base...) vanno SEMPRE inline,
     // anche quando il prodotto ha pool di categoria (es. Granella su Dolci). Il filtro
     // storico `isSimpleModifier || name==='base'` nascondeva i group non-Base quando
     // hasCategoryPools → i group obbligatori sparivano dal modale principale.
-    () => modifierGroups,
-    [modifierGroups],
+    // Plus the small priced pools rendered as containers above (MAXI, Senza glutine).
+    () => [...modifierGroups, ...pricedPoolGroups],
+    [modifierGroups, pricedPoolGroups],
   );
 
   const modifierGroupIds = useMemo(() => inlineModifierGroups.map((g) => g.id).join(','), [inlineModifierGroups]);
 
-  React.useEffect(() => {
-    if (isOpen && modifierGroupIds) {
-      const initialSelections: Record<string, string[]> = {};
-      // A group can legitimately persist several selections (multi-select), so
-      // collect all option ids per group instead of a last-wins map.
-      const existingByGroup = new Map<string, string[]>();
-      for (const sm of selectedModifiers) {
-        const list = existingByGroup.get(sm.groupId) ?? [];
-        list.push(sm.optionId);
-        existingByGroup.set(sm.groupId, list);
-      }
+  // Group-selection init. It must re-run after the open-init above writes the
+  // restored `selectedModifiers` (state settles a render later), but it must
+  // NOT re-run when `inlineModifierGroups` merely gets a fresh identity from a
+  // socket `dataUpdate`: that reset the user's live chip choices while the
+  // modal was open. Keyed on the *content* (group ids + selected modifiers)
+  // instead of object identity: identity churn is ignored, real changes re-init.
+  const groupInitKeyRef = React.useRef<string | null>(null);
 
-      for (const group of inlineModifierGroups) {
-        const existingOptionIds = (existingByGroup.get(group.id) ?? [])
-          .filter((id) => group.options.some((o: ModifierOption) => o.id === id));
-        if (existingOptionIds.length > 0) {
-          initialSelections[group.id] = existingOptionIds;
-          continue;
-        }
-        const defaults = group.options
-          .filter((o: ModifierOption) => o.isDefault && o.isActive)
-          .map((o: ModifierOption) => o.id);
-        if (defaults.length > 0) {
-          initialSelections[group.id] = defaults;
-        }
-      }
-      setGroupSelections((prev) => { // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize group selections from modifier config; uses prev => updater form which is safe
-        if (JSON.stringify(prev) === JSON.stringify(initialSelections)) return prev;
-        return initialSelections;
-      });
+  React.useEffect(() => {
+    if (!isOpen) {
+      groupInitKeyRef.current = null;
+      return;
     }
+    if (!modifierGroupIds) return;
+    const initKey = `${modifierGroupIds}::${JSON.stringify(selectedModifiers)}`;
+    if (groupInitKeyRef.current === initKey) return;
+    groupInitKeyRef.current = initKey;
+
+    const initialSelections: Record<string, string[]> = {};
+    // A group can legitimately persist several selections (multi-select), so
+    // collect all option ids per group instead of a last-wins map.
+    const existingByGroup = new Map<string, string[]>();
+    for (const sm of selectedModifiers) {
+      const list = existingByGroup.get(sm.groupId) ?? [];
+      list.push(sm.optionId);
+      existingByGroup.set(sm.groupId, list);
+    }
+
+    for (const group of inlineModifierGroups) {
+      const existingOptionIds = (existingByGroup.get(group.id) ?? [])
+        .filter((id) => group.options.some((o: ModifierOption) => o.id === id));
+      if (existingOptionIds.length > 0) {
+        initialSelections[group.id] = existingOptionIds;
+        continue;
+      }
+      const defaults = group.options
+        .filter((o: ModifierOption) => o.isDefault && o.isActive)
+        .map((o: ModifierOption) => o.id);
+      if (defaults.length > 0) {
+        initialSelections[group.id] = defaults;
+      }
+    }
+    setGroupSelections((prev) => { // eslint-disable-line react-hooks/set-state-in-effect -- [form-sync] initialize group selections from modifier config; uses prev => updater form which is safe
+      if (JSON.stringify(prev) === JSON.stringify(initialSelections)) return prev;
+      return initialSelections;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- init keyed on content signature; object identity churn must not reset user edits
   }, [isOpen, modifierGroupIds, inlineModifierGroups, selectedModifiers]);
 
   const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
+  // Latest-ref: `POSView` passes an inline `onClose`, so a new identity arrives
+  // on every parent render. With `onClose` in the deps the effect re-ran each
+  // time and `focus()` stole focus back to the confirm button — on mobile the
+  // keyboard-open viewport resize re-renders the parent, so the soft-keyboard
+  // closed immediately after opening and the "Note" field was untypeable.
+  // The ref keeps Escape fresh while the effect runs only on open/close.
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern avoids stale callbacks in the keydown listener
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
 
   React.useEffect(() => {
     if (!isOpen) return;
     confirmButtonRef.current?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     window.addEventListener('keydown', onKeyDown);
     lockBodyScroll();
@@ -292,22 +407,35 @@ export default function POSProductModal({
       window.removeEventListener('keydown', onKeyDown);
       unlockBodyScroll();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]); // focus/keydown keyed on open transition only (see onCloseRef above)
+
+  // Base for every priceMultiplier option (MAXI ×2).
+  // A JOLLY line has no typed price: its base is COMPOSED by the selections —
+  // the product's own groups ("Le due metà" = pizza/2 per option) plus the
+  // item price — while category pools (MAXI, Senza glutine) stay outside it,
+  // so MAXI doubles the composed pizza and the surcharges remain additive.
+  const pricingBase = useMemo(
+    () => composedPricingBase(isJolly, resolvedItem?.price ?? 0, modifierGroups, groupSelections),
+    [isJolly, resolvedItem?.price, modifierGroups, groupSelections],
+  );
+
+  // Selections of the product's own groups (the JOLLY halves): drives the
+  // hint that replaces the removed ad-hoc price field.
+  const jollySelectionCount = isJolly
+    ? modifierGroups.reduce((count, group) => count + (groupSelections[group.id] ?? []).length, 0)
+    : 0;
 
   const groupPriceDelta = useMemo(() => {
     let price = 0;
-    // basePrice lets priceMultiplier options (MAXI) scale the item price.
-    const basePrice = isJolly ? customPrice : (resolvedItem?.price ?? 0);
     for (const [groupId, optionIds] of Object.entries(groupSelections)) {
       const group = inlineModifierGroups.find((g) => g.id === groupId);
       if (!group || optionIds.length === 0) continue;
-      price += computeGroupModifierDelta(group, optionIds, basePrice);
+      price += computeGroupModifierDelta(group, optionIds, pricingBase);
     }
     return price;
-  }, [groupSelections, inlineModifierGroups, isJolly, customPrice, resolvedItem?.price]);
+  }, [groupSelections, inlineModifierGroups, pricingBase]);
 
   const inlineModifierPriceDelta = useMemo(() => {
-    const basePrice = isJolly ? customPrice : (resolvedItem?.price ?? 0);
     const existingSelections: Record<string, string[]> = {};
     for (const selected of selectedModifiers) {
       const group = inlineModifierGroups.find((candidate) => candidate.id === selected.groupId);
@@ -317,10 +445,10 @@ export default function POSProductModal({
     for (const [groupId, optionIds] of Object.entries(existingSelections)) {
       const group = inlineModifierGroups.find((candidate) => candidate.id === groupId);
       if (!group || optionIds.length === 0) continue;
-      existingGroupPrice += computeGroupModifierDelta(group, optionIds, basePrice);
+      existingGroupPrice += computeGroupModifierDelta(group, optionIds, pricingBase);
     }
     return modifierPriceDelta - existingGroupPrice + groupPriceDelta;
-  }, [groupPriceDelta, inlineModifierGroups, modifierPriceDelta, selectedModifiers, isJolly, customPrice, resolvedItem?.price]);
+  }, [groupPriceDelta, inlineModifierGroups, modifierPriceDelta, selectedModifiers, pricingBase]);
 
   const inlineSelectedModifiers = useMemo(() => {
     const directGroupIds = new Set(inlineModifierGroups.map((group) => group.id));
@@ -385,7 +513,10 @@ export default function POSProductModal({
   if (!resolvedItem) return null;
 
   const isEditing = Boolean(existingCartItem);
-  const baseUnitPrice = isJolly ? customPrice : resolvedItem.price;
+  // An open-price line uses the price typed by the waiter; a JOLLY line carries
+  // no typed price and composes it from the selections (catalog price 0 plus
+  // every delta); every other product uses the catalog price.
+  const baseUnitPrice = isOpenPrice ? customPrice : resolvedItem.price;
   const finalPrice = (baseUnitPrice + inlineModifierPriceDelta) * quantity;
   const totalMods = cartIngredientOverrides.length + inlineSelectedModifiers.length;
 
@@ -429,7 +560,13 @@ export default function POSProductModal({
             <div className="flex items-start justify-between px-4 py-3 border-b border-border shrink-0">
               <div className="flex-1 min-w-0 pr-3">
                 <h2 className="text-base sm:text-lg font-bold text-primary leading-tight truncate">{resolvedItem.name}</h2>
-                <p className="text-sm sm:text-base font-extrabold text-accent">{isJolly ? `€${(customPrice || 0).toFixed(2)}` : `€${resolvedItem.price.toFixed(2)}`}</p>
+                <p className="text-sm sm:text-base font-extrabold text-accent">
+                  {isOpenPrice
+                    ? `€${(customPrice || 0).toFixed(2)}`
+                    : isJolly
+                      ? `€${(baseUnitPrice + inlineModifierPriceDelta).toFixed(2)}`
+                      : `€${resolvedItem.price.toFixed(2)}`}
+                </p>
                 {roundsActive && (
                   <div className="mt-2">
                     <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Portata">
@@ -469,38 +606,70 @@ export default function POSProductModal({
 
               <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Note (es: senza glutine, ben cotta...)" className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:border-accent focus:outline-none" />
 
-              {isJolly && (
+              {isOpenPrice && (
                 <div className="space-y-1.5">
                   <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">Prezzo ad-hoc</h3>
                   <input
                     type="number"
                     min="0"
                     step="0.01"
+                    inputMode="decimal"
                     value={customPrice || ''}
                     onChange={(e) => setCustomPrice(Math.max(0, parseFloat(e.target.value) || 0))}
                     placeholder="0.00"
-                    className="w-full px-3 py-2.5 rounded-xl border border-accent text-lg font-bold text-primary focus:outline-none"
+                    className="w-full px-3 py-2.5 rounded-xl border border-accent text-lg font-bold text-primary tabular-nums focus:outline-none"
                   />
+                  {customPrice <= 0 && (
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-accent">
+                      Inserisci un prezzo maggiore di zero
+                    </p>
+                  )}
                 </div>
               )}
 
-              {visiblePools.length > 0 && (
+              {isJolly && (
+                <p
+                  className={cn(
+                    'text-[11px] font-bold uppercase tracking-wider text-center',
+                    jollySelectionCount > 0 ? 'text-text-muted' : 'text-accent',
+                  )}
+                >
+                  {jollySelectionCount > 0
+                    ? 'Prezzo composto dalle selezioni'
+                    : 'Seleziona almeno una metà: il prezzo si calcola dalle selezioni'}
+                </p>
+              )}
+
+              {inlineContainers.length > 0 && (
                 <div className="space-y-2">
-                  {visiblePools.map((pool) => (
+                  {inlineContainers.map(({ pool, priced }) => (
                     <div key={pool.id} className="space-y-1.5">
                       <h3 className="text-[10px] font-bold text-accent uppercase tracking-wider">{pool.name}</h3>
                       <div className="flex flex-wrap gap-1.5">
-                        {pool.options.map((opt) => {
+                        {(pool.options ?? []).filter((o) => o.isActive !== false).map((opt) => {
                           const optId = opt.id;
-                          const isSelected = selectedToppingIds.includes(optId);
+                          // Note-only chips live in `selectedToppingIds` (they end up in the
+                          // free-text notes); priced chips are real group selections.
+                          const isSelected = priced
+                            ? (groupSelections[pool.id] ?? []).includes(optId)
+                            : selectedToppingIds.includes(optId);
+                          const badge = priced
+                            ? modifierOptionPriceBadge({
+                                id: optId,
+                                priceDelta: opt.priceDelta ?? 0,
+                                priceMultiplier: opt.priceMultiplier,
+                              })
+                            : null;
                           return (
                             <button
                               key={optId}
                               type="button"
                               onClick={() =>
-                                setSelectedToppingIds((prev) =>
-                                  prev.includes(optId) ? prev.filter((id) => id !== optId) : [...prev, optId],
-                                )
+                                priced
+                                  ? toggleGroupOption(pool.id, optId)
+                                  : setSelectedToppingIds((prev) =>
+                                      prev.includes(optId) ? prev.filter((id) => id !== optId) : [...prev, optId],
+                                    )
                               }
                               className={cn(
                                 'px-3 py-1.5 rounded-full text-xs font-bold border transition-all active:scale-95',
@@ -510,6 +679,7 @@ export default function POSProductModal({
                               )}
                             >
                               {opt.name ?? inventoryById.get(opt.inventoryItemId!)?.name ?? opt.inventoryItemId ?? ''}
+                              {badge && <span className={cn('ml-1 tabular-nums', isSelected ? 'opacity-90' : 'opacity-70')}>{badge}</span>}
                             </button>
                           );
                         })}
@@ -520,9 +690,11 @@ export default function POSProductModal({
               )}
 
               {/* Inline modifier groups: the base (and any direct product groups) is selected here. */}
-              {inlineModifierGroups.length > 0 && (
+              {/* Product groups render as full rows (checkbox + badge). Priced pools are
+                  excluded here: they already have their own container of chips above. */}
+              {modifierGroups.length > 0 && (
                 <div className="space-y-3">
-                  {inlineModifierGroups.map((group) => {
+                  {modifierGroups.map((group) => {
                     const selected = groupSelections[group.id] ?? [];
                     return (
                       <div key={group.id} className="space-y-1.5">
@@ -600,6 +772,7 @@ export default function POSProductModal({
                 ingredientOverrides: cartIngredientOverrides,
                 selectedModifiers: inlineSelectedModifiers,
                   modifierPriceDelta: inlineModifierPriceDelta,
+                  customPrice: isOpenPrice ? customPrice : undefined,
                   cartItemId: existingCartItem?.cartItemId,
                 })}
                   className={cn(
@@ -616,8 +789,17 @@ export default function POSProductModal({
             <div className="px-4 py-3 sm:px-5 sm:py-4 border-t border-border shrink-0">
               <button
                 ref={confirmButtonRef}
-                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta, isJolly ? (customPrice || 0) : undefined, roundsActive ? selectedRound : undefined)}
-                disabled={!requiredInlineGroupsSatisfied || (roundsActive && courseRoundsConfig.required && selectedRound === null)}
+                onClick={() => onAddToCart(resolvedItem, quantity, combinedNotes, cartIngredientOverrides, inlineSelectedModifiers, inlineModifierPriceDelta, isOpenPrice ? customPrice : undefined, roundsActive ? selectedRound : undefined)}
+                disabled={
+                  !requiredInlineGroupsSatisfied ||
+                  // A JOLLY is priced by its selections: without any own-group
+                  // selection it would be a free €0,00 line.
+                  (isJolly && jollySelectionCount === 0) ||
+                  // An open-price line is priced by the waiter: it must carry a
+                  // typed amount, never be a free €0,00 line.
+                  (isOpenPrice && customPrice <= 0) ||
+                  (roundsActive && courseRoundsConfig.required && selectedRound === null)
+                }
                 className="w-full flex items-center justify-center gap-2 py-4 bg-accent text-white rounded-xl active:bg-blue-800 active:scale-[0.98] transition-all text-sm font-bold uppercase tracking-widest shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ShoppingCart size={18} />

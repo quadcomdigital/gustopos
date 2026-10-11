@@ -10,7 +10,8 @@ import SearchableSelect from '../../../shared/ui/molecules/SearchableSelect';
 import InlineCategoryPicker from '../InlineCategoryPicker';
 import ModifierGroupsEditor from '../ModifierGroupsEditor';
 import FormField from '../../../shared/ui/molecules/FormField';
-import { required, minLength, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
+import { required, minLength, maxLength, getErrorClass, type ValidationErrors } from '../../../shared/ui/hooks/useFieldValidation';
+import { TICKET_NAME_MAX_LENGTH } from '@gustopos/shared';
 
 
 interface Variant {
@@ -44,6 +45,7 @@ export default function VariableProductModal({
 }: VariableProductModalProps) {
   const isEdit = !!editItem;
   const [name, setName] = useState('');
+  const [ticketName, setTicketName] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [stationId, setStationId] = useState('');
@@ -64,6 +66,7 @@ export default function VariableProductModal({
     if (editItem && open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- [form-sync] initializes form fields from editItem prop on modal open
       setName(editItem.name);
+      setTicketName(editItem.ticketName ?? '');
       setCategoryId(editItem.categoryId ?? '');
       setCategoryName(editItem.category);
       setStationId(editItem.stationId ?? '');
@@ -71,7 +74,7 @@ export default function VariableProductModal({
       const additional = (editItem.modifierGroups ?? []).filter((g) => g.name !== 'Formato');
       setAdditionalModifierGroups(additional);
     } else if (!open) {
-      setName(''); setCategoryId(''); setCategoryName(''); setStationId(''); setReferenceId(''); setVariants([]); setAdditionalModifierGroups([]); setErrors({}); setError('');
+      setName(''); setTicketName(''); setCategoryId(''); setCategoryName(''); setStationId(''); setReferenceId(''); setVariants([]); setAdditionalModifierGroups([]); setErrors({}); setError('');
     }
   }, [editItem, open]);
 
@@ -91,6 +94,7 @@ export default function VariableProductModal({
   const handleSave = async () => {
     const errs: ValidationErrors = {};
     errs.name = required(name, 'Nome') ?? minLength(name, 2, 'Nome');
+    errs.ticketName = maxLength(ticketName, TICKET_NAME_MAX_LENGTH, 'Nome interno');
     errs.price = variants.length === 0 ? required('1', 'Aggiungi almeno una variante') : undefined;
     setErrors(errs);
     if (Object.values(errs).some(Boolean)) return;
@@ -131,6 +135,8 @@ export default function VariableProductModal({
       if (isEdit && onUpdateMenuItem && editItem) {
         await onUpdateMenuItem(editItem.id, {
           name: name.trim(),
+          // Empty = clear the internal comanda name (print falls back to `name`).
+          ticketName: ticketName.trim() || null,
           category: catName,
           categoryId: categoryId || undefined,
           stationId: stationId || undefined,
@@ -144,6 +150,7 @@ export default function VariableProductModal({
         }
         await onCreateMenuProduct({
           name: name.trim(),
+          ticketName: ticketName.trim() || undefined,
           price: 0,
           category: catName.trim(),
           categoryId: categoryId || undefined,
@@ -158,6 +165,7 @@ export default function VariableProductModal({
       } else if (onCreateMenuItem) {
         await onCreateMenuItem({
           name: name.trim(),
+          ticketName: ticketName.trim() || undefined,
           category: catName,
           categoryId: categoryId || undefined,
           stationId: stationId || undefined,
@@ -206,6 +214,18 @@ export default function VariableProductModal({
               onCreate={async (n) => { if (onCreateCategory) await onCreateCategory(n, 'menu'); }}
               label=""
             />
+          </div>
+          <div className="flex flex-col gap-1">
+            <FormField label="Nome interno (comanda)" error={errors.ticketName?.message}>
+              <input
+                value={ticketName}
+                onChange={(e) => setTicketName(e.target.value)}
+                maxLength={TICKET_NAME_MAX_LENGTH + 8}
+                placeholder="Es. MEDITERR"
+                className={`px-3 py-2 rounded border border-border text-sm w-full ${getErrorClass(errors.ticketName)}`}
+              />
+            </FormField>
+            <p className="text-[10px] text-text-muted">Stampa sulla comanda di cucina al posto del nome completo (max {TICKET_NAME_MAX_LENGTH} caratteri).</p>
           </div>
         </div>
 

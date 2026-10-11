@@ -56,10 +56,19 @@ make linux windows darwin
 
 #    Flavored (per-tenant) builds are SEPARATE: rebuild them too, otherwise the
 #    publish guard fails on the stale flavor binaries left in bin/.
-make FLAVOR=casale API_BASE=https://test.anticocasalericevimenti.it linux windows darwin
+#    One line per tenant — slug + the origin baked into the pairing page:
+make FLAVOR=franks   API_BASE=https://test.franksbar.it               linux windows darwin
+make FLAVOR=casale   API_BASE=https://test.anticocasalericevimenti.it linux windows darwin
+
+#    NOTE: the flavorless build above inherits `API_BASE ?=` from the Makefile
+#    (currently franks). It is NOT a tenant build — it stays published only so
+#    agents paired before FLAVOR existed keep self-updating onto the same
+#    artifact name (updater.go artifactName()). The download page tags it
+#    "legacy".
 
 # 3. Sanity check the build (version string must print the new version)
 ./bin/gustopos-print-agent-linux-amd64 -version
+./bin/gustopos-print-agent-franks-linux-amd64 -version
 ./bin/gustopos-print-agent-casale-linux-amd64 -version
 go vet ./... && go test ./...
 
@@ -144,7 +153,7 @@ The page copy (Italian) lives inline in `scripts/publish-downloads.sh`
 
 - [ ] `VERSION` bumped in the Makefile
 - [ ] `make linux windows darwin` clean (`go vet` + gofmt + `go test` too)
-- [ ] Every **flavor** rebuilt as well (`make FLAVOR=… API_BASE=… linux windows darwin`)
+- [ ] Every **flavor** rebuilt as well (`make FLAVOR=franks …` + `make FLAVOR=casale …`)
 - [ ] `./scripts/publish-downloads.sh --check` passes — every artifact embeds `VERSION`
 - [ ] `make publish-downloads` regenerated all three files (`index.html`,
       `checksums.sha256`, `version.json`)

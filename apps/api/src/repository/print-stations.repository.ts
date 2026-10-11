@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, count, eq, isNotNull } from "drizzle-orm";
 import { db } from "../db/client";
 import { categories, menuItems, printStations } from "../db/schema";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
@@ -37,6 +37,14 @@ export class PrintStationsRepository {
     });
   }
 
+  /**
+   * Full registry for the Settings UI, with the assignment footprint of every
+   * station (how many products/categories route to it) so the panel can show
+   * what a zone actually feeds and warn before deleting it.
+   *
+   * Two grouped queries (not N per station) — this path is admin-only; the
+   * hot routing path uses `listActiveStations()` instead.
+   */
   async listStations(): Promise<PrintStation[]> {
     const tenantId = getTenantIdOrDefault();
     const rows = await db
@@ -44,7 +52,40 @@ export class PrintStationsRepository {
       .from(printStations)
       .where(eq(printStations.tenantId, tenantId))
       .orderBy(asc(printStations.sortOrder), asc(printStations.name));
-    return rows.map((row) => this.toStation(row));
+    const usage = await this.getUsageByStationId(tenantId);
+    return rows.map((row) => ({
+      ...this.toStation(row),
+      usage: usage.get(row.id) ?? { menuItems: 0, categories: 0 },
+    }));
+  }
+
+  /** Assignment counts per station in one pass (nulls excluded). */
+  private async getUsageByStationId(
+    tenantId: string,
+  ): Promise<Map<string, { menuItems: number; categories: number }>> {
+    const [itemRows, categoryRows] = await Promise.all([
+      db
+        .select({ id: menuItems.stationId, total: count() })
+        .from(menuItems)
+        .where(and(eq(menuItems.tenantId, tenantId), isNotNull(menuItems.stationId)))
+        .groupBy(menuItems.stationId),
+      db
+        .select({ id: categories.stationId, total: count() })
+        .from(categories)
+        .where(and(eq(categories.tenantId, tenantId), isNotNull(categories.stationId)))
+        .groupBy(categories.stationId),
+    ]);
+
+    const usage = new Map<string, { menuItems: number; categories: number }>();
+    const put = (id: string | null, key: "menuItems" | "categories", total: unknown) => {
+      if (!id) return;
+      const entry = usage.get(id) ?? { menuItems: 0, categories: 0 };
+      entry[key] = Number(total) || 0;
+      usage.set(id, entry);
+    };
+    for (const row of itemRows) put(row.id, "menuItems", row.total);
+    for (const row of categoryRows) put(row.id, "categories", row.total);
+    return usage;
   }
 
   async listActiveStations(): Promise<PrintStation[]> {

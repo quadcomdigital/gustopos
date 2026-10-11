@@ -1,6 +1,21 @@
 import { useMemo, useState, type ReactNode } from 'react';
 
 const MOBILE_LIST_LIMIT = 50;
+
+/** € counters are masked by default: the dashboard can be read over a shoulder. */
+const EURO_MASK = '€ •••,••';
+const EURO_MASK_SMALL = '€ ••,••';
+
+function formatEuro(value: number, visible: boolean): string {
+  return visible ? `€${value.toFixed(2)}` : EURO_MASK;
+}
+
+const SALES_PERIODS: Array<{ key: SalesPeriod; label: string }> = [
+  { key: 'today', label: 'Oggi' },
+  { key: '7d', label: '7 giorni' },
+  { key: '30d', label: '30 giorni' },
+  { key: 'all', label: 'Tutto' },
+];
 import type {
   AppData,
   Customer,
@@ -11,10 +26,13 @@ import type {
   VoidOrderResponse,
   ReservationsSummary,
   DeliverySummary,
+  SalesSummary,
 } from '@gustopos/shared';
-import { DollarSign, TrendingUp, Users, Clock, RefreshCw, X } from 'lucide-react';
+import type { SalesPeriod } from '../app/backoffice/BackofficeContext';
+import { DollarSign, TrendingUp, Users, Clock, RefreshCw, X, Eye, EyeOff } from 'lucide-react';
 import ConfirmDialog from './ConfirmDialog';
 import { trackUxMetric } from '../shared/ux/metrics';
+import { logDashboardVisibility } from '../shared/api/client';
 import { cn } from '../lib/utils';
 
 interface DashboardViewProps {
@@ -28,6 +46,11 @@ interface DashboardViewProps {
   reservationsSummary: ReservationsSummary | null;
   deliverySummary: DeliverySummary | null;
   onRefreshOperationalSummaries: () => Promise<void>;
+  salesSummary: SalesSummary | null;
+  salesSummaryLoading: boolean;
+  salesPeriod: SalesPeriod;
+  onSalesPeriodChange: (period: SalesPeriod) => void;
+  onRefreshSalesSummary: () => Promise<void>;
   canVoidOrders?: boolean;
   onViewCustomer?: (customerId: string) => void;
 }
@@ -43,6 +66,11 @@ export default function DashboardView({
   reservationsSummary,
   deliverySummary,
   onRefreshOperationalSummaries,
+  salesSummary,
+  salesSummaryLoading,
+  salesPeriod,
+  onSalesPeriodChange,
+  onRefreshSalesSummary,
   canVoidOrders = false,
   onViewCustomer,
 }: DashboardViewProps) {
@@ -55,13 +83,29 @@ export default function DashboardView({
   const [refreshingAnalytics, setRefreshingAnalytics] = useState(false);
   const [refreshingOps, setRefreshingOps] = useState(false);
   const [confirmVoidOpen, setConfirmVoidOpen] = useState(false);
+  // Resets to masked on every mount (privacy on a shared floor, no persistence).
+  const [euroVisible, setEuroVisible] = useState(false);
 
-  const paidOrders = data.orders.filter((order) => order.status === 'paid');
+  const toggleEuroVisibility = () => {
+    const next = !euroVisible;
+    setEuroVisible(next);
+    // Server-side audit (dashboard.counters.revealed/.hidden). Telemetry only:
+    // it must never block or break the dashboard.
+    void logDashboardVisibility(next ? 'reveal' : 'hide').catch(() => undefined);
+  };
+
   const deliveryOrders = data.orders.filter((order) => order.orderType === 'delivery');
-  const totalRevenue = paidOrders.reduce((sum, order) => sum + order.total, 0);
-  const totalOrders = paidOrders.length;
-  const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
   const deliveryActiveCount = deliverySummary?.active ?? deliveryOrders.filter((order) => order.status !== 'paid' && order.status !== 'cancelled').length;
+
+  // Incasso / Ordini / Scontrino Medio / Top 5 Piatti vengono da un aggregato
+  // server-side: `data.orders` contiene SOLO gli ordini aperti (paid e cancelled
+  // vengono esclusi da getPublicData), quindi calcolarli in locale restituiva
+  // sempre zero per ogni tenant.
+  const salesRevenue = salesSummary?.revenue ?? 0;
+  const salesOrders = salesSummary?.orders ?? 0;
+  const salesAvgOrderValue = salesSummary?.avgOrderValue ?? 0;
+  const salesValue = (formatted: string) => (salesSummaryLoading ? '—' : formatted);
+  const salesEuro = (value: number) => (salesSummaryLoading ? '—' : formatEuro(value, euroVisible));
 
   const reservationOrders = orderHistory.filter((order) => order.orderType === 'dine_in');
   const cancelledReservationOrders = reservationOrders.filter((order) => order.status === 'cancelled').length;
@@ -72,20 +116,7 @@ export default function DashboardView({
     return orderHistory.filter((order) => order.orderType === historyType);
   }, [historyType, orderHistory]);
 
-  const topDishes = useMemo(() => {
-    const counts = new Map<string, { name: string; quantity: number; revenue: number }>();
-    for (const order of paidOrders) {
-      for (const item of order.items) {
-        const existing = counts.get(item.id) ?? { name: item.name, quantity: 0, revenue: 0 };
-        existing.quantity += item.quantity;
-        existing.revenue += item.price * item.quantity;
-        counts.set(item.id, existing);
-      }
-    }
-    return Array.from(counts.values())
-      .sort((a, b) => b.quantity - a.quantity)
-      .slice(0, 5);
-  }, [paidOrders]);
+  const topDishes = salesSummary?.topDishes ?? [];
 
   const historyFilterKeys = [
     { key: '' as const, label: 'Tutti' },
@@ -104,6 +135,20 @@ export default function DashboardView({
         </div>
         <div className="flex flex-wrap gap-2">
           <button
+            type="button"
+            onClick={toggleEuroVisibility}
+            aria-pressed={euroVisible}
+            title={euroVisible ? 'Nascondi importi' : 'Mostra importi'}
+            aria-label={euroVisible ? 'Nascondi importi' : 'Mostra importi'}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2 rounded border text-[10px] sm:text-xs font-bold uppercase tracking-wider active:scale-95 transition-all',
+              euroVisible ? 'border-accent text-accent' : 'border-border text-secondary',
+            )}
+          >
+            {euroVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+            <span className="hidden sm:inline">{euroVisible ? 'Nascondi' : 'Importi'}</span>
+          </button>
+          <button
             onClick={() => { setRefreshingHistory(true); void onRefreshOrderHistory({ limit: 300 }).finally(() => setRefreshingHistory(false)); }}
             disabled={refreshingHistory}
             className="flex items-center gap-1.5 px-3 py-2 rounded border border-border text-[10px] sm:text-xs font-bold uppercase tracking-wider disabled:opacity-50 active:scale-95 transition-transform"
@@ -120,7 +165,7 @@ export default function DashboardView({
             <span className="hidden sm:inline">Aggiorna</span> Analytics
           </button>
           <button
-            onClick={() => { setRefreshingOps(true); void onRefreshOperationalSummaries().finally(() => setRefreshingOps(false)); }}
+            onClick={() => { setRefreshingOps(true); void Promise.all([onRefreshOperationalSummaries(), onRefreshSalesSummary()]).finally(() => setRefreshingOps(false)); }}
             disabled={refreshingOps}
             className="flex items-center gap-1.5 px-3 py-2 rounded border border-border text-[10px] sm:text-xs font-bold uppercase tracking-wider disabled:opacity-50 active:scale-95 transition-transform"
           >
@@ -130,11 +175,31 @@ export default function DashboardView({
         </div>
       </div>
 
+      {/* Sales period selector — Incasso/Ordini/Scontrino/Top5 follow it */}
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-text-muted shrink-0">Periodo</p>
+        <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+          {SALES_PERIODS.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => onSalesPeriodChange(key)}
+              aria-pressed={salesPeriod === key}
+              className={cn(
+                'px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border whitespace-nowrap transition-all active:scale-95',
+                salesPeriod === key ? 'bg-primary text-white border-primary' : 'border-border text-secondary',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Stat Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 md:gap-4">
-        <StatCard icon={<DollarSign size={18} />} label="Incasso" value={`€${totalRevenue.toFixed(2)}`} />
-        <StatCard icon={<TrendingUp size={18} />} label="Ordini" value={String(totalOrders)} />
-        <StatCard icon={<Clock size={18} />} label="Scontrino Medio" value={`€${avgOrderValue.toFixed(2)}`} />
+        <StatCard icon={<DollarSign size={18} />} label="Incasso" value={salesEuro(salesRevenue)} />
+        <StatCard icon={<TrendingUp size={18} />} label="Ordini" value={salesValue(String(salesOrders))} />
+        <StatCard icon={<Clock size={18} />} label="Scontrino Medio" value={salesEuro(salesAvgOrderValue)} />
         <StatCard icon={<Users size={18} />} label="Clienti" value={String(customerAnalytics?.totalCustomers ?? customers.length)} />
         <StatCard icon={<Clock size={18} />} label="Delivery" value={String(deliveryActiveCount)} />
         <StatCard icon={<Users size={18} />} label="No-show" value={`${(noShowRate * 100).toFixed(1)}%`} />
@@ -144,25 +209,38 @@ export default function DashboardView({
       <div className="grid grid-cols-3 gap-3 md:gap-4">
         <KPICard label="Clienti attivi" value={String(customerAnalytics?.activeCustomers ?? 0)} />
         <KPICard label="Tasso ritorno" value={`${((customerAnalytics?.repeatRate ?? 0) * 100).toFixed(1)}%`} />
-        <KPICard label="Spesa media" value={`€${(customerAnalytics?.avgSpendPerCustomer ?? 0).toFixed(2)}`} />
+        <KPICard label="Spesa media" value={formatEuro(customerAnalytics?.avgSpendPerCustomer ?? 0, euroVisible)} />
       </div>
 
       {/* Top Dishes */}
-      {topDishes.length > 0 && (
+      {(salesSummaryLoading || topDishes.length > 0) && (
         <div className="bg-white border border-border rounded-xl p-4 space-y-3">
           <h3 className="text-xs sm:text-sm font-bold uppercase tracking-widest text-primary">Top 5 Piatti</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 md:gap-3">
-            {topDishes.map((dish, i) => (
-              <div key={dish.name} className="bg-bg/50 rounded-lg p-2.5 md:p-3 space-y-0.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-accent">#{i + 1}</span>
-                  <span className="text-[10px] md:text-xs font-bold text-primary truncate">{dish.name}</span>
-                </div>
-                <p className="text-sm md:text-lg font-bold text-primary">{dish.quantity}×</p>
-                <p className="text-[9px] md:text-[10px] text-text-muted">€{dish.revenue.toFixed(2)}</p>
-              </div>
-            ))}
+            {salesSummaryLoading
+              ? [0, 1, 2, 3, 4].map((slot) => (
+                  <div key={`skeleton-${slot}`} className="bg-bg/50 rounded-lg p-2.5 md:p-3 space-y-2" aria-hidden="true">
+                    <div className="h-3 w-2/3 bg-border/60 rounded animate-pulse" />
+                    <div className="h-5 w-1/3 bg-border/60 rounded animate-pulse" />
+                    <div className="h-3 w-1/2 bg-border/60 rounded animate-pulse" />
+                  </div>
+                ))
+              : topDishes.map((dish, i) => (
+                  <div key={`${dish.id}-${dish.name}`} className="bg-bg/50 rounded-lg p-2.5 md:p-3 space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-accent">#{i + 1}</span>
+                      <span className="text-[10px] md:text-xs font-bold text-primary truncate">{dish.name}</span>
+                    </div>
+                    <p className="text-sm md:text-lg font-bold text-primary tabular-nums">{dish.quantity}×</p>
+                    <p className="text-[9px] md:text-[10px] text-text-muted tabular-nums">
+                      {euroVisible ? `€${dish.revenue.toFixed(2)}` : EURO_MASK_SMALL}
+                    </p>
+                  </div>
+                ))}
           </div>
+          {!salesSummaryLoading && topDishes.length === 0 && (
+            <p className="text-xs text-text-muted py-2">Nessuna vendita nel periodo selezionato</p>
+          )}
         </div>
       )}
 
@@ -419,7 +497,7 @@ function StatCard({ icon, label, value }: { icon: ReactNode; label: string; valu
     <div className="bg-white border border-border rounded-xl p-3 md:p-4">
       <div className="w-8 h-8 md:w-10 md:h-10 bg-bg rounded-lg flex items-center justify-center mb-2 md:mb-3 text-accent">{icon}</div>
       <p className="text-[9px] md:text-[10px] font-bold text-text-muted uppercase tracking-widest">{label}</p>
-      <p className="text-lg md:text-2xl font-bold text-primary mt-0.5 md:mt-1">{value}</p>
+      <p className="text-lg md:text-2xl font-bold text-primary mt-0.5 md:mt-1 tabular-nums">{value}</p>
     </div>
   );
 }
@@ -428,7 +506,7 @@ function KPICard({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-white border border-border rounded-xl p-3 md:p-4">
       <p className="text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-text-muted">{label}</p>
-      <p className="text-lg md:text-2xl font-bold text-primary mt-1">{value}</p>
+      <p className="text-lg md:text-2xl font-bold text-primary mt-1 tabular-nums">{value}</p>
     </div>
   );
 }

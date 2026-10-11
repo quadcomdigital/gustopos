@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { LocalBridgeConfig, PrintBridge, PrintBridgePrinterMapping } from "@gustopos/shared";
+import type { LocalBridgeConfig, PrintBridge } from "@gustopos/shared";
 import { useAppStore } from "../../store/app-store";
 import BridgeCard from "./BridgeCard";
-import BindBridgeMappingModal from "./BindBridgeMappingModal";
-import ClaimedAreasModal from "./ClaimedAreasModal";
 import RegisterLocalBridgeModal from "./RegisterLocalBridgeModal";
 import PrintStationWizard from "./PrintStationWizard";
 import ConfirmDeleteBridgeModal from "./ConfirmDeleteBridgeModal";
+import PrintQzConnectionSection from "./PrintQzConnectionSection";
+import PrintEndpointsPanel from "./PrintEndpointsPanel";
+import { bridgeConfigStatus } from "./print-profile-utils";
 
 function isLocalBridge(host: string | null | undefined): boolean {
   if (!host) return false;
@@ -14,12 +15,19 @@ function isLocalBridge(host: string | null | undefined): boolean {
   return host === hostname || host === "127.0.0.1" || host === "0.0.0.0";
 }
 
-export default function PrintBridgesPanel() {
+interface PrintBridgesPanelProps {
+  /**
+   * The card never edits routing: it reports drift and hands the bridge over to
+   * the configuration editor, which is the only writer.
+   */
+  onOpenConfiguration: (bridge: PrintBridge) => void;
+}
+
+export default function PrintBridgesPanel({ onOpenConfiguration }: PrintBridgesPanelProps) {
   const printBridges = useAppStore((s) => s.printBridges);
+  const printProfiles = useAppStore((s) => s.printProfiles);
   const enabledModules = useAppStore((s) => s.enabledModules);
   const refreshPrintBridges = useAppStore((s) => s.refreshPrintBridges);
-  const updateMappings = useAppStore((s) => s.updateBridgeMappings);
-  const updateClaimedAreas = useAppStore((s) => s.updateBridgeClaimedAreas);
   const triggerTestPrint = useAppStore((s) => s.triggerBridgeTestPrint);
   const requestBridgeDiscovery = useAppStore((s) => s.requestBridgeDiscovery);
   const testBridgePrinter = useAppStore((s) => s.testBridgePrinter);
@@ -45,8 +53,6 @@ export default function PrintBridgesPanel() {
     }
   }, [enabledModules, refreshPrintBridges]);
 
-  const [editingMappings, setEditingMappings] = useState<PrintBridge | null>(null);
-  const [editingClaimedAreas, setEditingClaimedAreas] = useState<PrintBridge | null>(null);
   const [deletingBridge, setDeletingBridge] = useState<PrintBridge | null>(null);
   const [testingByKey, setTestingByKey] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
@@ -90,6 +96,13 @@ export default function PrintBridgesPanel() {
 
   const fetchedLabel = lastFetchedAt ? new Date(lastFetchedAt).toLocaleTimeString("it-IT") : "mai";
 
+  // The ACTIVE configuration is the source of truth for routing: every card
+  // reports its position relative to it (aligned / diverges / not covered).
+  const activeProfile = useMemo(
+    () => printProfiles.profiles.find((profile) => profile.id === printProfiles.activeId) ?? null,
+    [printProfiles],
+  );
+
   const handleTestPrint = useCallback(
     async (bridgeId: string, area: string) => {
       const key = `${bridgeId}|${area}`;
@@ -121,7 +134,7 @@ export default function PrintBridgesPanel() {
             </h3>
             <p className="text-[12px] text-text-muted mt-1 leading-relaxed">
               Per un PC lontano (cucina, bar, cassa) installa il{" "}
-              <strong>GustoPOS Print Agent</strong> e accoppialo con un codice.
+              <strong>OmniRestaurant Print Agent</strong> e accoppialo con un codice.
               Genera qui il <strong>codice a 6 cifre</strong> e inseriscilo sul PC remoto:
               il collegamento è immediato e permanente.
             </p>
@@ -145,7 +158,7 @@ export default function PrintBridgesPanel() {
           >
             /downloads/
           </a>{" "}
-          del tuo GustoPOS e avvialo: si aprirà la pagina di accoppiamento da sola.
+          del tuo OmniRestaurant e avvialo: si aprirà la pagina di accoppiamento da sola.
         </p>
       </div>
 
@@ -196,8 +209,12 @@ export default function PrintBridgesPanel() {
                     key={bridge.id}
                     bridge={bridge}
                     isLocal={isLocalBridge(bridge.host)}
-                    onEditMappings={setEditingMappings}
-                    onEditClaimedAreas={setEditingClaimedAreas}
+                    configStatus={bridgeConfigStatus(
+                      bridge,
+                      activeProfile,
+                      printProfiles.activeAt,
+                    )}
+                    onOpenConfiguration={onOpenConfiguration}
                     onDelete={setDeletingBridge}
                     onTestPrint={handleTestPrint}
                     onScanNetwork={async (bridgeId) => {
@@ -223,6 +240,9 @@ export default function PrintBridgesPanel() {
           </>
         )}
       </div>
+
+      {/* ── Stampanti acquisite (registro persistente, auto-rifornito) ── */}
+      <PrintEndpointsPanel />
 
       {/* ── Stampa dal browser su questo PC (metodo alternativo) ──────── */}
       <div
@@ -294,33 +314,8 @@ export default function PrintBridgesPanel() {
         )}
       </div>
 
-      {editingMappings && (
-        <BindBridgeMappingModal
-          bridge={editingMappings}
-          onClose={() => setEditingMappings(null)}
-          onSave={async (mappings: PrintBridgePrinterMapping[]) => {
-            await updateMappings(editingMappings.id, mappings);
-            setEditingMappings(null);
-          }}
-          onTestPrint={async (area) => {
-            await handleTestPrint(editingMappings.id, area);
-          }}
-          onTestDevice={async (device) => {
-            await testBridgePrinter(editingMappings.id, device);
-          }}
-        />
-      )}
-
-      {editingClaimedAreas && (
-        <ClaimedAreasModal
-          bridge={editingClaimedAreas}
-          onClose={() => setEditingClaimedAreas(null)}
-          onSave={async (areas) => {
-            await updateClaimedAreas(editingClaimedAreas.id, areas);
-            setEditingClaimedAreas(null);
-          }}
-        />
-      )}
+      {/* ── QZ Tray: indirizzi di connessione (stesso setup del browser-bridge) ── */}
+      <PrintQzConnectionSection />
 
       {registerOpen && <RegisterLocalBridgeModal onClose={() => setRegisterOpen(false)} />}
 

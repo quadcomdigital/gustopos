@@ -75,6 +75,16 @@ test("public menu of franks exposes no free (€0) item", (t) => {
   );
 });
 
+test("public menu of franks exposes no open-price (PRODOTTO) item", (t) => {
+  if (!requireMenu(t, menus.franks)) return;
+  const openPrice = menus.franks.items.filter((item) => /prodott/i.test(item.name));
+  assert.deepEqual(
+    openPrice.map((item) => item.name),
+    [],
+    "an open-price item must never be orderable online",
+  );
+});
+
 test("public menu of franks exposes no price multiplier (base behaviour)", (t) => {
   if (!requireMenu(t, menus.franks)) return;
   const scaled = multiplierOptions(menus.franks, (value) => value !== 1);

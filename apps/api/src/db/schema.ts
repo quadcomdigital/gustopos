@@ -39,9 +39,19 @@ export const tables = pgTable(
     // payment/checkout stack but must never appear in the physical table map,
     // table management, self-order QR pickers, etc.
     isVirtual: integer("is_virtual").notNull().default(0),
+    // Soft-delete flag. Deleting a table from Gestione Tavoli only flips this
+    // to 0 instead of a hard DELETE: a table that ever took a payment cannot be
+    // hard-deleted (payments_table_id_tables_id_fk ON DELETE RESTRICT), and the
+    // payment/order history must survive. Inactive rows are hidden from every
+    // operational read (table map, management, self-order, order assignment).
+    isActive: integer("is_active").notNull().default(1),
   },
   (table) => ({
-    numberIdx: uniqueIndex("tables_tenant_number_idx").on(table.tenantId, table.number),
+    // Partial unique: a number is unique among ACTIVE tables only, so a deleted
+    // table's number can be reused immediately.
+    numberIdx: uniqueIndex("tables_tenant_number_idx")
+      .on(table.tenantId, table.number)
+      .where(sql`${table.isActive} = 1`),
   }),
 );
 
@@ -103,8 +113,16 @@ export const menuItems = pgTable(
     referenceId: text("reference_id").references(() => productionReferences.id, { onDelete: "set null" }),
     // Deprecated: superseded by station_id. Kept for one release (rollback).
     printAreas: text("print_areas").notNull().default('["kitchen"]'),
+    // Internal short name printed on PRODUCTION comande (kitchen/pizzeria/bar).
+    // Null/empty = print `name`. The cashier station ticket, the receipt, the
+    // pre-bill and the public menu always keep `name`.
+    ticketName: text("ticket_name"),
     isActive: integer("is_active").notNull().default(1),
     isJolly: integer("is_jolly").notNull().default(0),
+    // POS-only open-price line: the waiter types the price by hand on the
+    // product modal. Capability gated per tenant by the `openPrice` override;
+    // hidden from the public menu exactly like `is_jolly`.
+    isOpenPrice: integer("is_open_price").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -277,11 +295,20 @@ export const orders = pgTable("orders", {
   staffId: text("staff_id")
     .notNull()
     .references(() => staff.id, { onDelete: "restrict" }),
+  // Review workflow for public group orders. Normal orders stay "not_required";
+  // a submitted group order is created as "pending_approval" and only becomes a
+  // real (printed, stock-deducted) order once staff approves it.
+  approvalStatus: text("approval_status").notNull().default("not_required"),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  reviewedByStaffId: text("reviewed_by_staff_id").references(() => staff.id, { onDelete: "set null" }),
+  rejectionReason: text("rejection_reason"),
+  groupSessionId: text("group_session_id").references(() => groupOrderSessions.id, { onDelete: "set null" }),
 }, (table) => [
   // Open-order scan (getPublicData) filters on tenant + status; order history
   // lists sort by tenant + timestamp. Both are hot read paths in POS/kitchen.
   index("orders_tenant_status_idx").on(table.tenantId, table.status),
   index("orders_tenant_timestamp_idx").on(table.tenantId, table.timestamp),
+  index("orders_tenant_approval_idx").on(table.tenantId, table.approvalStatus),
 ]);
 
 export const orderItems = pgTable("order_items", {
@@ -298,6 +325,10 @@ export const orderItems = pgTable("order_items", {
   notes: text("notes"),
   selectedModifiers: text("selected_modifiers").notNull().default("[]"),
   round: integer("round"),
+  // Group-order attribution: which participant ordered this line, so the staff
+  // review queue can show the per-person breakdown (null for normal orders).
+  groupParticipantId: text("group_participant_id"),
+  groupParticipantName: text("group_participant_name"),
 }, (table) => [
   // Every items-by-order fetch (getPublicData subquery, getOrderById,
   // takeaway, order history, BoM explosion) filters on tenant + orderId.
@@ -562,6 +593,51 @@ export const printBridgeLogs = pgTable(
   ],
 );
 
+// ─── Acquired printer registry ───────────────────────────────────────────
+//
+// Everything a bridge has EVER reported (QZ enumeration) or discovered on the
+// LAN, kept tenant-wide. Unlike `print_bridges.printers` — a transient snapshot
+// that every scan replaces wholesale — this is upsert-only: a configuration can
+// reference a printer that is currently off, unplugged, or reported by a bridge
+// that is offline. This is the missing half of "save the configuration and
+// decide when to apply it": endpoints are acquired once, then reused forever.
+export const printEndpoints = pgTable(
+  "print_endpoints",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    // "net" = ip:port reachable on the LAN; "qz" = driver installed on a PC.
+    kind: text("kind").notNull().default("net"),
+    name: text("name").notNull(),
+    ip: text("ip"),
+    port: integer("port"),
+    vendor: text("vendor"),
+    mac: text("mac"),
+    // Machine identity that reported it: `instanceId` survives re-pairing the
+    // same PC, `bridgeId` is only the last bridge that saw it.
+    instanceId: text("instance_id"),
+    bridgeId: text("bridge_id").references(() => printBridges.id, { onDelete: "set null" }),
+    // Set to 0 ONLY when a complete QZ enumeration for that machine stops
+    // listing it. A network scan is partial evidence and never deactivates.
+    isActive: integer("is_active").notNull().default(1),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("print_endpoints_tenant_idx").on(table.tenantId, table.lastSeenAt),
+    // The same LAN printer seen by two bridges is still ONE endpoint.
+    uniqueIndex("print_endpoints_net_unique_idx")
+      .on(table.tenantId, table.ip, table.port)
+      .where(sql`${table.kind} = 'net'`),
+    // QZ names are scoped to the machine that publishes them.
+    uniqueIndex("print_endpoints_qz_unique_idx")
+      .on(table.tenantId, table.instanceId, table.name)
+      .where(sql`${table.kind} = 'qz'`),
+  ],
+);
+
 export const customers = pgTable("customers", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
@@ -589,6 +665,11 @@ export const categories = pgTable("categories", {
   tenantId: text("tenant_id").notNull().default("tenant_legacy"),
   name: text("name").notNull(),
   scope: text("scope").notNull(),
+  // Tenant-owned display order (POS category pills, backoffice lists).
+  // Index is meaningful WITHIN a scope: the reorder endpoint numbers each
+  // scope's own rows from 0. Ties fall back to `name`, so rows created before
+  // any reorder (all 0) keep today's alphabetical order.
+  sortOrder: integer("sort_order").notNull().default(0),
   // Explicit print-station assignment (one station per category).
   stationId: text("station_id").references(() => printStations.id, { onDelete: "set null" }),
   // Default production container/base for counting (category default).
@@ -864,6 +945,10 @@ export const groupOrderSessions = pgTable(
     masterParticipantId: text("master_participant_id").notNull(),
     submittedOrderId: text("submitted_order_id"),
     submitIdempotencyKeyHash: text("submit_idempotency_key_hash"),
+    // Staff review outcome (mirrors the draft order for fast session reads).
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedByStaffId: text("reviewed_by_staff_id").references(() => staff.id, { onDelete: "set null" }),
+    rejectionReason: text("rejection_reason"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -890,21 +975,38 @@ export const groupOrderParticipants = pgTable("group_order_participants", {
 export const groupOrderCartItems = pgTable(
   "group_order_cart_items",
   {
+    // Deterministic line id (`goc_<hash>` of participant+item+modifiers+notes):
+    // the same configuration collapses into one line, and the client can target
+    // a line for quantity/removal by its id.
+    id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull().default("tenant_legacy"),
     sessionId: text("session_id")
       .notNull()
       .references(() => groupOrderSessions.id, { onDelete: "cascade" }),
+    // Soft ownership: each participant manages their own rows, the master is a
+    // moderator over everyone's.
+    participantId: text("participant_id")
+      .notNull()
+      .references(() => groupOrderParticipants.id, { onDelete: "cascade" }),
     menuItemId: text("menu_item_id").notNull(),
     name: text("name").notNull(),
+    // Base unit price (without modifiers), re-priced server-side on every write.
     price: numeric("price", { precision: 12, scale: 2 }).notNull(),
+    modifierPriceDelta: numeric("modifier_price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
     quantity: integer("quantity").notNull(),
     category: text("category").notNull(),
     ingredientsJson: text("ingredients_json").notNull().default("[]"),
+    selectedModifiersJson: text("selected_modifiers_json").notNull().default("[]"),
+    notes: text("notes"),
     updatedByParticipantId: text("updated_by_participant_id"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.tenantId, table.sessionId, table.menuItemId] }),
+    sessionParticipantIdx: index("group_order_cart_items_session_participant_idx").on(
+      table.tenantId,
+      table.sessionId,
+      table.participantId,
+    ),
   }),
 );
 
@@ -1209,5 +1311,42 @@ export const prepProductionImpacts = pgTable(
   },
   (t) => [
     index("prep_production_impacts_tenant_production_idx").on(t.tenantId, t.productionId),
+  ],
+);
+
+// ─── Web Push subscriptions ────────────────────────────────────────────────
+//
+// One row per browser registration (endpoint) per tenant. A device can be a
+// staff terminal AND a public-menu visitor at the same time, so the staff
+// identity and the consumer contexts live side by side, each with its own
+// category list. Deleting a tracking/group session must NOT drop the whole
+// subscription (the device may still be used for other flows) → `set null`.
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy").references(() => tenants.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    staffId: text("staff_id").references(() => staff.id, { onDelete: "set null" }),
+    // Categories enabled per side. JSON arrays of the shared PushCategory enum.
+    staffCategories: jsonb("staff_categories").notNull().default(["orders", "reservations", "low_stock", "printing"]),
+    consumerCategories: jsonb("consumer_categories").notNull().default(["takeaway_status", "group_order"]),
+    trackingSessionId: text("tracking_session_id").references(() => publicTakeawayTrackingSessions.id, {
+      onDelete: "set null",
+    }),
+    groupSessionId: text("group_session_id").references(() => groupOrderSessions.id, { onDelete: "set null" }),
+    deviceLabel: text("device_label"),
+    userAgent: text("user_agent"),
+    lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("push_subscriptions_tenant_endpoint_idx").on(t.tenantId, t.endpoint),
+    index("push_subscriptions_staff_idx").on(t.tenantId, t.staffId),
+    index("push_subscriptions_tracking_idx").on(t.tenantId, t.trackingSessionId),
+    index("push_subscriptions_group_idx").on(t.tenantId, t.groupSessionId),
   ],
 );

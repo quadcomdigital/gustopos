@@ -48,6 +48,11 @@ export default function BackofficeEntry() {
     reservationsSummary,
     deliverySummary,
     refreshOperationalSummaries,
+    salesSummary,
+    salesSummaryLoading,
+    salesPeriod,
+    setSalesPeriod,
+    refreshSalesSummary,
   } = useOperationalSummaries({ currentUser, enabledModules });
   const {
     hasImpersonationSnapshot,
@@ -95,7 +100,7 @@ export default function BackofficeEntry() {
   };
   const handleRefreshAll = async () => {
     await refreshAllData();
-    await refreshOperationalSummaries();
+    await Promise.all([refreshOperationalSummaries(), refreshSalesSummary()]);
   };
 
   if (loading) {
@@ -103,7 +108,7 @@ export default function BackofficeEntry() {
       <div className="flex items-center justify-center h-screen bg-bg">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-accent border-t-transparent rounded-full animate-spin" />
-          <p className="text-text-muted font-medium animate-pulse">Caricamento GustoPOS...</p>
+          <p className="text-text-muted font-medium animate-pulse">Caricamento OmniRestaurant...</p>
         </div>
       </div>
     );
@@ -122,6 +127,11 @@ export default function BackofficeEntry() {
           reservationsSummary,
           deliverySummary,
           refreshOperationalSummaries,
+          salesSummary,
+          salesSummaryLoading,
+          salesPeriod,
+          setSalesPeriod,
+          refreshSalesSummary,
         }}
       >
       <BackofficeShell
@@ -186,6 +196,11 @@ export default function BackofficeEntry() {
         reservationsSummary,
         deliverySummary,
         refreshOperationalSummaries,
+        salesSummary,
+        salesSummaryLoading,
+        salesPeriod,
+        setSalesPeriod,
+        refreshSalesSummary,
       }}
     >
       {/* Browser-side printing is handled by the print-bridge BridgeWorker.

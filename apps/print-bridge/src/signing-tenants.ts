@@ -48,11 +48,40 @@ export function clearSigningTenantCache(): void {
   cache = null;
 }
 
-/** `apps/print-bridge/certs` from `src/` (tests) and `dist/` (production). */
+/**
+ * `apps/print-bridge/certs` from `src/` (tests), `dist/` (production) and any
+ * nested build layout: walk up from this module and take the first directory
+ * that actually holds the signing material.
+ *
+ * The previous one-shot `path.resolve(__dirname, "..", "..", "certs")` pointed
+ * at `apps/certs`, which does not exist. No tenant was ever loaded, so EVERY
+ * caller — including `?tenant=<slug>` and `Origin: https://<tenant-domain>` —
+ * fell back to the legacy shared certificate: a POS then installs a CA the
+ * tenant's agent certificate does not chain to, and QZ Tray refuses the
+ * handshake (printer discovery never runs, jobs defer).
+ */
 export function signingCertsDir(): string {
   const override = process.env.QZ_CERTS_DIR?.trim();
   if (override) return override;
-  return path.resolve(__dirname, "..", "..", "certs");
+
+  let dir = __dirname;
+  for (let i = 0; i < 6; i += 1) {
+    const candidate = path.join(dir, "certs");
+    if (isSigningMaterialDir(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Layout-independent fallback: `certs` next to the package root.
+  return path.resolve(__dirname, "..", "certs");
+}
+
+/** Holds the legacy leaf (pre-tenant installs) and/or the per-tenant PKI. */
+function isSigningMaterialDir(candidate: string): boolean {
+  return (
+    fs.existsSync(path.join(candidate, "digital-certificate.pem")) ||
+    fs.existsSync(path.join(candidate, "tenants"))
+  );
 }
 
 function loadTenants(): TenantSigningMaterial[] {

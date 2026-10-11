@@ -359,29 +359,66 @@ const CA_CERT_PATH = path.join(CERTS_DIR, "ca-cert.pem");
 
 interface CertBundle {
   cert: string;
+  // Empty when the private key is absent: the PUBLIC routes (override.crt,
+  // digital-certificate.txt) must keep working, otherwise a missing or
+  // rotating key turns into "the POS cannot download the certificate that
+  // would fix the trust chain". Signing routes check `hasKey` instead.
   key: string;
+  hasKey: boolean;
   caCert: string;
   mtimeMs: number;
+  keyMtimeMs: number;
 }
 
 // Cache per certificate path: a bridge can serve several tenants, and a
 // rotation for one of them must not invalidate (or overwrite) another's.
 const certCache = new Map<string, CertBundle>();
 
+function fileMtimeMs(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return -1; // absent (private keys are not committed to the repo)
+  }
+}
+
 function readBundle(certPath: string, keyPath: string, caCertPath: string): CertBundle {
-  const cached = certCache.get(certPath);
   const mtimeMs = fs.statSync(certPath).mtimeMs;
-  if (cached && cached.mtimeMs === mtimeMs) return cached;
+  const keyMtimeMs = fileMtimeMs(keyPath);
+  const cached = certCache.get(certPath);
+  if (cached && cached.mtimeMs === mtimeMs && cached.keyMtimeMs === keyMtimeMs) return cached;
+
+  let key = "";
+  let hasKey = false;
+  try {
+    key = fs.readFileSync(keyPath, "utf-8");
+    hasKey = key.trim().length > 0;
+  } catch {
+    // Missing key: serve the public material, refuse to sign.
+    key = "";
+    hasKey = false;
+  }
 
   const bundle: CertBundle = {
     cert: fs.readFileSync(certPath, "utf-8"),
-    key: fs.readFileSync(keyPath, "utf-8"),
+    key,
+    hasKey,
     caCert: fs.readFileSync(caCertPath, "utf-8"),
     mtimeMs,
+    keyMtimeMs,
   };
   certCache.set(certPath, bundle);
-  console.log(`[print-bridge] Reloaded cert/key from disk (${certPath})`);
+  console.log(`[print-bridge] Reloaded cert${hasKey ? "/key" : " (key missing)"} from disk (${certPath})`);
   return bundle;
+}
+
+/** Actionable message when a tenant's leaf key has never been generated. */
+function missingKeyHint(tenant: { slug: string } | null): string {
+  const target = tenant ? `tenant '${tenant.slug}'` : "the legacy certificate";
+  const fix = tenant
+    ? `apps/print-bridge/scripts/gen-tenant-pki.sh ${tenant.slug} --domains <hosts>`
+    : "restore certs/private-key.pem";
+  return `Signing key for ${target} not found — signing disabled. Generate it with: ${fix}`;
 }
 
 type SigningRequest = Parameters<typeof resolveTenantForRequest>[0];
@@ -400,7 +437,7 @@ function getCerts(req?: SigningRequest) {
       tenant ? tenant.keyPath : PRIVATE_KEY_PATH,
       tenant ? tenant.rootCertPath : CA_CERT_PATH,
     );
-    return { cert: bundle.cert, key: bundle.key, caCert: bundle.caCert, tenant };
+    return { cert: bundle.cert, key: bundle.key, hasKey: bundle.hasKey, caCert: bundle.caCert, tenant };
   } catch (err) {
     console.error("[print-bridge] Failed to load certs:", err);
     throw err;
@@ -410,7 +447,11 @@ function getCerts(req?: SigningRequest) {
 // Serve the private key (authenticated — only the agent should have this)
 app.get("/signing/private-key.pem", authMiddleware, (req, res) => {
   try {
-    const { key } = getCerts(req);
+    const { key, hasKey, tenant } = getCerts(req);
+    if (!hasKey) {
+      res.status(404).type("text/plain").send(missingKeyHint(tenant));
+      return;
+    }
     res.setHeader("Content-Type", "text/plain");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.send(key);
@@ -463,7 +504,13 @@ app.get("/signing/sign-message", (req, res) => {
   }
 
   try {
-    const { key } = getCerts(req);
+    const { key, hasKey, tenant } = getCerts(req);
+    if (!hasKey) {
+      // Public material still downloads; only signing is refused, with the
+      // exact command that fixes it (mirrors the API's message).
+      res.status(500).type("text/plain").send(missingKeyHint(tenant));
+      return;
+    }
     const sign = crypto.createSign("SHA512");
     sign.update(request);
     const signature = sign.sign(key, "base64");
@@ -567,7 +614,11 @@ app.get("/signing/debug", (req, res) => {
 //   -> SHA256(jsonString) -> feeds to SHA512withRSA verifier -> verify
 app.get("/signing/verify-test", (req, res) => {
   try {
-    const { cert, key } = getCerts(req);
+    const { cert, key, hasKey, tenant } = getCerts(req);
+    if (!hasKey) {
+      res.status(500).json({ error: missingKeyHint(tenant) });
+      return;
+    }
 
     // Simulate a typical QZ Tray call payload
     const testPayload = JSON.stringify({

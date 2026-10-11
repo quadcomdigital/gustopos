@@ -22,6 +22,14 @@ export default function ConfirmDialog({
 }: ConfirmDialogProps) {
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const backdropDismiss = useBackdropDismiss(onCancel);
+  // Latest-ref pattern: parents pass inline `onCancel` closures, so putting it
+  // in the effect deps would re-run the effect on EVERY parent render and
+  // `focus()` would steal focus back from inputs (closing the mobile
+  // soft-keyboard right after it opens). The ref keeps the handler fresh
+  // without ever re-running the effect.
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern avoids stale callbacks in the keydown listener
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
 
   useEffect(() => {
     if (!open) {
@@ -30,12 +38,12 @@ export default function ConfirmDialog({
     confirmButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onCancel();
+        onCancelRef.current();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onCancel]);
+  }, [open]);
 
   if (!open) {
     return null;

@@ -14,6 +14,13 @@ export function minLength(value: string, min: number, _label: string): FieldErro
   return undefined;
 }
 
+export function maxLength(value: string, max: number, label: string): FieldError | undefined {
+  if (value.trim().length > max) {
+    return { message: `${label}: max ${max} caratteri` };
+  }
+  return undefined;
+}
+
 export function minNumber(value: string, min: number, _label: string): FieldError | undefined {
   const n = Number(value);
   if (value !== '' && (!Number.isFinite(n) || n < min)) {

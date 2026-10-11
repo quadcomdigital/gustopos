@@ -33,6 +33,8 @@ import {
   stockMovementsQuerySchema,
   categoryCreateRequestSchema,
   categoryUpdateRequestSchema,
+  categoryOrderRequestSchema,
+  type CategoryOrderRequest,
   categoryModifierPoolCreateRequestSchema,
   categoryModifierPoolUpdateRequestSchema,
   customerCreateRequestSchema,
@@ -44,6 +46,7 @@ import {
   operationalSummaryQuerySchema,
   refundPaymentRequestSchema,
   orderHistoryFiltersSchema,
+  dashboardVisibilityLogRequestSchema,
   dispatchPrintJobRequestSchema,
   printJobsQuerySchema,
   printJobsPollQuerySchema,
@@ -56,6 +59,8 @@ import {
   printBridgeDiagnosticsRequestSchema,
   printBridgeUpdateMappingsRequestSchema,
   printBridgeUpdateClaimedAreasRequestSchema,
+  printProfileCreateRequestSchema,
+  printProfileUpdateRequestSchema,
   printBridgeTestPrintRequestSchema,
   printBridgeCommandSchema,
   printBridgeDiscoveredPrintersRequestSchema,
@@ -69,6 +74,10 @@ import {
   type PrintBridgeOnboardingSecretCreateResponse,
   type PrintBridgeUpdateMappingsRequest,
   type PrintBridgeUpdateClaimedAreasRequest,
+  type PrintProfileActivateResponse,
+  type PrintProfileCreateRequest,
+  type PrintProfileUpdateRequest,
+  type PrintProfilesState,
   type PrintBridgeTestPrintRequest,
   type PrintBridgeTestPrintResponse,
   type PrintBridgeCommand,
@@ -79,6 +88,10 @@ import {
   type PrintStationUpdateRequest,
   printStationCreateRequestSchema,
   printStationUpdateRequestSchema,
+  type PrintEndpoint,
+  type PrintEndpointsListResponse,
+  type PrintEndpointUpdateRequest,
+  printEndpointUpdateRequestSchema,
   type ProductionReference,
   type ProductionReferencesListResponse,
   type ProductionReferenceCreateRequest,
@@ -97,6 +110,7 @@ import {
   groupOrderPatchCartResponseSchema,
   groupOrderSubmitRequestSchema,
   groupOrderSubmitResponseSchema,
+  groupOrderReviewRequestSchema,
   selfOrderCreateRequestSchema,
   reservationsQuerySchema,
   reservationCreateRequestSchema,
@@ -175,6 +189,7 @@ import {
   type CustomerAnalyticsRequest,
   type OperationalSummaryQuery,
   type ReservationsSummary,
+  type SalesSummary,
   type DeliverySummary,
   type RefundPaymentRequest,
   type RefundPaymentResponse,
@@ -238,8 +253,12 @@ import {
   type GroupOrderJoinSessionResponse,
   type GroupOrderPatchCartRequest,
   type GroupOrderPatchCartResponse,
+  type GroupOrderSession,
   type GroupOrderSubmitRequest,
   type GroupOrderSubmitResponse,
+  type GroupOrderReviewQueueResponse,
+  type GroupOrderReviewResponse,
+  type GroupOrderPaymentIntentResponse,
   type SelfOrderCreateRequest,
   type SelfOrderCreateResponse,
   type SelfOrderResolveResponse,
@@ -285,6 +304,8 @@ import { PaymentsRepository } from "./repository/payments.repository";
 import { PrintJobsRepository } from "./repository/print-jobs.repository";
 import { PrintBridgeRepository } from "./repository/print-bridge.repository";
 import { PrintStationsRepository } from "./repository/print-stations.repository";
+import { PrintEndpointsRepository } from "./repository/print-endpoints.repository";
+import { PrintProfilesRepository } from "./repository/print-profiles.repository";
 import { ProductionReferencesRepository } from "./repository/production-references.repository";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PermissionsGuard } from "./auth/permissions.guard";
@@ -332,6 +353,8 @@ export class AppController {
     @Inject(PrintJobsRepository) private readonly printJobsRepo: PrintJobsRepository,
     @Inject(PrintBridgeRepository) private readonly printBridgeRepo: PrintBridgeRepository,
     @Inject(PrintStationsRepository) private readonly printStationsRepo: PrintStationsRepository,
+    @Inject(PrintEndpointsRepository) private readonly printEndpointsRepo: PrintEndpointsRepository,
+    @Inject(PrintProfilesRepository) private readonly printProfilesRepo: PrintProfilesRepository,
     @Inject(ProductionReferencesRepository) private readonly productionReferencesRepo: ProductionReferencesRepository,
     @Inject(FiscalBridgeRepository) private readonly fiscalBridgeRepo: FiscalBridgeRepository,
     @Inject(AuditLogService) private readonly auditLogService: AuditLogService,
@@ -597,6 +620,33 @@ export class AppController {
       to: query.to,
     }) as CustomerAnalyticsRequest;
     return this.customerRepo.getCustomerAnalytics(parsed);
+  }
+
+  @Get("analytics/sales-summary")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  salesSummary(@Query() query: Record<string, string | undefined>): Promise<SalesSummary> {
+    const parsed = operationalSummaryQuerySchema.parse({
+      from: query.from,
+      to: query.to,
+    }) as OperationalSummaryQuery;
+    return this.appRepository.getSalesSummary(parsed);
+  }
+
+  /**
+   * Privacy toggle for the dashboard € counters (masked by default on a shared
+   * floor). Reveal/hide is audited with the acting staff member.
+   */
+  @Post("analytics/visibility-log")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  logDashboardVisibility(@Req() request: AuthenticatedRequest, @Body() payload: unknown): { success: true } {
+    const parsed = dashboardVisibilityLogRequestSchema.parse(payload ?? {});
+    this.auditLogService.log(`dashboard.counters.${parsed.action === "reveal" ? "revealed" : "hidden"}`, {
+      actorStaffId: request.user?.sub,
+      details: { view: "dashboard", action: parsed.action },
+    });
+    return { success: true };
   }
 
   @Get("analytics/reservations-summary")
@@ -1710,6 +1760,41 @@ export class AppController {
     return updated;
   }
 
+  /**
+   * Whole-group reorder of a scope's categories (Magazzino → Categorie, up/
+   * down). Works for both catalog modules: the row itself is module-agnostic
+   * and the order only drives display (POS pills, backoffice lists).
+   */
+  @Put("categories/order")
+  @RequiresPermissions("inventory:manage")
+  @Roles("admin", "chef")
+  @RequiresAnyOfModules("inventory", "simple_catalog")
+  async reorderCategories(@Body() payload: CategoryOrderRequest) {
+    const parsed = categoryOrderRequestSchema.parse(payload);
+    const updated = await this.inventoryRepo.reorderCategories(parsed.ids);
+    return { success: true, updated };
+  }
+
+  @Delete("simple-catalog/categories/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  async deleteSimpleCatalogCategory(@Param("id") id: string) {
+    // Same usage guards as the inventory route (the client used to call that
+    // one unconditionally and got a 403 in simple-catalog-only tenants).
+    try {
+      const ok = await this.inventoryRepo.deleteCategory(id);
+      if (!ok) {
+        throw new NotFoundException("Category not found");
+      }
+      return { success: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Cannot delete category");
+    }
+  }
+
   @Delete("categories/:id")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
@@ -1938,6 +2023,69 @@ export class AppController {
     return { qzTray: updated.config.qzTray };
   }
 
+  // ─── Print configurations (switchable routing profiles) ─────────────────
+
+  @Get("printing/print-profiles")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async listPrintProfiles(): Promise<PrintProfilesState> {
+    return this.printProfilesRepo.getState();
+  }
+
+  @Post("printing/print-profiles")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async createPrintProfile(
+    @Body() payload: PrintProfileCreateRequest,
+  ): Promise<PrintProfilesState> {
+    const parsed = printProfileCreateRequestSchema.parse(payload);
+    return this.printProfilesRepo.createProfile(parsed);
+  }
+
+  // Registered before "/:id/activate" so the literal path always wins.
+  @Post("printing/print-profiles/deactivate")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async deactivatePrintProfile(): Promise<PrintProfilesState> {
+    return this.printProfilesRepo.deactivate();
+  }
+
+  @Post("printing/print-profiles/:id/activate")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async activatePrintProfile(@Param("id") id: string): Promise<PrintProfileActivateResponse> {
+    const { result, changedBridges } = await this.printProfilesRepo.activateProfile(id);
+    for (const bridge of changedBridges) {
+      void this.realtimeGateway
+        .emit(socketEvents.bridgeStatus, bridge, bridge.tenantId ?? "tenant_legacy")
+        .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
+    }
+    return result;
+  }
+
+  @Patch("printing/print-profiles/:id")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async updatePrintProfile(
+    @Param("id") id: string,
+    @Body() payload: PrintProfileUpdateRequest,
+  ): Promise<PrintProfilesState> {
+    const parsed = printProfileUpdateRequestSchema.parse(payload);
+    return this.printProfilesRepo.updateProfile(id, parsed);
+  }
+
+  @Delete("printing/print-profiles/:id")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("printing")
+  async deletePrintProfile(@Param("id") id: string): Promise<PrintProfilesState> {
+    return this.printProfilesRepo.deleteProfile(id);
+  }
+
   @Post("inventory")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
@@ -2078,6 +2226,7 @@ export class AppController {
     if (!ok) {
       throw new NotFoundException("Simple catalog item not found");
     }
+    this.auditLogService.log("menu.enabled", { targetId: id });
     return { success: true };
   }
 
@@ -2089,6 +2238,25 @@ export class AppController {
     if (!ok) {
       throw new NotFoundException("Simple catalog item not found");
     }
+    this.auditLogService.log("menu.disabled", { targetId: id });
+    return { success: true };
+  }
+
+  /** Same guard as `DELETE /api/menu/:id`: never orphan order history. */
+  @Delete("simple-catalog/items/:id")
+  @Roles("admin", "chef")
+  @RequiresModule("simple_catalog")
+  async deleteSimpleCatalogItem(@Param("id") id: string) {
+    let ok: boolean;
+    try {
+      ok = await this.inventoryRepo.deleteMenuItem(id);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Cannot delete catalog item");
+    }
+    if (!ok) {
+      throw new NotFoundException("Simple catalog item not found");
+    }
+    this.auditLogService.log("menu.deleted", { targetId: id });
     return { success: true };
   }
 
@@ -2128,6 +2296,7 @@ export class AppController {
     if (!ok) {
       throw new NotFoundException("Menu item not found");
     }
+    this.auditLogService.log("menu.enabled", { targetId: id });
 
     return { success: true };
   }
@@ -2141,19 +2310,30 @@ export class AppController {
     if (!ok) {
       throw new NotFoundException("Menu item not found");
     }
+    this.auditLogService.log("menu.disabled", { targetId: id });
 
     return { success: true };
   }
 
+  /**
+   * Hard delete — only allowed for a product that was never ordered, the
+   * repository refuses the rest (archiving is the supported path there).
+   */
   @Delete("menu/:id")
   @RequiresPermissions("inventory:manage")
   @Roles("admin", "chef")
   @RequiresModule("inventory")
   async deleteMenuItem(@Param("id") id: string) {
-    const ok = await this.inventoryRepo.deleteMenuItem(id);
+    let ok: boolean;
+    try {
+      ok = await this.inventoryRepo.deleteMenuItem(id);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Cannot delete menu item");
+    }
     if (!ok) {
       throw new NotFoundException("Menu item not found");
     }
+    this.auditLogService.log("menu.deleted", { targetId: id });
     return { success: true };
   }
 
@@ -2175,6 +2355,55 @@ export class AppController {
       await this.emitTablesUpdateSafely();
     }
     return created.order;
+  }
+
+  @Get("group-order-drafts")
+  @Roles("admin", "waiter")
+  @RequiresModule("public_group_order")
+  async listGroupOrderDrafts(): Promise<GroupOrderReviewQueueResponse> {
+    return this.appRepository.listPendingGroupOrderDrafts();
+  }
+
+  @Post("group-order-drafts/:id/review")
+  @Roles("admin", "waiter")
+  @RequiresModule("public_group_order")
+  async reviewGroupOrderDraft(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: { action?: string; reason?: string },
+  ): Promise<GroupOrderReviewResponse> {
+    const staffId = request.user?.sub;
+    if (!staffId) {
+      throw new UnauthorizedException("Missing staff identity");
+    }
+    let parsed;
+    try {
+      parsed = groupOrderReviewRequestSchema.parse(payload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid review payload");
+    }
+    let reviewed: GroupOrderReviewResponse;
+    try {
+      reviewed = await this.appRepository.reviewGroupOrderDraft({
+        orderId: id,
+        staffId,
+        action: parsed.action,
+        reason: parsed.reason,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Group order review failed");
+    }
+
+    await this.realtimeGateway.emitToRoom(`groupOrder:${reviewed.sessionId}`, socketEvents.groupOrderReviewUpdated, {
+      sessionId: reviewed.sessionId,
+      status: reviewed.status,
+      orderId: reviewed.order.id,
+      rejectionReason: reviewed.order.rejectionReason,
+    });
+    if (reviewed.status === "approved") {
+      await this.realtimeGateway.emit(socketEvents.orderNew, reviewed.order);
+    }
+    return reviewed;
   }
 
   @Patch("orders/:id/items/:orderItemId")
@@ -2924,7 +3153,7 @@ export class AppController {
       );
       await this.realtimeGateway.emitToRoom(`groupOrder:${sessionId}`, socketEvents.groupOrderCartUpdated, {
         session: updated.session,
-        byParticipantId: updated.session.participants.find((entry) => entry.lastSeenAt === updated.session.updatedAt)?.id ?? "",
+        byParticipantId: updated.byParticipantId,
         reconciled: updated.reconciled,
       });
       return updated;
@@ -2979,6 +3208,49 @@ export class AppController {
       }
       throw new BadRequestException(error instanceof Error ? error.message : "Group order submit failed");
     }
+  }
+
+  @Get("public/:tenantSlug/group-orders/:sessionId")
+  @Public()
+  @RequiresModule("public_group_order")
+  async getPublicGroupOrderSession(
+    @Param("tenantSlug") tenantSlug: string,
+    @Param("sessionId") sessionId: string,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<GroupOrderSession> {
+    const joinCode = String(request.headers["x-group-order-code"] ?? "").trim().toLowerCase();
+    const participantToken = String(request.headers["x-group-order-token"] ?? "").trim();
+    if (!joinCode || !participantToken) {
+      throw new UnauthorizedException("Missing group order session credentials");
+    }
+    try {
+      return await this.appRepository.getPublicGroupOrderSession(tenantSlug, sessionId, joinCode, participantToken);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("authorized")) {
+        throw new UnauthorizedException("Invalid group order participant token");
+      }
+      if (error instanceof Error && error.message.includes("not found")) {
+        throw new NotFoundException("Group order session not available");
+      }
+      throw new BadRequestException(error instanceof Error ? error.message : "Group order session fetch failed");
+    }
+  }
+
+  /**
+   * Stripe scaffolding: online payment for a submitted group order. No provider
+   * is wired yet, so this always answers `disabled`; the contract exists so the
+   * UI slot and the future PaymentIntent flow need no redesign.
+   */
+  @Post("public/:tenantSlug/group-orders/:sessionId/payment-intent")
+  @Public()
+  @RequiresModule("public_group_order")
+  async createPublicGroupOrderPaymentIntent(
+    @Param("tenantSlug") tenantSlug: string,
+    @Param("sessionId") sessionId: string,
+  ): Promise<GroupOrderPaymentIntentResponse> {
+    void tenantSlug;
+    void sessionId;
+    return { status: "disabled", provider: null, clientSecret: null };
   }
 
   @Get("public/:tenantSlug/takeaway/orders/:orderId/track")
@@ -3065,7 +3337,7 @@ export class AppController {
             `Generate it with apps/print-bridge/scripts/gen-tenant-pki.sh ${tenant.slug} --domains <hosts>`,
         );
       }
-      throw new NotFoundException("Signing key not found. Run: openssl req -x509 -newkey rsa:2048 -keyout private-key.pem -out certificate.txt -days 365 -nodes -subj '/CN=GustoPOS'");
+      throw new NotFoundException("Signing key not found. Run: openssl req -x509 -newkey rsa:2048 -keyout private-key.pem -out certificate.txt -days 365 -nodes -subj '/CN=OmniRestaurant'");
     }
 
     const sign = crypto.createSign("SHA512");
@@ -3422,6 +3694,20 @@ export class AppController {
         }
       }
 
+      // Acquired printer registry. This heartbeat's QZ enumeration is the
+      // COMPLETE printer list of its machine → the only report allowed to
+      // deactivate printers the PC no longer exposes. Best-effort: the
+      // registry must never add latency to the heartbeat path.
+      void this.printEndpointsRepo
+        .ingest({
+          bridgeId: bridge.id,
+          instanceId: bridge.instanceId ?? null,
+          printers: payload.printers,
+          deactivatesMissing: true,
+          overrideTenantId: auth.tenantId,
+        })
+        .catch((err: unknown) => console.warn("[print-endpoints] heartbeat ingest failed:", err));
+
       void this.realtimeGateway.emit(socketEvents.bridgeStatus, bridge, bridge.tenantId).catch((err) => console.warn('[realtime] bridge:status emit failed:', err));
       // Certified fiscal (Path B): hand the tenant's RT printer config to the
       // agent on every heartbeat so the web UI's "Salva configurazione" takes
@@ -3546,6 +3832,26 @@ export class AppController {
         auth.tenantId,
       );
       if (!bridge) throw new NotFoundException("Print bridge not found");
+      // A LAN scan is PARTIAL evidence (a host may simply be off): it adds and
+      // refreshes endpoints, but never deactivates one.
+      void this.printEndpointsRepo
+        .ingest({
+          bridgeId: bridge.id,
+          instanceId: bridge.instanceId ?? null,
+          printers: payload.devices.map((device) => ({
+            name: device.vendor
+              ? `${device.vendor} (${device.ip})`
+              : `Stampante di rete (${device.ip})`,
+            ip: device.ip,
+            port: device.port,
+            source: "net",
+            vendor: device.vendor,
+            mac: device.mac,
+          })),
+          deactivatesMissing: false,
+          overrideTenantId: auth.tenantId,
+        })
+        .catch((err: unknown) => console.warn("[print-endpoints] scan ingest failed:", err));
       void this.realtimeGateway
         .emit(socketEvents.bridgeStatus, bridge, auth.tenantId)
         .catch((err: unknown) => console.warn("[realtime] bridge:status emit failed:", err));
@@ -3711,6 +4017,41 @@ export class AppController {
     const ok = await this.printStationsRepo.deleteStation(id);
     if (!ok) {
       throw new BadRequestException("Print station not found or is the default station");
+    }
+    return { success: true, id };
+  }
+
+  // ─── Acquired printer registry ─────────────────────────────────────────
+  //
+  // Endpoints reported by bridges (QZ enumeration + LAN scans), kept for the
+  // lifetime of the tenant so a configuration can reference a printer that is
+  // currently off. Acquired automatically; these routes only curate the list.
+
+  @Get("print-endpoints")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("printing")
+  async listPrintEndpoints(): Promise<PrintEndpointsListResponse> {
+    return this.printEndpointsRepo.list();
+  }
+
+  @Patch("print-endpoints/:id")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async updatePrintEndpoint(
+    @Param("id") id: string,
+    @Body() payload: PrintEndpointUpdateRequest,
+  ): Promise<PrintEndpoint> {
+    const parsed = printEndpointUpdateRequestSchema.parse(payload);
+    return this.printEndpointsRepo.update(id, parsed);
+  }
+
+  @Delete("print-endpoints/:id")
+  @Roles("admin")
+  @RequiresModule("printing")
+  async deletePrintEndpoint(@Param("id") id: string): Promise<{ success: true; id: string }> {
+    const ok = await this.printEndpointsRepo.remove(id);
+    if (!ok) {
+      throw new NotFoundException("Acquired printer not found");
     }
     return { success: true, id };
   }
