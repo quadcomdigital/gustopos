@@ -12,6 +12,14 @@ if (!connectionString) {
 
 export const pool = new Pool({ connectionString });
 
+// PostgreSQL può chiudere una connessione idle (restart, `57P01 terminating
+// connection due to administrator command`, reset di rete). Senza un listener
+// l'evento 'error' resta unhandled e Node termina l'intero processo: era la
+// causa dei restart a catena dell'API durante la manutenzione del DB.
+pool.on("error", (error) => {
+  console.error("[db] idle client error:", error.message);
+});
+
 const RLS_SETTING = "app.current_tenant_id";
 const rawPoolQuery = pool.query.bind(pool);
 const wrappedClients = new WeakSet<object>();
