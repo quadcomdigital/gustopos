@@ -158,6 +158,45 @@ test("idempotency middleware releases failed-request locks", () => {
   assert.match(responseSection, /res\.once\("close"/);
 });
 
+test("fiscal protocol catalog is admin-gated and never returns dialect codes", () => {
+  const section = sectionBetween(
+    controllerSource,
+    '  @Get("settings/fiscal/protocols")',
+    '  @Get("settings/fiscal/printer")',
+  );
+  assert.match(section, /@Roles\("admin"\)/);
+  assert.match(section, /@RequiresPermissions\("settings:update"\)/);
+  assert.match(section, /@RequiresModule\("fiscal_exports"\)/);
+  assert.match(section, /listFiscalProtocolOptions\(\)/);
+  // Il catalogo passa dallo schema pubblico: nessun campo extra (quindi nessun
+  // codice di protocollo) può essere serializzato verso il browser.
+  assert.match(section, /fiscalProtocolsResponseSchema\.parse/);
+});
+
+test("il collaudo dal vivo è admin-gated e non si registra senza prova", () => {
+  const fiscalBridgeSource = readFileSync(
+    join(__dirname, "..", "repository", "fiscal-bridge.repository.ts"),
+    "utf8",
+  );
+  const section = sectionBetween(
+    controllerSource,
+    '  @Post("settings/fiscal/verification")',
+    '  @Post("fiscal/jobs/test")',
+  );
+  // Il collaudo sblocca i corrispettivi: è una scrittura di configurazione, non
+  // un'azione di cassa. Deve restare riservata come il resto del pannello.
+  assert.match(section, /@Roles\("admin"\)/);
+  assert.match(section, /@RequiresPermissions\("settings:update"\)/);
+  assert.match(section, /@RequiresModule\("fiscal_exports"\)/);
+  assert.match(section, /recordFiscalLiveVerification/);
+  assert.match(section, /revokeFiscalLiveVerification/);
+  // L'evidenza la sceglie il server fra i job completati: nessun identificativo
+  // dichiarato dal chiamante entra nel collaudo.
+  assert.match(fiscalBridgeSource, /selectVerificationEvidence/);
+  assert.match(fiscalBridgeSource, /eq\(fiscalJobs\.status, "completed"\)/);
+  assert.match(fiscalBridgeSource, /eq\(fiscalJobs\.type, "test"\)/);
+});
+
 test("fiscal exports require export permission and preserve content integrity", () => {
   const listSection = sectionBetween(controllerSource, '  @Get("fiscal/exports")', '  @Get("fiscal/exports/:id/download")');
   const downloadSection = sectionBetween(controllerSource, '  @Get("fiscal/exports/:id/download")', '  @Get("customers/:id")');

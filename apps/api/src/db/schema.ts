@@ -299,6 +299,9 @@ export const orders = pgTable("orders", {
   // a submitted group order is created as "pending_approval" and only becomes a
   // real (printed, stock-deducted) order once staff approves it.
   approvalStatus: text("approval_status").notNull().default("not_required"),
+  // Order-level free text ("citofono 3B", "allergia alle noci"): entered by the
+  // guest at checkout, read by staff in the approval queue and the kitchen.
+  notes: text("notes"),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   reviewedByStaffId: text("reviewed_by_staff_id").references(() => staff.id, { onDelete: "set null" }),
   rejectionReason: text("rejection_reason"),
@@ -997,6 +1000,10 @@ export const groupOrderCartItems = pgTable(
     category: text("category").notNull(),
     ingredientsJson: text("ingredients_json").notNull().default("[]"),
     selectedModifiersJson: text("selected_modifiers_json").notNull().default("[]"),
+    // "Senza cipolla"/"in più" choices, as sent: the line only becomes an order
+    // line at submit time, so without this column the guest's removals would be
+    // silently dropped by the group-order cart.
+    ingredientOverridesJson: text("ingredient_overrides_json").notNull().default("[]"),
     notes: text("notes"),
     updatedByParticipantId: text("updated_by_participant_id"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

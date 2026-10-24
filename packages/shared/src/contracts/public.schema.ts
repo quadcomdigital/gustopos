@@ -28,6 +28,9 @@ export const publicMenuItemSchema = z.object({
   id: z.string(),
   name: z.string(),
   price: z.number().nonnegative(),
+  // Tenant-authored short description (Design Editor). Falls back to the
+  // recipe-derived ingredient line when unset.
+  description: z.string().max(200).optional(),
   categoryId: z.string().optional(),
   category: z.string(),
   // Normalised, display-ready ingredient names (no raw ids), matching the POS.
@@ -95,17 +98,25 @@ export const publicMenuContentSchema = z.object({
 export const publicMenuModuleConfigSchema = publicMenuBrandingSchema.extend({
   categoryOrder: z.array(z.string()).default([]),
   hiddenCategoryIds: z.array(z.string()).default([]),
+  // Items pulled from the public menu without deleting them (tenant-editable).
+  hiddenItemIds: z.array(z.string()).default([]),
   featuredItemIds: z.array(z.string()).default([]),
   soldOutItemIds: z.array(z.string()).default([]),
+  // Per-dish short description, keyed by menu item id.
+  itemDescriptions: z.record(z.string(), z.string().max(200)).default({}),
   sections: z.array(menuSectionSchema).default(DEFAULT_MENU_SECTIONS),
   content: publicMenuContentSchema.default({}),
 });
 export type PublicMenuModuleConfig = z.infer<typeof publicMenuModuleConfigSchema>;
 
 /**
- * Subset a tenant owner may edit from the backoffice. Structural/reserved
- * fields (hiddenCategoryIds, featuredItemIds, soldOutItemIds) stay superadmin
- * only so the tenant cannot hide items the operator pinned.
+ * Subset a tenant owner may edit from the backoffice.
+ *
+ * Per-dish presentation (which dishes to feature, mark sold out or hide, plus
+ * their short descriptions) is tenant-editable: the tenant runs the service, so
+ * they own day-to-day merchandising. Purely structural fields
+ * (hiddenCategoryIds, categoryOrder) stay superadmin-only so a tenant patch can
+ * never reorder or unpublish whole categories the operator pinned.
  */
 export const publicMenuTenantEditableSchema = z.object({
   preset: publicMenuBrandingSchema.shape.preset,
@@ -118,6 +129,11 @@ export const publicMenuTenantEditableSchema = z.object({
   accentColor: publicMenuBrandingSchema.shape.accentColor,
   sections: z.array(menuSectionSchema).optional(),
   content: publicMenuContentSchema.optional(),
+  // Per-dish merchandising.
+  featuredItemIds: z.array(z.string()).optional(),
+  soldOutItemIds: z.array(z.string()).optional(),
+  hiddenItemIds: z.array(z.string()).optional(),
+  itemDescriptions: z.record(z.string(), z.string().max(200)).optional(),
 });
 export type PublicMenuTenantEditable = z.infer<typeof publicMenuTenantEditableSchema>;
 
@@ -134,10 +150,10 @@ export function mergeTenantPublicMenuConfig(
   return publicMenuModuleConfigSchema.parse({
     ...base,
     ...parsedPatch,
-    // Never let a tenant patch drop operator-pinned fields.
+    // Never let a tenant patch drop operator-pinned structural fields. Per-dish
+    // merchandising (featured/soldOut/hidden/descriptions) is tenant-owned and
+    // therefore comes from the patch above.
     hiddenCategoryIds: base.hiddenCategoryIds,
-    featuredItemIds: base.featuredItemIds,
-    soldOutItemIds: base.soldOutItemIds,
     categoryOrder: base.categoryOrder,
   });
 }
@@ -204,13 +220,22 @@ export const publicTakeawayTrackingResponseSchema = z.object({
 // The client sends identifiers + selections only; the API re-prices each line
 // from the live catalog and recomputes the total. Any client-sent price is
 // ignored. Used by both self-order (dine-in QR) and public takeaway.
+
+/**
+ * "Senza cipolla" / "in più": one ingredient moved in or out of a dish, keyed by
+ * the recipe component id the guest was shown (`recipe[].componentId`).
+ */
+export const publicIngredientOverrideSchema = z.object({
+  ingredientId: z.string().min(1),
+  action: z.enum(["add", "remove"]),
+});
+export type PublicIngredientOverride = z.infer<typeof publicIngredientOverrideSchema>;
+
 export const publicOrderLineSchema = z.object({
   menuItemId: z.string().min(1),
   quantity: z.number().int().positive(),
   notes: z.string().max(200).optional(),
-  ingredientOverrides: z
-    .array(z.object({ ingredientId: z.string().min(1), action: z.enum(["add", "remove"]) }))
-    .optional(),
+  ingredientOverrides: z.array(publicIngredientOverrideSchema).optional(),
   selectedModifiers: z
     .array(z.object({ groupId: z.string().min(1), optionId: z.string().min(1) }))
     .optional(),
@@ -262,6 +287,9 @@ export const groupOrderCartItemSchema = z.object({
   selectedModifiers: z
     .array(z.object({ groupId: z.string(), optionId: z.string() }))
     .default([]),
+  /** "Senza cipolla": kept per line so the kitchen ticket and the master's
+   *  review show exactly what the guest asked to leave out. */
+  ingredientOverrides: z.array(publicIngredientOverrideSchema).default([]),
   notes: z.string().optional(),
   updatedByParticipantId: z.string().optional(),
   updatedAt: z.string(),
@@ -333,6 +361,7 @@ export const groupOrderCartLineOperationSchema = z.object({
   selectedModifiers: z
     .array(z.object({ groupId: z.string().min(1), optionId: z.string().min(1) }))
     .optional(),
+  ingredientOverrides: z.array(publicIngredientOverrideSchema).optional(),
   notes: z.string().max(200).optional(),
 });
 export type GroupOrderCartLineOperation = z.infer<typeof groupOrderCartLineOperationSchema>;
@@ -409,6 +438,10 @@ export const groupOrderReviewQueueItemSchema = z.object({
   selectedModifiers: z
     .array(z.object({ groupId: z.string(), optionId: z.string() }))
     .default([]),
+  ingredientOverrides: z.array(publicIngredientOverrideSchema).default([]),
+  /** Display-ready labels for the overrides above ("senza cipolla"), resolved
+   *  server-side: the review queue must not print raw ingredient ids. */
+  ingredientOverrideLabels: z.array(z.string()).default([]),
 });
 export type GroupOrderReviewQueueItem = z.infer<typeof groupOrderReviewQueueItemSchema>;
 
@@ -416,12 +449,28 @@ export const groupOrderReviewQueueEntrySchema = z.object({
   order: orderSchema,
   sessionId: z.string().optional(),
   joinCode: z.string().optional(),
+  /** Where the draft came from: a group-order session, or a plain public
+   *  (takeaway) order that also waits for staff approval. */
+  source: z.enum(["group_order", "takeaway"]).default("group_order"),
   items: z.array(groupOrderReviewQueueItemSchema),
 });
 export type GroupOrderReviewQueueEntry = z.infer<typeof groupOrderReviewQueueEntrySchema>;
 
 export const groupOrderReviewQueueResponseSchema = z.array(groupOrderReviewQueueEntrySchema);
 export type GroupOrderReviewQueueResponse = z.infer<typeof groupOrderReviewQueueResponseSchema>;
+
+/**
+ * Staff decision on ANY pending draft (group order or public takeaway). The
+ * group-order flow adds a session to update; a takeaway draft has none, so the
+ * session fields stay optional.
+ */
+export const orderDraftReviewResponseSchema = z.object({
+  order: orderSchema,
+  action: z.enum(["approve", "reject"]),
+  sessionId: z.string().optional(),
+  status: groupOrderSessionStatusSchema.optional(),
+});
+export type OrderDraftReviewResponse = z.infer<typeof orderDraftReviewResponseSchema>;
 
 /** Realtime fan-out to the participants and the staff review queue. */
 /**

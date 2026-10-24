@@ -610,6 +610,20 @@
       "when": 1791714150071,
       "tag": "0089_daily_ghost_rider",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1792145965103,
+      "tag": "0090_lethal_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1792148183727,
+      "tag": "0091_spicy_warpath",
+      "breakpoints": true
     }
   ]
 }

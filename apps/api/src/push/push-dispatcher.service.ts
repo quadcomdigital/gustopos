@@ -32,6 +32,7 @@ import {
   buildBridgeDraft,
   buildGroupOrderSubmittedDraft,
   buildGroupOrderDraftReviewDraft,
+  buildOrderDraftPendingDraft,
   buildLowStockDraft,
   buildOrderCreatedDraft,
   buildOrderStatusDraft,
@@ -86,6 +87,9 @@ export class PushDispatcher {
         case socketEvents.orderNew:
           await this.onOrder(parsed as Order, tenantId, tenantSlug, "created");
           break;
+        case socketEvents.orderDraftPending:
+          await this.onOrderDraftPending(parsed as Order, tenantId, tenantSlug);
+          break;
         case socketEvents.orderUpdate:
           await this.onOrder(parsed as Order, tenantId, tenantSlug, "updated");
           break;
@@ -116,6 +120,23 @@ export class PushDispatcher {
   }
 
   // ─── Event handlers ───────────────────────────────────────────────────
+
+  /**
+   * A public (online) order is waiting for approval: alert the staff who can
+   * approve it — deliberately NOT the kitchen, which must never see a draft.
+   */
+  private async onOrderDraftPending(order: Order, tenantId: string, tenantSlug: string | undefined): Promise<void> {
+    await this.fanOut({
+      tenantId,
+      tenantSlug,
+      audience: "staff",
+      category: "orders",
+      modules: ["public_takeaway"],
+      draft: buildOrderDraftPendingDraft(order),
+      fallbackUrl: "/app/approvals",
+      loadRows: () => this.pushRepo.listStaffTargets(tenantId),
+    });
+  }
 
   private async onOrder(order: Order, tenantId: string, tenantSlug: string | undefined, phase: "created" | "updated"): Promise<void> {
     const staffDraft = phase === "created" ? buildOrderCreatedDraft(order) : buildOrderStatusDraft(order);
@@ -243,7 +264,7 @@ export class PushDispatcher {
       category: "orders",
       modules: ["public_group_order"],
       draft: buildGroupOrderDraftReviewDraft(payload),
-      fallbackUrl: "/app/group-orders",
+      fallbackUrl: "/app/approvals",
       loadRows: () => this.pushRepo.listStaffTargets(tenantId),
     });
   }

@@ -72,6 +72,8 @@ export const orderSchema = z.object({
   staffId: z.string().min(1),
   approvalStatus: orderApprovalStatusSchema.optional(),
   rejectionReason: z.string().optional(),
+  /** Free-text note left by the customer/staff for the whole order. */
+  notes: z.string().max(500).optional(),
 });
 
 // ─── Create / Update / Void ─────────────────────────────────────────────────
@@ -86,6 +88,7 @@ export const createOrderRequestSchema = z.object({
   items: z.array(orderItemSchema).min(1, 'Order must have at least 1 item'),
   total: z.number().positive('Order total must be positive'),
   staffId: z.string().min(1, 'Staff ID is required'),
+  notes: z.string().max(500).optional(),
 });
 
 export const updateOrderRequestSchema = z.object({

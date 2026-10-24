@@ -41,15 +41,28 @@ export class PublicMenuController implements OnApplicationShutdown {
     response.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
   }
 
+  /**
+   * Errors must never be publicly cached. Without this, a transient 404 (API
+   * restart, tenant created a moment later, module toggled) is stored by the
+   * browser/CDN for max-age + stale-while-revalidate, so the menu keeps showing
+   * "Public menu not available" long after the API has recovered.
+   */
+  private setNoStoreHeaders(response: Response): void {
+    response.setHeader("Cache-Control", "no-store, max-age=0");
+  }
+
   @Public()
   @RequiresModule("public_menu")
   @Get(":tenantSlug/menu")
   async getBySlug(@Param("tenantSlug") tenantSlug: string, @Req() request: TenantAwareRequest, @Res({ passthrough: true }) response: Response) {
     await this.enforceRateLimit(request.ip ?? "unknown", tenantSlug);
-    this.setCacheHeaders(response);
     try {
-      return await this.appRepository.getPublicMenu(tenantSlug);
+      const menu = await this.appRepository.getPublicMenu(tenantSlug);
+      // Cache only a successful payload: a 404 must stay uncacheable.
+      this.setCacheHeaders(response);
+      return menu;
     } catch (error) {
+      this.setNoStoreHeaders(response);
       if (error instanceof Error && (
         error.message.includes("Tenant not found") ||
         error.message.includes("disabled")
@@ -74,10 +87,13 @@ export class PublicMenuController implements OnApplicationShutdown {
     }
 
     await this.enforceRateLimit(request.ip ?? "unknown", slug);
-    this.setCacheHeaders(response);
     try {
-      return await this.appRepository.getPublicMenu(slug);
+      const menu = await this.appRepository.getPublicMenu(slug);
+      // Cache only a successful payload: a 404 must stay uncacheable.
+      this.setCacheHeaders(response);
+      return menu;
     } catch (error) {
+      this.setNoStoreHeaders(response);
       if (error instanceof Error && (
         error.message.includes("Tenant not found") ||
         error.message.includes("disabled")

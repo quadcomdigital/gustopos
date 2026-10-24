@@ -12,7 +12,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:baseline": "tsx scripts/db-baseline.ts",
-    "db:provision": "drizzle-kit push && tsx scripts/db-baseline.ts"
+    "db:provision": "drizzle-kit push && tsx scripts/db-baseline.ts",
+    "print:reset": "tsx scripts/print-reset.ts"
   },
   "dependencies": {
     "@gustopos/shared": "0.1.0",

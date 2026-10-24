@@ -18,6 +18,7 @@ import {
   selectStationTicketItems,
 } from "./utils/escpos-builder";
 import { imageBufferToLogoRaster } from "./utils/logo-raster";
+import { formatSelectedModifiers } from "./utils/modifier-labels";
 import Jimp from "jimp";
 
 /**
@@ -219,6 +220,80 @@ test("pre-bill prints PRECONTO, items and total without payment rows", () => {
   assert.ok(!text.includes("PAGAMENTO"), "pre-bill must not print a payment row");
   assert.ok(!text.includes("PAGATO"), "pre-bill must not print the paid amount");
   assert.ok(text.includes("PRECONTO NON FISCALE"));
+});
+
+// ─── Cashier documents: selected modifier names ("aggiunte") ──────────────
+// franks: a composed item such as BASE carries its choices in
+// `order_items.selected_modifiers`; the cashier receipt/pre-bill must list the
+// option names (never the ingredient overrides).
+
+const BASE_WITH_MODIFIERS = {
+  name: "BASE",
+  quantity: 1,
+  price: 4.5,
+  notes: null,
+  modifiers: ["Panino", "Pollo grigliato"],
+};
+
+test("cashier receipt prints the selected modifier names under the item", () => {
+  const payload = buildCashierReceiptPayload({
+    ...RECEIPT_ARGS,
+    items: [BASE_WITH_MODIFIERS],
+    subtotal: 4.5,
+    total: 4.5,
+    paidAmount: 4.5,
+  });
+  const text = Buffer.from(payload, "base64").toString("latin1");
+  assert.ok(text.includes("1x BASE"), "item line present");
+  assert.ok(text.includes("  Panino"), "first modifier name printed");
+  assert.ok(text.includes("  Pollo grigliato"), "second modifier name printed");
+});
+
+test("cashier receipt prints modifiers before the item note", () => {
+  const payload = buildCashierReceiptPayload({
+    ...RECEIPT_ARGS,
+    items: [{ name: "BASE", quantity: 2, price: 4.5, notes: "Ben cotti, uno con bbq", modifiers: ["Hamburger"] }],
+    subtotal: 9,
+    total: 9,
+    paidAmount: 9,
+  });
+  const text = Buffer.from(payload, "base64").toString("latin1");
+  assert.ok(
+    text.indexOf("  Hamburger") < text.indexOf("  * Ben cotti, uno con bbq"),
+    "modifier lines must precede the note",
+  );
+});
+
+test("pre-bill prints the selected modifier names under the item", () => {
+  const payload = buildPreBillPayload({
+    brandName: "GUSTOPOS",
+    tableNumber: "7",
+    items: [BASE_WITH_MODIFIERS],
+    subtotal: 4.5,
+    discountAmount: 0,
+    surchargeAmount: 0,
+    total: 4.5,
+    receiptFooter: "Grazie",
+    logoMode: "none",
+    logoWidth: 384,
+    logoThreshold: 160,
+  });
+  const text = Buffer.from(payload, "base64").toString("latin1");
+  assert.ok(text.includes("PRECONTO"));
+  assert.ok(text.includes("  Panino"), "first modifier name printed");
+  assert.ok(text.includes("  Pollo grigliato"), "second modifier name printed");
+});
+
+test("formatSelectedModifiers keeps selection order and falls back to the raw id", () => {
+  const nameById = new Map<string, string>([
+    ["mo_1", "Panino"],
+    ["mo_2", "Pollo grigliato"],
+  ]);
+  const labels = formatSelectedModifiers(
+    [{ optionId: "mo_2" }, { optionId: "mo_1" }, { optionId: "mo_unknown" }],
+    nameById,
+  );
+  assert.deepEqual(labels, ["Pollo grigliato", "Panino", "mo_unknown"]);
 });
 
 // ─── Shared ESC/POS builder (app.repository + tables.repository) ───────────

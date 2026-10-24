@@ -25,6 +25,10 @@ import {
 
 export const socketEvents = {
   orderNew: "order:new",
+  /** A public order was submitted as a DRAFT and waits for staff approval.
+   *  Separate from `order:new` on purpose: the POS/kitchen feeds must NOT pick a
+   *  draft up, only the approval inbox reacts to it. */
+  orderDraftPending: "order:draft_pending",
   orderUpdate: "order:update",
   ordersUpdate: "orders:update",
   reservationUpdate: "reservation:update",
@@ -74,6 +78,7 @@ export const bridgeRemovedPayloadSchema = z.object({ id: z.string() });
  */
 export const socketEventPayloadSchema = {
   [socketEvents.orderNew]: orderSchema,
+  [socketEvents.orderDraftPending]: orderSchema,
   [socketEvents.orderUpdate]: orderSchema,
   [socketEvents.ordersUpdate]: ordersUpdatePatchSchema,
   [socketEvents.reservationUpdate]: reservationSchema,

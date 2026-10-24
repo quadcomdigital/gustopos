@@ -4,14 +4,16 @@ import {  tables, orders, orderItems, payments, paymentItems,
   reservations, deliveryOrders, printJobs, fiscalJobs, appSettings, menuItems,
   menuModifierGroups, menuModifierOptions, menuModifierOptionOverrides,
   categories, categoryModifierPools, categoryModifierPoolOptions, inventory,
-  printStations, selfOrderSessions,
+  printStations, printBridges, selfOrderSessions,
 } from "../db/schema";
 import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull, type SQL } from "drizzle-orm";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight, buildCashierReceiptPayload, buildPreBillPayload, formatRomeDate } from "./utils/escpos-builder";
-import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
+import { parsePrintAreas as parsePrintAreasUtil, parseSelectedModifiers } from "./utils/json-parsers";
+import { resolveModifierNameById, formatSelectedModifiers } from "./utils/modifier-labels";
 import { deliveryTransitions } from "./utils/state-machines";
 import { collectCurrentSessionPaymentIds } from "./utils/merge-payments";
+import { planReceiptJob } from "../fiscal/emission";
 import crypto from "node:crypto";
 import {
   closeTableRequestSchema, closeTableResponseSchema,
@@ -25,13 +27,13 @@ import {
   reservationCreateRequestSchema, reservationUpdateRequestSchema,
   reservationSchema, reservationListResponseSchema, reservationsQuerySchema,
   reservationStatusSchema, reservationNoShowRequestSchema,
-  fiscalReceiptPayloadSchema,
+  fiscalPrinterConfigSchema,
   deliveryOrderSchema, deliveryStatusUpdateRequestSchema, deliveryStatusSchema,
   deliveryOrdersListResponseSchema, deliveryOrdersQuerySchema, deliveryUpsertRequestSchema,
   operationalSummaryQuerySchema, reservationsSummarySchema, deliverySummarySchema,
   uiSettingsSchema,
   type PrintArea, type UiSettings, type ReservationStatus, type DeliveryStatus,
-  type PaymentStatus, type Order, defaultUiSettings,
+  type PaymentStatus, type Order, type FiscalPrinterConfig, defaultUiSettings,
   type Table, type TableCreateRequest, type TableUpdateRequest, type TableBulkCreateRequest,
   type SuspendTableRequest, type SuspendTableResponse,
   type CloseTableRequest, type CloseTableResponse,
@@ -455,8 +457,18 @@ export class TablesRepository {
       }
     }
 
-    // Cashier close-receipt items (hoisted so they are usable after the tx for the print job).
-    const receiptItems: Array<{ name: string; quantity: number; price: number; notes: string | null }> = [];
+    // Cashier close-receipt items (hoisted so they are usable after the tx for the
+    // print job). `categoryId` is the menu category of the product: it is the key
+    // of the fiscal department mapping, and the fiscal job is composed after the
+    // tx, where the products are no longer loaded.
+    const receiptItems: Array<{
+      name: string;
+      quantity: number;
+      price: number;
+      notes: string | null;
+      modifiers: string[];
+      categoryId: string | null;
+    }> = [];
 
     const result = await withTenantTx(async (tx) => {
       await tx.execute(sql`
@@ -511,8 +523,33 @@ export class TablesRepository {
           .from(orderItems)
           .where(and(eq(orderItems.tenantId, tenantId), inArray(orderItems.orderId, orderIds)));
 
+        const modifierNameById = await resolveModifierNameById(
+          tx,
+          tenantId,
+          orderItemRows.flatMap((it) => parseSelectedModifiers(it.selectedModifiers).map((mod) => mod.optionId)),
+        );
+
+        // Categoria menu per prodotto: chiave della mappatura reparti del RT.
+        const menuItemIds = Array.from(new Set(orderItemRows.map((it) => it.menuItemId)));
+        const categoryByMenuItemId = new Map<string, string | null>();
+        if (menuItemIds.length > 0) {
+          const menuRows = await tx
+            .select({ id: menuItems.id, categoryId: menuItems.categoryId })
+            .from(menuItems)
+            .where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuItemIds)));
+          for (const row of menuRows) categoryByMenuItemId.set(row.id, row.categoryId ?? null);
+        }
+
         for (const it of orderItemRows) {
-          receiptItems.push({ name: it.name, quantity: it.quantity, price: Number(it.price), notes: it.notes });
+          receiptItems.push({
+            name: it.name,
+            quantity: it.quantity,
+            price: Number(it.price),
+            notes: it.notes,
+            // Modifier names only ("aggiunte"): overrides stay off the cashier receipt.
+            modifiers: formatSelectedModifiers(parseSelectedModifiers(it.selectedModifiers), modifierNameById),
+            categoryId: categoryByMenuItemId.get(it.menuItemId) ?? null,
+          });
         }
 
         if (!hasSplitPayments) {
@@ -839,11 +876,19 @@ export class TablesRepository {
         .from(orderItems)
         .where(and(eq(orderItems.tenantId, tenantId), inArray(orderItems.orderId, orderIds)));
 
+      const modifierNameById = await resolveModifierNameById(
+        db,
+        tenantId,
+        itemRows.flatMap((item) => parseSelectedModifiers(item.selectedModifiers).map((mod) => mod.optionId)),
+      );
+
       const items = itemRows.map((item) => ({
         name: item.name,
         quantity: item.quantity,
         price: Number(item.price),
         notes: item.notes ?? null,
+        // Modifier names only ("aggiunte"): overrides stay off the pre-bill.
+        modifiers: formatSelectedModifiers(parseSelectedModifiers(item.selectedModifiers), modifierNameById),
       }));
       const subtotal = items.reduce((sum, it) => sum + it.price * it.quantity, 0);
 
@@ -900,7 +945,7 @@ export class TablesRepository {
    */
   private async enqueueFiscalReceiptJob(
     payment: { id: string; tableNumber: string; subtotal: number; discountAmount: number; total: number; method: "cash" | "card" | "mixed" },
-    items: Array<{ name: string; quantity: number; price: number }>,
+    items: Array<{ name: string; quantity: number; price: number; categoryId: string | null }>,
   ): Promise<void> {
     const tenantId = this.currentTenantId();
     // Read the fiscal printer config (stored under the fiscal_exports module).
@@ -910,38 +955,77 @@ export class TablesRepository {
       LIMIT 1
     `);
     const raw = (moduleConfigRows as unknown as { rows?: Array<{ config: string }> }).rows?.[0]?.config;
-    let printerConfig: { enabled?: boolean; host?: string } = {};
-    if (raw) {
-      try {
-        printerConfig = (JSON.parse(raw) as { fiscalPrinter?: { enabled?: boolean; host?: string } }).fiscalPrinter ?? {};
-      } catch {
-        printerConfig = {};
-      }
+    let printerConfig: FiscalPrinterConfig;
+    try {
+      printerConfig = fiscalPrinterConfigSchema.parse(
+        raw ? (JSON.parse(raw) as { fiscalPrinter?: unknown }).fiscalPrinter ?? {} : {},
+      );
+    } catch {
+      printerConfig = fiscalPrinterConfigSchema.parse({});
     }
+    // `enabled` è la scelta dell'operatore (il toggle in chiusura conto): senza,
+    // il conto si chiude senza corrispettivo, come prima del percorso fiscale.
     if (!printerConfig.enabled || !printerConfig.host) {
       return;
     }
 
-    const payload = fiscalReceiptPayloadSchema.parse({
-      paymentId: payment.id,
-      items: items.map((item) => ({ name: item.name, quantity: item.quantity, price: item.price })),
-      subtotal: payment.subtotal,
-      discountAmount: payment.discountAmount,
-      total: payment.total,
-      method: payment.method,
-      businessDate: formatRomeDate(new Date()),
-    });
+    // I frame li compone il motore dialetti e la mappatura reparti decide
+    // l'aliquota di ogni riga. Se una categoria non ha reparto il job **non**
+    // viene accodato: il pagamento resta `pending` con il motivo scritto, così
+    // l'operatore può mappare la categoria e riemettere (mai un corrispettivo
+    // con l'aliquota sbagliata).
+    const agentVersions = await this.fiscalAgentVersions(tenantId);
+    let plan;
+    try {
+      plan = planReceiptJob(
+        { config: printerConfig, agentVersions },
+        {
+          kind: "receipt",
+          paymentId: payment.id,
+          method: payment.method,
+          businessDate: formatRomeDate(new Date()),
+          items: items.map((item) => ({
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+            categoryId: item.categoryId,
+          })),
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[fiscal] receipt job not enqueued for payment ${payment.id}: ${message}`);
+      await db
+        .update(payments)
+        .set({ fiscalStatus: "failed", fiscalError: message.slice(0, 500) })
+        .where(and(eq(payments.tenantId, tenantId), eq(payments.id, payment.id)));
+      return;
+    }
 
     const now = new Date();
     await db.insert(fiscalJobs).values({
       id: `fj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       tenantId,
-      type: "receipt",
+      type: plan.type,
       status: "pending",
-      payload: JSON.stringify(payload),
+      payload: plan.payloadJson,
       createdAt: now,
       updatedAt: now,
     });
+  }
+
+  /** Versioni degli agenti che reclamano lavori fiscali (area cassa). */
+  private async fiscalAgentVersions(tenantId: string): Promise<Array<string | null>> {
+    const rows = await db
+      .select({ version: printBridges.version, areas: printBridges.areas, claimedAreas: printBridges.claimedAreas })
+      .from(printBridges)
+      .where(eq(printBridges.tenantId, tenantId));
+    return rows
+      .filter((row) => {
+        const areas = row.version?.startsWith("go-") ? parsePrintAreas(row.claimedAreas) : parsePrintAreas(row.areas);
+        return areas.includes("cashier");
+      })
+      .map((row) => row.version ?? null);
   }
 
   /**
@@ -951,7 +1035,7 @@ export class TablesRepository {
    * Gated by settings.printing.autoPrintOnClose (Settings → printing).
    */
   private async createCashierCloseReceiptJob(
-    items: Array<{ name: string; quantity: number; price: number; notes: string | null }>,
+    items: Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers?: string[] }>,
     ctx: {
       tableNumber: string;
       subtotal: number;

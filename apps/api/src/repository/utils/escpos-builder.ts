@@ -264,7 +264,7 @@ export function selectStationTicketItems<
 export function buildCashierReceiptPayload(params: {
   brandName: string;
   tableNumber: string;
-  items: Array<{ name: string; quantity: number; price: number; notes: string | null }>;
+  items: Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers?: string[] }>;
   subtotal: number;
   discountAmount: number;
   surchargeAmount: number;
@@ -334,6 +334,9 @@ export function buildCashierReceiptPayload(params: {
     const priceStr = fmt(item.price * item.quantity);
     const pad = CASHIER_RECEIPT_WIDTH - label.length - priceStr.length;
     ep.line(`${label}${pad > 0 ? " ".repeat(pad) : " "}${priceStr}`);
+    for (const modifier of item.modifiers ?? []) {
+      ep.line(`  ${modifier}`);
+    }
     if (item.notes) {
       ep.line(`  * ${item.notes}`);
     }
@@ -381,7 +384,7 @@ export function buildCashierReceiptPayload(params: {
 export function buildPreBillPayload(params: {
   brandName: string;
   tableNumber: string;
-  items: Array<{ name: string; quantity: number; price: number; notes: string | null }>;
+  items: Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers?: string[] }>;
   subtotal: number;
   discountAmount: number;
   surchargeAmount: number;
@@ -439,6 +442,9 @@ export function buildPreBillPayload(params: {
     const priceStr = fmt(item.price * item.quantity);
     const pad = CASHIER_RECEIPT_WIDTH - label.length - priceStr.length;
     ep.line(`${label}${pad > 0 ? " ".repeat(pad) : " "}${priceStr}`);
+    for (const modifier of item.modifiers ?? []) {
+      ep.line(`  ${modifier}`);
+    }
     if (item.notes) {
       ep.line(`  * ${item.notes}`);
     }

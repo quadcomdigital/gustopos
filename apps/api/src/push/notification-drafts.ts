@@ -140,8 +140,23 @@ export function buildGroupOrderSubmittedDraft(payload: GroupOrderRealtimeSubmitt
 }
 
 /**
+ * Staff alert: a public (online takeaway) order was submitted as a DRAFT and
+ * needs manual approval before it reaches the kitchen/printer. Deep-links to
+ * the approval inbox.
+ */
+export function buildOrderDraftPendingDraft(order: Order): NotificationDraft {
+  return {
+    title: "Ordine da approvare",
+    body: `${orderRef(order)} · ${itemCount(order)} articoli · ${euro.format(order.total)}`,
+    tag: `order-draft-${order.id}`,
+    url: "/app/approvals",
+  };
+}
+
+/**
  * Staff alert: a submitted group order is a DRAFT that needs manual approval
- * before it reaches the kitchen/printer. Deep-links to the review queue.
+ * before it reaches the kitchen/printer. Deep-links to the shared approval
+ * inbox, where group orders and online takeaway drafts are reviewed together.
  */
 export function buildGroupOrderDraftReviewDraft(payload: GroupOrderRealtimeSubmitted): NotificationDraft {
   const session = payload.session;
@@ -149,7 +164,7 @@ export function buildGroupOrderDraftReviewDraft(payload: GroupOrderRealtimeSubmi
     title: "Ordine di gruppo da approvare",
     body: `${itemCount(payload.order)} articoli · ${euro.format(payload.order.total)}`,
     tag: `grouporder-review-${session.id}`,
-    url: "/app/group-orders",
+    url: "/app/approvals",
   };
 }
 

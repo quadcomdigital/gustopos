@@ -154,26 +154,47 @@ test("empty config yields schema defaults", () => {
   assert.equal(publicMenuModuleConfigSchema.parse({}).sections.length > 0, true);
 });
 
-test("tenant merge preserves superadmin-only fields", () => {
+test("tenant merge preserves superadmin-only structural fields", () => {
   const stored = {
     preset: "minimal_elegant",
     accentColor: "#0f172a",
     hiddenCategoryIds: ["cat_secret"],
-    featuredItemIds: ["m_featured"],
-    soldOutItemIds: ["m_sold"],
     categoryOrder: ["cat_a"],
   };
   const merged = mergeTenantPublicMenuConfig(stored, {
     accentColor: "#123456",
-    // A malicious tenant patch trying to clear pinned fields is ignored.
+    // A malicious tenant patch trying to clear pinned categories is ignored.
     hiddenCategoryIds: [],
-    featuredItemIds: [],
+    categoryOrder: [],
   } as Record<string, unknown>);
   assert.equal(merged.accentColor, "#123456");
   assert.deepEqual(merged.hiddenCategoryIds, ["cat_secret"]);
-  assert.deepEqual(merged.featuredItemIds, ["m_featured"]);
-  assert.deepEqual(merged.soldOutItemIds, ["m_sold"]);
   assert.deepEqual(merged.categoryOrder, ["cat_a"]);
+});
+
+test("tenant merge owns per-dish merchandising", () => {
+  const stored = {
+    featuredItemIds: ["m_featured"],
+    soldOutItemIds: ["m_sold"],
+    hiddenItemIds: ["m_hidden"],
+    itemDescriptions: { m_old: "Vecchia descrizione" },
+  };
+  const merged = mergeTenantPublicMenuConfig(stored, {
+    featuredItemIds: ["m_new"],
+    soldOutItemIds: [],
+    hiddenItemIds: ["m_hidden", "m_extra"],
+    itemDescriptions: { m_new: "Nuova descrizione" },
+  } as Record<string, unknown>);
+  assert.deepEqual(merged.featuredItemIds, ["m_new"]);
+  assert.deepEqual(merged.soldOutItemIds, []);
+  assert.deepEqual(merged.hiddenItemIds, ["m_hidden", "m_extra"]);
+  assert.deepEqual(merged.itemDescriptions, { m_new: "Nuova descrizione" });
+});
+
+test("per-dish fields default to empty without a patch", () => {
+  const config = normalizePublicMenuConfig({});
+  assert.deepEqual(config.hiddenItemIds, []);
+  assert.deepEqual(config.itemDescriptions, {});
 });
 
 test("tenant merge rejects unknown/invalid values", () => {

@@ -135,9 +135,13 @@ import {
   clockOutRequestSchema,
   timeReportQuerySchema,
   fiscalCloseRequestSchema,
+  fiscalDepartmentProgramRequestSchema,
+  fiscalDepartmentReadRequestSchema,
   fiscalExportCreateRequestSchema,
   fiscalExportsQuerySchema,
+  fiscalLiveVerificationRequestSchema,
   fiscalPrinterConfigUpdateRequestSchema,
+  fiscalProtocolsResponseSchema,
   fiscalJobsQuerySchema,
   fiscalBridgeClaimRequestSchema,
   fiscalChiusuraRequestSchema,
@@ -227,7 +231,12 @@ import {
   type FiscalClosure,
   type FiscalCloseRequest,
   type FiscalPrinterConfig,
+  type FiscalLiveVerificationRequest,
   type FiscalPrinterConfigUpdateRequest,
+  type FiscalProtocolsResponse,
+  type FiscalDepartmentBriefing,
+  type FiscalDepartmentProgramRequest,
+  type FiscalDepartmentReadRequest,
   type FiscalJob,
   type FiscalBridgeJobCompleteRequest,
   type FiscalBridgeJobFailRequest,
@@ -258,6 +267,7 @@ import {
   type GroupOrderSubmitResponse,
   type GroupOrderReviewQueueResponse,
   type GroupOrderReviewResponse,
+  type OrderDraftReviewResponse,
   type GroupOrderPaymentIntentResponse,
   type SelfOrderCreateRequest,
   type SelfOrderCreateResponse,
@@ -298,6 +308,14 @@ import { LoyaltyRepository } from "./repository/loyalty.repository";
 import { ConsumerRepository } from "./repository/consumer.repository";
 import { FiscalRepository } from "./repository/fiscal.repository";
 import { FiscalBridgeRepository } from "./repository/fiscal-bridge.repository";
+import { isAgentVersionSufficient, listFiscalProtocolOptions, resolveConfiguredDialect } from "./fiscal/dialects";
+import { buildFiscalDepartmentBriefing, departmentsForProtocol } from "./fiscal/department-mapping";
+import {
+  FiscalEmissionError,
+  planFiscalJob,
+  type FiscalEmissionContext,
+  type FiscalJobIntent,
+} from "./fiscal/emission";
 import { SimpleCatalogRepository } from "./repository/simple-catalog.repository";
 import { CustomerRepository } from "./repository/customer.repository";
 import { PaymentsRepository } from "./repository/payments.repository";
@@ -1246,6 +1264,19 @@ export class AppController {
   // ─── Certified fiscal printer (Path B) ──────────────────────────────────
   // Config + job queue for the RT device, reached through the Go agent.
 
+  /**
+   * Catalogo dei dialetti fiscali selezionabili (protocollo/modello/versione).
+   * Espone solo label e limiti: i codici di protocollo restano nel motore
+   * server-side (`src/fiscal/dialects`) e non raggiungono mai il browser.
+   */
+  @Get("settings/fiscal/protocols")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("fiscal_exports")
+  async listFiscalProtocols(): Promise<FiscalProtocolsResponse> {
+    return fiscalProtocolsResponseSchema.parse({ protocols: listFiscalProtocolOptions() });
+  }
+
   @Get("settings/fiscal/printer")
   @Roles("admin")
   @RequiresPermissions("settings:update")
@@ -1265,30 +1296,141 @@ export class AppController {
     return { fiscalPrinter };
   }
 
+  /**
+   * Registra il **collaudo dal vivo** del protocollo attivo: sblocca l'emissione
+   * dei corrispettivi sui dialetti che nascono dai manuali (`emissionGated`).
+   * Non è una dichiarazione dell'utente: il server cerca la prova gestionale già
+   * completata per quel protocollo e ne conserva l'evidenza nella configurazione.
+   */
+  @Post("settings/fiscal/verification")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("fiscal_exports")
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async registerFiscalLiveVerification(
+    @Body() payload: FiscalLiveVerificationRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+    const parsed = fiscalLiveVerificationRequestSchema.parse(payload ?? {});
+    const staffId = request.user?.sub;
+    if (!staffId) {
+      throw new UnauthorizedException("Missing staff identity");
+    }
+    const fiscalPrinter = await this.fiscalBridgeRepo.recordFiscalLiveVerification({
+      staffId,
+      note: parsed.note,
+    });
+    return { fiscalPrinter };
+  }
+
+  /**
+   * Revoca il collaudo del protocollo attivo: l'emissione torna bloccata. Si usa
+   * quando la cassa viene sostituita o riconfigurata, così il blocco non resta
+   * un'etichetta ma torna a valere.
+   */
+  @Delete("settings/fiscal/verification")
+  @Roles("admin")
+  @RequiresPermissions("settings:update")
+  @RequiresModule("fiscal_exports")
+  async revokeFiscalLiveVerification(): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+    const fiscalPrinter = await this.fiscalBridgeRepo.revokeFiscalLiveVerification();
+    return { fiscalPrinter };
+  }
+
   @Post("fiscal/jobs/test")
   @Roles("admin")
   @RequiresPermissions("fiscal:export")
   @RequiresModule("fiscal_exports")
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  async enqueueFiscalTestJob(): Promise<{ job: FiscalJob }> {
-    const job = await this.fiscalBridgeRepo.enqueueFiscalJob({
-      type: "test",
-      payloadJson: JSON.stringify({ requestedAt: new Date().toISOString() }),
-    });
-    return { job };
+  async enqueueFiscalTestJob(): Promise<{ job: FiscalJob; warnings: string[] }> {
+    return this.enqueuePlannedFiscalJob({ kind: "test" });
   }
 
   @Post("fiscal/chiusura")
   @Roles("admin")
   @RequiresPermissions("fiscal:close")
   @RequiresModule("fiscal_exports")
-  async enqueueFiscalChiusura(@Body() payload: FiscalChiusuraRequest): Promise<{ job: FiscalJob }> {
+  async enqueueFiscalChiusura(@Body() payload: FiscalChiusuraRequest): Promise<{ job: FiscalJob; warnings: string[] }> {
     const parsed = fiscalChiusuraRequestSchema.parse(payload);
-    const job = await this.fiscalBridgeRepo.enqueueFiscalJob({
-      type: "chiusura",
-      payloadJson: JSON.stringify({ businessDate: parsed.businessDate }),
+    return this.enqueuePlannedFiscalJob({ kind: "daily-close", businessDate: parsed.businessDate });
+  }
+
+  /**
+   * Lettura della programmazione reparti dal RT (`<</?C/(Rnnn)`). È il
+   * confronto che chiude il cerchio della mappatura: l'admin vede ciò che il RT
+   * ha davvero in memoria (aliquota e natura bene/servizio) accanto a ciò che ha
+   * configurato in Impostazioni. L'agente non interpreta: riporta il testo e il
+   * server lo decodifica.
+   */
+  @Post("fiscal/jobs/departments")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async enqueueFiscalDepartmentRead(@Body() payload: FiscalDepartmentReadRequest): Promise<{ job: FiscalJob; warnings: string[] }> {
+    const parsed = fiscalDepartmentReadRequestSchema.parse(payload ?? {});
+    return this.enqueuePlannedFiscalJob({ kind: "departments", departments: parsed.departments });
+  }
+
+  /**
+   * Programmazione dei reparti sul RT (`>R…`). Unica operazione che **scrive**
+   * sulla memoria del registratore: richiede `confirm: true`, è riservata
+   * all'admin e il job porta in chiaro nel payload che cosa sta modificando.
+   */
+  @Post("fiscal/jobs/departments/program")
+  @Roles("admin")
+  @RequiresPermissions("fiscal:export")
+  @RequiresModule("fiscal_exports")
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async enqueueFiscalDepartmentProgram(@Body() payload: FiscalDepartmentProgramRequest): Promise<{ job: FiscalJob; warnings: string[] }> {
+    const parsed = fiscalDepartmentProgramRequestSchema.parse(payload ?? {});
+    return this.enqueuePlannedFiscalJob({
+      kind: "program-departments",
+      programs: parsed.departments.map((department) => ({
+        department: department.department,
+        priceCents: department.priceCents,
+        vatRate: department.vatRate,
+        description: department.label,
+        service: department.kind === "service" ? true : department.kind === "good" ? false : undefined,
+      })),
     });
-    return { job };
+  }
+
+  /**
+   * Versioni degli agenti di stampa che possono reclamare lavori fiscali (area
+   * cassa): il gate a priori decide, sul protocollo configurato, se i frame
+   * sono eseguibili da un binary installato. Stessa regola di routing del
+   * claim (i bridge Go usano `claimedAreas`, gli storici `areas`).
+   */
+  private async fiscalAgentVersions(): Promise<Array<string | null>> {
+    const bridges = await this.printBridgeRepo.listPrintBridges();
+    return bridges
+      .filter((bridge) => {
+        const areas = bridge.version?.startsWith("go-") ? bridge.claimedAreas : bridge.areas;
+        return areas.includes("cashier");
+      })
+      .map((bridge) => bridge.version ?? null);
+  }
+
+  /**
+   * Compone e accoda un job fiscale. I frame li compone il motore dialetti
+   * (server-side): qui si gestiscono solo la configurazione mancante e l'agente
+   * troppo vecchio, che diventano un 400 leggibile invece di un job muto.
+   */
+  private async enqueuePlannedFiscalJob(intent: FiscalJobIntent): Promise<{ job: FiscalJob; warnings: string[] }> {
+    const config = await this.fiscalBridgeRepo.getFiscalPrinterConfig();
+    const context: FiscalEmissionContext = { config, agentVersions: await this.fiscalAgentVersions() };
+    let plan;
+    try {
+      plan = planFiscalJob(context, intent);
+    } catch (error) {
+      if (error instanceof FiscalEmissionError) {
+        throw new BadRequestException({ message: error.message, issues: error.issues });
+      }
+      throw error;
+    }
+    const job = await this.fiscalBridgeRepo.enqueueFiscalJob({ type: plan.type, payloadJson: plan.payloadJson });
+    return { job, warnings: plan.warnings };
   }
 
   @Get("fiscal/jobs")
@@ -1384,6 +1526,14 @@ export class AppController {
         ? fiscalBridge.claimedAreas
         : fiscalBridge.areas;
       if (!fiscalQueueAreas.includes("cashier")) {
+        return { jobs: [] };
+      }
+      // Gate a priori, lato claim: i frame del protocollo li esegue solo un
+      // agente abbastanza recente (trasporto generico). Un agente vecchio non
+      // deve tirare a sé un job che non sa eseguire: fallirebbe in cassa con il
+      // documento non emesso.
+      const dialect = resolveConfiguredDialect(config.dialectId);
+      if (dialect && !isAgentVersionSufficient(dialect.requiresAgentVersion, fiscalBridge.version)) {
         return { jobs: [] };
       }
       const instanceId = (req.headers["x-bridge-instance-id"] as string | undefined)?.trim() || crypto.randomUUID();
@@ -2406,6 +2556,62 @@ export class AppController {
     return reviewed;
   }
 
+  /**
+   * Approval inbox for every public draft awaiting staff review — group orders
+   * and public takeaway orders alike. Deliberately NOT gated on the group-order
+   * module: a tenant that only sells takeaway still has drafts to approve.
+   */
+  @Get("order-drafts")
+  @Roles("admin", "waiter")
+  async listOrderDrafts(): Promise<GroupOrderReviewQueueResponse> {
+    return this.appRepository.listPendingGroupOrderDrafts();
+  }
+
+  @Post("order-drafts/:id/review")
+  @Roles("admin", "waiter")
+  async reviewOrderDraft(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: { action?: string; reason?: string },
+  ): Promise<OrderDraftReviewResponse> {
+    const staffId = request.user?.sub;
+    if (!staffId) {
+      throw new UnauthorizedException("Missing staff identity");
+    }
+    let parsed;
+    try {
+      parsed = groupOrderReviewRequestSchema.parse(payload);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid review payload");
+    }
+    let reviewed: OrderDraftReviewResponse;
+    try {
+      reviewed = await this.appRepository.reviewPendingOrderDraft({
+        orderId: id,
+        staffId,
+        action: parsed.action,
+        reason: parsed.reason,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Order review failed");
+    }
+
+    if (reviewed.sessionId && reviewed.status) {
+      await this.realtimeGateway.emitToRoom(`groupOrder:${reviewed.sessionId}`, socketEvents.groupOrderReviewUpdated, {
+        sessionId: reviewed.sessionId,
+        status: reviewed.status,
+        orderId: reviewed.order.id,
+        rejectionReason: reviewed.order.rejectionReason,
+      });
+    }
+    // Only an approved draft becomes a real order: a pending/rejected one must
+    // never reach the POS or the kitchen through realtime.
+    if (reviewed.action === "approve") {
+      await this.realtimeGateway.emit(socketEvents.orderNew, reviewed.order);
+    }
+    return reviewed;
+  }
+
   @Patch("orders/:id/items/:orderItemId")
   @Roles("admin", "chef", "waiter")
   @RequiresPermissions("orders:update")
@@ -3055,7 +3261,12 @@ export class AppController {
         throw new ForbiddenException("Consumer account required for takeaway");
       }
 
-      return await this.appRepository.createPublicTakeawayOrder(tenantSlug, parsed, consumerUserId ?? undefined);
+      const created = await this.appRepository.createPublicTakeawayOrder(tenantSlug, parsed, consumerUserId ?? undefined);
+      // Staff must be told about it (push + approval inbox), but the draft is not
+      // an order yet: it travels on its own event so the POS/kitchen feeds, which
+      // subscribe to `order:new`, keep ignoring it.
+      await this.realtimeGateway.emit(socketEvents.orderDraftPending, created.order);
+      return created;
     } catch (error) {
       if (
         error instanceof ForbiddenException ||
@@ -3628,7 +3839,7 @@ export class AppController {
   // throttle is an abuse backstop, not a functional cap (a busy restaurant
   // can run several bridges behind one NAT/IP).
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
-  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string; command?: PrintBridgeCommand; fiscalPrinter?: FiscalPrinterConfig }> {
+  async bridgeHeartbeat(@Body() raw: unknown, @Req() req: any): Promise<{ bridge: PrintBridge; serverTime: string; command?: PrintBridgeCommand; fiscalPrinter?: FiscalPrinterConfig; fiscalDepartments?: FiscalDepartmentBriefing }> {
     const auth = await this.verifyBridgeOrOnboardingSecret(req);
     return this.withBridgeTenantContext(auth.tenantId, async () => {
       const heartbeatInput = raw && typeof raw === "object" && !Array.isArray(raw)
@@ -3714,13 +3925,31 @@ export class AppController {
       // effect without touching the agent's local file. Omitted when the
       // tenant never configured a device, so the agent keeps its local config.
       const fiscalPrinter = await this.fiscalBridgeRepo.getFiscalPrinterConfig();
+      // Istruzioni per il gate comunicante: protocollo attivo + reparti già
+      // risolti per quel protocollo. L'agente resta senza codici di dialetto
+      // (compone il server), ma sa come è mappato il locale — così può
+      // validare, loggare e specchiare la mappatura in locale.
+      const activeDialect = resolveConfiguredDialect(fiscalPrinter.dialectId);
+      const fiscalDepartments = activeDialect
+        ? buildFiscalDepartmentBriefing({
+            protocolId: activeDialect.id,
+            requiresAgentVersion: activeDialect.requiresAgentVersion,
+            departments: departmentsForProtocol(fiscalPrinter.departmentMappings, activeDialect.id),
+          })
+        : null;
       // One-shot admin command (LAN scan / direct test print), if any.
       const command = await this.printBridgeRepo.getBridgeCommand(bridge.id, auth.tenantId);
+      // Le tabelle reparti servono al server, non all'agente: mandare tutte le
+      // mappe di tutti i protocolli a ogni heartbeat sarebbe peso inutile. All'agente
+      // va la config del dispositivo e, per il solo protocollo attivo, il briefing.
+      const fiscalPrinterForAgent: FiscalPrinterConfig = { ...fiscalPrinter, departmentMappings: [] };
       return {
         bridge,
         serverTime: new Date().toISOString(),
         ...(command ? { command } : {}),
-        ...(fiscalPrinter.host ? { fiscalPrinter } : {}),
+        ...(fiscalPrinter.host
+          ? { fiscalPrinter: fiscalPrinterForAgent, ...(fiscalDepartments ? { fiscalDepartments } : {}) }
+          : {}),
       };
     });
   }

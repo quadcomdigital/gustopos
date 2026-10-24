@@ -1,10 +1,14 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import crypto from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import { db, withTenantTx } from "../db/client";
-import { fiscalJobs, payments, tenantModuleConfigs } from "../db/schema";
+import { fiscalJobs, payments, printBridges, tenantModuleConfigs } from "../db/schema";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { TenantService } from "../tenant/tenant.service";
+import { departmentMappingErrors } from "../fiscal/department-mapping";
+import { resolveConfiguredDialect } from "../fiscal/dialects";
+import { decideFiscalCompletion } from "../fiscal/job-completion";
+import { selectVerificationEvidence, verificationCounters } from "../fiscal/live-verification";
 import {
   fiscalBridgeJobCompleteRequestSchema,
   fiscalBridgeJobFailRequestSchema,
@@ -17,6 +21,7 @@ import {
   type FiscalJobType,
   type FiscalJobsQuery,
   type FiscalPrinterConfig,
+  type FiscalProtocolId,
 } from "@gustopos/shared";
 
 /**
@@ -44,11 +49,107 @@ export class FiscalBridgeRepository {
     const tenantId = getTenantIdOrDefault();
     const current = await this.getFiscalPrinterConfig();
     const next = fiscalPrinterConfigSchema.parse({ ...current, ...patch });
+    // La mappa reparti è quella che decide l'aliquota del corrispettivo: un
+    // errore (reparto duplicato, categoria su due reparti, due ripieghi) va
+    // fermato *prima* di salvarlo, non scoperto in cassa.
+    this.assertValidDepartmentMappings(next);
     await this.tenantService.upsertTenantModuleConfig(tenantId, {
       moduleKey: "fiscal_exports",
       config: { fiscalPrinter: next },
     });
     return next;
+  }
+
+  private assertValidDepartmentMappings(config: FiscalPrinterConfig): void {
+    const issues = departmentMappingErrors(config.departmentMappings);
+    if (issues.length === 0) return;
+    throw new BadRequestException({ message: "Mappatura reparti non valida", issues });
+  }
+
+  // ─── Collaudo dal vivo del dialetto attivo ──────────────────────────────
+
+  /**
+   * Registra il collaudo del protocollo configurato, sbloccando i
+   * corrispettivi (`emissionGated`). Il collaudo **non è una dichiarazione**:
+   * il server accetta solo una prova gestionale già **completata** per quel
+   * protocollo — è il documento non fiscale che si è visto uscire dalla cassa —
+   * e ne conserva id, versione dell'agente e quadrature lette dal RT. Senza
+   * prova non si sblocca niente.
+   */
+  async recordFiscalLiveVerification(args: { staffId: string; note?: string }): Promise<FiscalPrinterConfig> {
+    const tenantId = getTenantIdOrDefault();
+    const config = await this.getFiscalPrinterConfig();
+    const protocolId = config.dialectId;
+    if (!protocolId) {
+      throw new BadRequestException(
+        "Nessun protocollo fiscale selezionato: scegli il protocollo del RT prima di registrare il collaudo",
+      );
+    }
+    const dialect = resolveConfiguredDialect(protocolId);
+    const label = dialect?.label ?? protocolId;
+    const evidence = await this.findCompletedTestJob(tenantId, protocolId);
+    if (!evidence) {
+      throw new BadRequestException(
+        `Nessuna prova gestionale completata per ${label}: lancia la prova in Impostazioni → Fiscale, attendi l'esito e registra il collaudo`,
+      );
+    }
+    const agentVersion = evidence.bridgeId ? await this.bridgeVersion(tenantId, evidence.bridgeId) : null;
+    const verification = {
+      protocolId,
+      verifiedAt: new Date().toISOString(),
+      verifiedByStaffId: args.staffId,
+      agentVersion: agentVersion ?? "",
+      testJobId: evidence.id,
+      counters: verificationCounters(evidence.result),
+      note: (args.note ?? "").slice(0, 300),
+    };
+    const others = config.liveVerifications.filter((entry) => entry.protocolId !== protocolId);
+    return this.saveFiscalPrinterConfig({ liveVerifications: [...others, verification] });
+  }
+
+  /**
+   * Revoca il collaudo del protocollo attivo: l'emissione torna bloccata. Serve
+   * quando la cassa viene sostituita o riconfigurata — meglio ripartire dalla
+   * prova che fidarsi di un collaudo fatto su un altro dispositivo.
+   */
+  async revokeFiscalLiveVerification(): Promise<FiscalPrinterConfig> {
+    const config = await this.getFiscalPrinterConfig();
+    const protocolId = config.dialectId;
+    return this.saveFiscalPrinterConfig({
+      liveVerifications: config.liveVerifications.filter((entry) => entry.protocolId !== protocolId),
+    });
+  }
+
+  /**
+   * Ultima prova gestionale completata **per questo protocollo**: è l'evidenza
+   * del collaudo. Le righe arrivano già filtrate (tipo `test`, stato
+   * `completed`, più recenti prima) e la scelta per protocollo è una funzione
+   * pura (`selectVerificationEvidence`), così la regola è testabile senza
+   * database.
+   */
+  private async findCompletedTestJob(tenantId: string, protocolId: FiscalProtocolId) {
+    const rows = await db
+      .select({ id: fiscalJobs.id, bridgeId: fiscalJobs.bridgeId, payload: fiscalJobs.payload, result: fiscalJobs.result })
+      .from(fiscalJobs)
+      .where(
+        and(eq(fiscalJobs.tenantId, tenantId), eq(fiscalJobs.type, "test"), eq(fiscalJobs.status, "completed")),
+      )
+      .orderBy(desc(fiscalJobs.completedAt))
+      .limit(25);
+    return selectVerificationEvidence(
+      rows.map((row) => ({ id: row.id, bridgeId: row.bridgeId ?? null, payload: row.payload, result: row.result ?? null })),
+      protocolId,
+    );
+  }
+
+  /** Versione dell'agente che ha eseguito la prova (per la diagnosi della UI). */
+  private async bridgeVersion(tenantId: string, bridgeId: string): Promise<string | null> {
+    const rows = await db
+      .select({ version: printBridges.version })
+      .from(printBridges)
+      .where(and(eq(printBridges.tenantId, tenantId), eq(printBridges.id, bridgeId)))
+      .limit(1);
+    return rows[0]?.version ?? null;
   }
 
   // ─── Job lifecycle ───────────────────────────────────────────────────────
@@ -146,13 +247,21 @@ export class FiscalBridgeRepository {
     if (!existing || existing.bridgeId !== bridgeId) {
       return null;
     }
+    // La decisione (emesso / non emesso) la prende il server dalle risposte
+    // grezze del RT: checksum, <DATA_ANSW>, progressivo e quadratura.
+    const decision = decideFiscalCompletion({
+      jobType: existing.type as FiscalJobType,
+      payloadJson: existing.payload,
+      response: parsed.response,
+      progressive: parsed.progressive,
+    });
     const now = new Date();
     const [row] = await db
       .update(fiscalJobs)
       .set({
-        status: "completed",
-        result: JSON.stringify({ progressive: parsed.progressive, emittedAt: parsed.emittedAt ?? now.toISOString() }),
-        error: null,
+        status: decision.status,
+        result: decision.resultJson,
+        error: decision.error,
         completedAt: now,
         updatedAt: now,
       })
@@ -167,7 +276,11 @@ export class FiscalBridgeRepository {
         if (receiptPayload?.paymentId) {
           await db
             .update(payments)
-            .set({ fiscalStatus: "emitted", fiscalProgressive: parsed.progressive, fiscalError: null })
+            .set({
+              fiscalStatus: decision.status === "completed" ? "emitted" : "failed",
+              fiscalProgressive: decision.progressive ?? null,
+              fiscalError: decision.error,
+            })
             .where(and(eq(payments.tenantId, tenantId), eq(payments.id, receiptPayload.paymentId)));
         }
       } catch {
@@ -237,5 +350,6 @@ export class FiscalBridgeRepository {
     });
   }
 }
+
 
 

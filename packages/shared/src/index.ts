@@ -1,5 +1,6 @@
 export * from "./contracts";
 export * from "./events";
+export * from "./fiscal-departments";
 export * from "./unit-conversion";
 export * from "./inventory-workflow";
 export {

@@ -1,0 +1,1 @@
+ALTER TABLE "group_order_cart_items" ADD COLUMN "ingredient_overrides_json" text DEFAULT '[]' NOT NULL;
