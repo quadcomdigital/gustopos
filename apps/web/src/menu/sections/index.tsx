@@ -1,7 +1,9 @@
 import type { PublicMenuResponse } from '@gustopos/shared';
-import { Search } from 'lucide-react';
+import { Plus, Search, SlidersHorizontal } from 'lucide-react';
 import ItemCard from './ItemCard';
 import { categoryEmoji, formatPrice } from '../lib/display';
+import { itemIsCustomizable } from '../lib/customization';
+import { ingredientLine } from './ItemCard';
 import type { MenuShellData, MenuShellActions } from '../types';
 
 type PublicMenuItem = PublicMenuResponse['items'][number];
@@ -10,6 +12,9 @@ type PublicMenuItem = PublicMenuResponse['items'][number];
  * Default-shell building blocks. They are tenant-agnostic by design: all colour
  * comes from `MenuAppearance`, and there is no per-tenant branch anywhere in
  * this folder — scaffolds bring their own components instead.
+ *
+ * Preset-driven layout (card orientation, hero height, highlights) is read from
+ * `data.appearance.layout`, so these components never switch on `preset`.
  */
 
 export function Hero({
@@ -20,22 +25,26 @@ export function Hero({
   onSearch: (query: string) => void;
 }) {
   const { appearance, menu } = data;
+  const tall = appearance.layout.heroHeight === 'tall';
   return (
-    <div className="flex flex-col gap-4">
+    <div className={`flex flex-col gap-4 ${tall ? 'py-6 md:py-10' : ''}`}>
       <div className="flex items-center gap-3">
         {appearance.logoUrl && (
           <img
             src={appearance.logoUrl}
             alt={`${menu.tenant.name} logo`}
-            className="h-10 w-auto object-contain"
+            className={tall ? 'h-14 w-auto object-contain' : 'h-10 w-auto object-contain'}
           />
         )}
-        <h1 className="display text-3xl font-extrabold md:text-4xl" style={{ color: appearance.ink }}>
+        <h1
+          className={tall ? 'display text-4xl font-extrabold md:text-5xl' : 'display text-3xl font-extrabold md:text-4xl'}
+          style={{ color: appearance.ink }}
+        >
           {menu.tenant.name}
         </h1>
       </div>
       {appearance.tagline && (
-        <p className="text-sm" style={{ color: appearance.muted }}>
+        <p className={tall ? 'text-base' : 'text-sm'} style={{ color: appearance.muted }}>
           {appearance.tagline}
         </p>
       )}
@@ -87,11 +96,106 @@ export function CategoryNav({
   );
 }
 
+/**
+ * Optional "In evidenza" strip, tenant-agnostic. It shows when the preset turns
+ * highlights on or the tenant enabled the `highlights` section, and hides while
+ * the guest searches or filters so it never duplicates the grid.
+ */
+export function Highlights({ data, actions }: { data: MenuShellData; actions: MenuShellActions }) {
+  const { appearance, searchQuery, activeCategory, enabledSections } = data;
+  const enabled = enabledSections.has('highlights') || appearance.layout.showHighlights;
+  if (!enabled || searchQuery.trim() !== '' || activeCategory !== 'all') return null;
+
+  const featured = data.menu.items.filter((item) => item.isFeatured);
+  if (featured.length < 2) return null;
+
+  return (
+    <section className="mt-6" aria-label="Piatti in evidenza">
+      <h2 className="display mb-3 text-xl font-extrabold" style={{ color: appearance.ink }}>
+        In evidenza
+      </h2>
+      <div className="no-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1">
+        {featured.map((item) => {
+          const customizable = itemIsCustomizable(item, data.menu.categoryModifierPools);
+          return (
+          <article
+            key={item.id}
+            className="flex w-56 flex-none snap-start flex-col rounded-xl border p-3"
+            style={{ borderColor: appearance.border, backgroundColor: appearance.surface }}
+          >
+            <div
+              className="mb-3 flex h-24 w-full items-center justify-center overflow-hidden rounded-lg border"
+              style={{
+                borderColor: appearance.border,
+                backgroundImage: `linear-gradient(135deg, ${appearance.accentSoft}, ${appearance.surface})`,
+              }}
+            >
+              <span className="text-3xl opacity-75" aria-hidden="true">
+                {categoryEmoji(item.category)}
+              </span>
+            </div>
+            <h3 className="text-sm font-bold leading-tight" style={{ color: appearance.ink }}>
+              {item.name}
+            </h3>
+            {item.description && (
+              <p className="mt-1 line-clamp-2 text-xs" style={{ color: appearance.ink }}>
+                {item.description}
+              </p>
+            )}
+            <div className="mt-2 flex items-center justify-between gap-2">
+              {appearance.showPrices && (
+                <span className="text-sm font-bold tabular-nums" style={{ color: appearance.ink }}>
+                  {formatPrice(appearance.currency, item.price)}
+                </span>
+              )}
+              {actions.takeawayEnabled && (
+                <button
+                  type="button"
+                  onClick={() => actions.onAddItem(item)}
+                  disabled={item.isSoldOut}
+                  aria-label={customizable ? `Personalizza ${item.name}` : `Aggiungi ${item.name}`}
+                  className={
+                    customizable
+                      ? 'flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 text-[11px] font-bold uppercase tracking-wider disabled:opacity-40'
+                      : 'flex h-9 w-9 items-center justify-center rounded-full border disabled:opacity-40'
+                  }
+                  style={{
+                    backgroundColor: appearance.accent,
+                    color: appearance.accentForeground,
+                    borderColor: appearance.accent,
+                  }}
+                >
+                  {customizable ? (
+                    <>
+                      <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+                      Personalizza
+                    </>
+                  ) : (
+                    <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
+                  )}
+                </button>
+              )}
+            </div>
+          </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function ItemGrid({ data, actions }: { data: MenuShellData; actions: MenuShellActions }) {
   const { filteredItems, appearance } = data;
+  const tiles = appearance.layout.itemLayout === 'cards';
   return (
     <>
-      <div className="grid grid-cols-1 gap-0 md:grid-cols-2 lg:grid-cols-3">
+      <div
+        className={
+          tiles
+            ? 'grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4'
+            : 'grid grid-cols-1 gap-0 md:grid-cols-2 lg:grid-cols-3'
+        }
+      >
         {filteredItems.map((item: PublicMenuItem) => (
           <ItemCard
             key={item.id}
@@ -100,6 +204,8 @@ export function ItemGrid({ data, actions }: { data: MenuShellData; actions: Menu
             formatPrice={(value) => formatPrice(appearance.currency, value)}
             onAdd={() => actions.onAddItem(item)}
             takeawayEnabled={actions.takeawayEnabled}
+            customizable={itemIsCustomizable(item, data.menu.categoryModifierPools)}
+            orientation={tiles ? 'tile' : 'row'}
           />
         ))}
       </div>
@@ -132,4 +238,4 @@ export function FooterNote({ data }: { data: MenuShellData }) {
   );
 }
 
-export { formatPrice };
+export { formatPrice, ingredientLine };

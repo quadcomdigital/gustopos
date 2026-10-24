@@ -19,6 +19,7 @@ import {
 } from '../shared/api/client';
 import { BrandFooter, BrandHeader, resolvePublicBrand } from '../menu/brand';
 import { formatPrice } from '../menu/lib/display';
+import { itemIsCustomizable, removedLabel } from '../menu/lib/customization';
 import ModifierSheet from '../menu/overlays/ModifierSheet';
 import ConsumerPushToggle from '../components/push/ConsumerPushToggle';
 
@@ -168,6 +169,19 @@ export default function PublicGroupOrderPage() {
     return map;
   }, [menu]);
 
+  /** Recipe component id → name, so a line can read "Senza cipolla". */
+  const ingredientNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!menu) return map;
+    for (const item of menu.items) {
+      for (const component of item.recipe ?? []) {
+        const name = component.componentName?.trim();
+        if (name && !map.has(component.componentId)) map.set(component.componentId, name);
+      }
+    }
+    return map;
+  }, [menu]);
+
   const itemsByParticipant = useMemo(() => {
     const map = new Map<string, { name: string; lines: GroupOrderCartItem[] }>();
     if (!session) return map;
@@ -197,17 +211,23 @@ export default function PublicGroupOrderPage() {
     }
   };
 
-  const addItem = (item: MenuItem, selectedModifiers: Array<{ groupId: string; optionId: string }> = []) => {
+  const addItem = (
+    item: MenuItem,
+    selectedModifiers: Array<{ groupId: string; optionId: string }> = [],
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }> = [],
+    notes?: string,
+  ) => {
     void patchCart([{
       menuItemId: item.id,
       quantity: 1,
       selectedModifiers: selectedModifiers.length > 0 ? selectedModifiers : undefined,
+      ingredientOverrides: ingredientOverrides.length > 0 ? ingredientOverrides : undefined,
+      notes: notes?.trim() || undefined,
     }]);
   };
 
   const onAddItem = (item: MenuItem) => {
-    const hasModifiers = (item.modifierGroups?.length ?? 0) > 0 || (menu?.categoryModifierPools.length ?? 0) > 0;
-    if (hasModifiers) {
+    if (itemIsCustomizable(item, menu?.categoryModifierPools ?? [])) {
       setModifierItem(item);
       return;
     }
@@ -221,6 +241,7 @@ export default function PublicGroupOrderPage() {
       menuItemId: line.menuItemId,
       quantity: Math.max(0, quantity),
       selectedModifiers: line.selectedModifiers.length > 0 ? line.selectedModifiers : undefined,
+      ingredientOverrides: line.ingredientOverrides.length > 0 ? line.ingredientOverrides : undefined,
       notes: line.notes,
     }]);
   };
@@ -436,6 +457,11 @@ export default function PublicGroupOrderPage() {
                                   .join(', ')}
                               </p>
                             )}
+                            {removedLabel(line.ingredientOverrides, ingredientNameById) && (
+                              <p className="text-[11px] font-semibold" style={{ color: brand?.accentText ?? '#b45309' }}>
+                                {removedLabel(line.ingredientOverrides, ingredientNameById)}
+                              </p>
+                            )}
                             {line.notes && <p className="text-[11px] italic">{line.notes}</p>}
                           </div>
                           {canEditLine(line) && session.status === 'open' ? (
@@ -549,8 +575,8 @@ export default function PublicGroupOrderPage() {
           currency={currency}
           formatPrice={(value) => formatPrice(currency, value)}
           onClose={() => setModifierItem(null)}
-          onConfirm={({ selectedModifiers }) => {
-            addItem(modifierItem, selectedModifiers);
+          onConfirm={({ selectedModifiers, ingredientOverrides, notes }) => {
+            addItem(modifierItem, selectedModifiers, ingredientOverrides, notes);
             setModifierItem(null);
           }}
         />

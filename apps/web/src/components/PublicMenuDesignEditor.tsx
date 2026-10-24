@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
-import type { MenuSectionId, PublicMenuTenantEditable } from '@gustopos/shared';
-import { Check } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import type { MenuItemAdmin, MenuSectionId, PublicMenuTenantEditable } from '@gustopos/shared';
+import { Check, Eye, EyeOff, Flame, Star } from 'lucide-react';
 import {
+  fetchMenuItemsAdmin,
   fetchPublicMenuConfig,
   updatePublicMenuConfig,
 } from '../shared/api/client';
@@ -20,9 +22,17 @@ const SECTION_LABELS: Record<MenuSectionId, string> = {
   footer_note: 'Nota a piè di pagina',
 };
 
+const DESCRIPTION_MAX = 200;
+
+/** Adds/removes an id from a toggle list, preserving the original order. */
+function toggleId(list: string[], id: string): string[] {
+  return list.includes(id) ? list.filter((entry) => entry !== id) : [...list, id];
+}
+
 /**
  * Tenant-facing editor for the public digital menu. It can only touch the
- * whitelisted subset (branding, tagline, sections) — structural fields are
+ * whitelisted subset (branding, tagline, sections) plus per-dish merchandising
+ * (featured / sold out / hidden / short description); structural fields are
  * superadmin-only and are preserved server-side on save.
  */
 export default function PublicMenuDesignEditor() {
@@ -38,11 +48,17 @@ export default function PublicMenuDesignEditor() {
     accentColor: '#0f172a',
   });
   const [sections, setSections] = useState<Array<{ id: MenuSectionId; enabled: boolean; order: number }>>([]);
+  const [items, setItems] = useState<MenuItemAdmin[]>([]);
+  const [featuredItemIds, setFeaturedItemIds] = useState<string[]>([]);
+  const [soldOutItemIds, setSoldOutItemIds] = useState<string[]>([]);
+  const [hiddenItemIds, setHiddenItemIds] = useState<string[]>([]);
+  const [itemDescriptions, setItemDescriptions] = useState<Record<string, string>>({});
+  const [itemQuery, setItemQuery] = useState('');
 
   useEffect(() => {
     setLoading(true);
-    fetchPublicMenuConfig()
-      .then(({ config }) => {
+    Promise.all([fetchPublicMenuConfig(), fetchMenuItemsAdmin()])
+      .then(([{ config }, menuItems]) => {
         setDraft({
           preset: config.preset,
           logoUrl: config.logoUrl,
@@ -55,6 +71,11 @@ export default function PublicMenuDesignEditor() {
           content: config.content,
         });
         setSections(config.sections);
+        setFeaturedItemIds(config.featuredItemIds);
+        setSoldOutItemIds(config.soldOutItemIds);
+        setHiddenItemIds(config.hiddenItemIds);
+        setItemDescriptions(config.itemDescriptions);
+        setItems(menuItems);
         setError('');
       })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : 'Caricamento non riuscito'))
@@ -66,9 +87,20 @@ export default function PublicMenuDesignEditor() {
     setError('');
     setSuccess('');
     try {
-      const config = await updatePublicMenuConfig({ ...draft, sections });
+      const config = await updatePublicMenuConfig({
+        ...draft,
+        sections,
+        featuredItemIds,
+        soldOutItemIds,
+        hiddenItemIds,
+        itemDescriptions,
+      });
       setDraft((current) => ({ ...current, ...config }));
       setSections(config.sections);
+      setFeaturedItemIds(config.featuredItemIds);
+      setSoldOutItemIds(config.soldOutItemIds);
+      setHiddenItemIds(config.hiddenItemIds);
+      setItemDescriptions(config.itemDescriptions);
       setSuccess('Menu digitale aggiornato');
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Salvataggio non riuscito');
@@ -83,12 +115,37 @@ export default function PublicMenuDesignEditor() {
     );
   };
 
+  const setDescription = (itemId: string, value: string) => {
+    setItemDescriptions((current) => {
+      const next = { ...current };
+      const trimmed = value.slice(0, DESCRIPTION_MAX);
+      if (trimmed.length === 0) delete next[itemId];
+      else next[itemId] = trimmed;
+      return next;
+    });
+  };
+
+  /** Items grouped by category name, following the catalogue order. */
+  const groupedItems = useMemo(() => {
+    const query = itemQuery.trim().toLowerCase();
+    const visible = query
+      ? items.filter((item) => item.name.toLowerCase().includes(query) || item.category.toLowerCase().includes(query))
+      : items;
+    const buckets = new Map<string, MenuItemAdmin[]>();
+    for (const item of visible) {
+      const bucket = buckets.get(item.category);
+      if (bucket) bucket.push(item);
+      else buckets.set(item.category, [item]);
+    }
+    return [...buckets.entries()];
+  }, [items, itemQuery]);
+
   if (loading) {
     return <p className="text-sm text-text-muted">Caricamento design menu…</p>;
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <div>
         <h3 className="text-lg font-bold text-primary uppercase tracking-tight">Menu digitale</h3>
         <p className="text-text-muted text-sm">Personalizza l'aspetto e i contenuti del menu pubblico (asporto).</p>
@@ -198,6 +255,74 @@ export default function PublicMenuDesignEditor() {
         </div>
       </div>
 
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-xs font-bold uppercase tracking-wider text-text-muted">Piatti</p>
+          <p className="text-[11px] text-text-muted">
+            {featuredItemIds.length} in evidenza · {soldOutItemIds.length} esauriti · {hiddenItemIds.length} nascosti
+          </p>
+        </div>
+
+        <input
+          type="search"
+          value={itemQuery}
+          onChange={(event) => setItemQuery(event.target.value)}
+          placeholder="Cerca un piatto…"
+          className="w-full min-h-[44px] px-3 rounded-lg border border-border text-sm"
+        />
+
+        <div className="max-h-[26rem] space-y-4 overflow-y-auto rounded-lg border border-border p-3">
+          {groupedItems.length === 0 && (
+            <p className="py-6 text-center text-sm text-text-muted">Nessun piatto trovato.</p>
+          )}
+          {groupedItems.map(([category, categoryItems]) => (
+            <div key={category} className="space-y-2">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-text-muted">{category}</p>
+              {categoryItems.map((item) => {
+                const featured = featuredItemIds.includes(item.id);
+                const soldOut = soldOutItemIds.includes(item.id);
+                const hidden = hiddenItemIds.includes(item.id);
+                return (
+                  <div key={item.id} className={`rounded-lg border border-border p-3 ${item.isActive ? '' : 'opacity-60'}`}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-semibold text-secondary">
+                        {item.name}
+                        {!item.isActive && <span className="ml-2 text-[10px] font-bold uppercase text-text-muted">non attivo</span>}
+                      </span>
+                      <ToggleChip
+                        active={featured}
+                        onClick={() => setFeaturedItemIds((current) => toggleId(current, item.id))}
+                        icon={<Star size={13} />}
+                        label="In evidenza"
+                      />
+                      <ToggleChip
+                        active={soldOut}
+                        onClick={() => setSoldOutItemIds((current) => toggleId(current, item.id))}
+                        icon={<Flame size={13} />}
+                        label="Esaurito"
+                      />
+                      <ToggleChip
+                        active={hidden}
+                        onClick={() => setHiddenItemIds((current) => toggleId(current, item.id))}
+                        icon={hidden ? <EyeOff size={13} /> : <Eye size={13} />}
+                        label="Nascosto"
+                      />
+                    </div>
+                    <input
+                      value={itemDescriptions[item.id] ?? ''}
+                      onChange={(event) => setDescription(item.id, event.target.value)}
+                      maxLength={DESCRIPTION_MAX}
+                      placeholder="Descrizione breve (opzionale)"
+                      className="mt-2 w-full min-h-[40px] px-3 rounded-lg border border-border text-sm"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="flex items-center gap-3">
         <button
           onClick={() => void save()}
@@ -211,5 +336,31 @@ export default function PublicMenuDesignEditor() {
         {error && <span className="text-xs font-semibold text-danger">{error}</span>}
       </div>
     </div>
+  );
+}
+
+function ToggleChip({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex min-h-[32px] items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-bold transition-colors ${
+        active ? 'border-accent bg-accent/10 text-accent' : 'border-border text-text-muted'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

@@ -15,6 +15,7 @@ import {
 } from './route-guards';
 import { useBackofficeSessionLifecycle } from './hooks/useBackofficeSessionLifecycle';
 import { useOperationalSummaries } from './hooks/useOperationalSummaries';
+import { usePendingApprovals } from './hooks/usePendingApprovals';
 import { useImpersonationExit } from './hooks/useImpersonationExit';
 import { useAppStore } from '../../store/app-store';
 import BridgeWorker from "../../components/print/BridgeWorker";
@@ -54,6 +55,7 @@ export default function BackofficeEntry() {
     setSalesPeriod,
     refreshSalesSummary,
   } = useOperationalSummaries({ currentUser, enabledModules });
+  const { pendingApprovalsCount } = usePendingApprovals(currentUser);
   const {
     hasImpersonationSnapshot,
     exitImpersonation,
@@ -155,6 +157,7 @@ export default function BackofficeEntry() {
           }}
           reservationsPending={reservationsSummary?.pending ?? 0}
           deliveryActive={deliverySummary?.active ?? 0}
+          pendingApprovalsCount={pendingApprovalsCount}
         >
           <div className="flex-1 flex items-center justify-center">
             <div className="flex flex-col items-center gap-4">
@@ -228,6 +231,7 @@ export default function BackofficeEntry() {
         }}
         reservationsPending={reservationsSummary?.pending ?? 0}
         deliveryActive={deliverySummary?.active ?? 0}
+        pendingApprovalsCount={pendingApprovalsCount}
       />
     </BackofficeContextProvider>
   );

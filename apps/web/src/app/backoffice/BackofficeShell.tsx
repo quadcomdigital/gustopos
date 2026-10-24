@@ -14,7 +14,6 @@ import {
   ClipboardCheck,
   Receipt,
   Users,
-  UsersRound,
   Menu,
   X,
   LogOut,
@@ -54,7 +53,7 @@ const ICONS: Record<BackofficeRouteKey, LucideIcon> = {
   shifts: ClipboardCheck,
   fiscal: Receipt,
   customers: Users,
-  'group-orders': UsersRound,
+  approvals: ClipboardCheck,
   settings: Settings,
 };
 
@@ -76,6 +75,8 @@ interface BackofficeShellProps {
   onNavigate: (routeKey: BackofficeRouteKey) => void;
   reservationsPending: number;
   deliveryActive: number;
+  /** Public drafts (group orders + online takeaway) still awaiting approval. */
+  pendingApprovalsCount: number;
   children?: React.ReactNode;
 }
 
@@ -109,6 +110,7 @@ export default function BackofficeShell(props: BackofficeShellProps) {
     onNavigate,
     reservationsPending,
     deliveryActive,
+    pendingApprovalsCount,
     children,
   } = props;
 
@@ -166,6 +168,18 @@ export default function BackofficeShell(props: BackofficeShellProps) {
   }, [routes, activeRoute]);
 
   const renderRouteBadge = (routeKey: BackofficeRouteKey, mobile = false) => {
+    if (routeKey === 'approvals' && pendingApprovalsCount > 0) {
+      return (
+        <span
+          className={cn(
+            'absolute rounded-full bg-emerald-500 px-1 text-[9px] font-bold text-white min-w-4 h-4 flex items-center justify-center',
+            mobile ? 'top-1 right-3' : '-top-1 -right-1',
+          )}
+        >
+          {pendingApprovalsCount}
+        </span>
+      );
+    }
     if (routeKey === 'reservations' && reservationsPending > 0) {
       return (
         <span

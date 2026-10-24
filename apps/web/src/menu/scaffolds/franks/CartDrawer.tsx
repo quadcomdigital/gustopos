@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { ShoppingBag, X } from 'lucide-react';
 import type { CartDrawerProps } from '../../types';
 import {
-  AccountBlock,
+  AccountPrompt,
   CartEmpty,
   CartLine,
   CheckoutStepper,
@@ -11,6 +11,7 @@ import {
   CustomerFields,
 } from '../../overlays/cartParts';
 import { FRANKS_LOGO_URL } from './brand';
+import { useDrawerChrome } from '../../lib/useDrawerChrome';
 
 /**
  * Franks cart overlay: same ordering model as the generic drawer, re-composed
@@ -33,6 +34,7 @@ export default function FranksCartDrawer({
   onDecrement,
   onRemove,
   optionNameById,
+  ingredientNameById,
   takeawayConfig,
   submitting,
   successId,
@@ -42,8 +44,10 @@ export default function FranksCartDrawer({
   customer,
   auth,
 }: CartDrawerProps) {
+  useDrawerChrome(onClose);
+
   return (
-    <div className="fixed inset-0 z-[60] flex justify-end">
+    <div className="fixed inset-0 z-[60] flex justify-end overflow-hidden" role="dialog" aria-modal="true" aria-label="Il tuo ordine">
       <motion.button
         type="button"
         initial={{ opacity: 0 }}
@@ -58,7 +62,7 @@ export default function FranksCartDrawer({
         animate={{ x: 0 }}
         exit={{ x: '100%' }}
         transition={{ type: 'spring', damping: 24, stiffness: 190 }}
-        className="relative flex h-full w-full max-w-md flex-col shadow-2xl"
+        className="relative flex h-full w-full flex-col shadow-2xl sm:max-w-lg"
         style={{ backgroundColor: appearance.pageBg }}
       >
         <div className="flex items-center justify-between p-4" style={{ backgroundColor: appearance.ink }}>
@@ -98,7 +102,7 @@ export default function FranksCartDrawer({
           </div>
         )}
 
-        <div className="flex-1 space-y-3 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
           {cart.length === 0 ? (
             <CartEmpty appearance={appearance} onBrowse={onClose} />
           ) : checkoutStep === 'cart' ? (
@@ -110,24 +114,31 @@ export default function FranksCartDrawer({
                   currency={currency}
                   formatPrice={formatPrice}
                   optionNameById={optionNameById}
+                  ingredientNameById={ingredientNameById}
                   onIncrement={onIncrement}
                   onDecrement={onDecrement}
                   onRemove={onRemove}
                 />
               </motion.div>
             ))
-          ) : checkoutStep === 'customer' ? (
-            <div className="space-y-3">
-              <AccountBlock auth={auth} appearance={appearance} />
-              <CustomerFields customer={customer} takeawayConfig={takeawayConfig} appearance={appearance} />
-            </div>
           ) : (
-            <ConfirmSummary customer={customer} appearance={appearance} />
+            <div className="space-y-3">
+              <CustomerFields customer={customer} takeawayConfig={takeawayConfig} appearance={appearance} />
+              <ConfirmSummary customer={customer} appearance={appearance} />
+              {/* Accounts are offered at checkout, never required before it. */}
+              <AccountPrompt auth={auth} appearance={appearance} />
+            </div>
           )}
         </div>
 
         {cart.length > 0 && (
-          <div className="space-y-3 border-t p-4" style={{ borderColor: appearance.border }}>
+          <div
+            className="space-y-3 border-t p-4"
+            style={{
+              borderColor: appearance.border,
+              paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
+            }}
+          >
             <div className="flex items-end justify-between">
               <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: appearance.muted }}>
                 Totale
@@ -143,22 +154,17 @@ export default function FranksCartDrawer({
             </div>
             <button
               type="button"
-              onClick={onSubmit}
-              disabled={submitting || Boolean(blockedReason) || checkoutStep !== 'confirm'}
+              onClick={() => (checkoutStep === 'confirm' ? onSubmit() : setCheckoutStep('confirm'))}
+              disabled={submitting || (checkoutStep === 'confirm' && Boolean(blockedReason))}
               className="min-h-[52px] w-full rounded-full text-xs font-extrabold uppercase tracking-[0.16em] transition-transform active:scale-[0.99] disabled:opacity-50"
               style={{ backgroundColor: appearance.accent, color: appearance.accentForeground }}
             >
-              {submitting ? 'Invio…' : 'Conferma ordine'}
+              {submitting ? 'Invio…' : checkoutStep === 'confirm' ? 'Conferma ordine' : 'Vai alla conferma'}
             </button>
-            {checkoutStep !== 'confirm' && (
-              <p className="text-center text-[11px]" style={{ color: appearance.muted }}>
-                Apri &quot;Conferma&quot; per inviare l&apos;ordine.
-              </p>
-            )}
             {blockedReason && <p className="text-xs text-amber-700">{blockedReason}</p>}
             {submitError && <p className="text-xs text-rose-600">{submitError}</p>}
             {successId && (
-              <div className="space-y-1 text-center">
+              <div className="space-y-2 text-center">
                 <p className="text-xs font-semibold text-emerald-600">Ordine inviato (ID: {successId})</p>
                 <Link
                   className="text-xs font-semibold underline"
@@ -167,6 +173,11 @@ export default function FranksCartDrawer({
                 >
                   Traccia ordine
                 </Link>
+                <AccountPrompt
+                  auth={auth}
+                  appearance={appearance}
+                  label="Crea un account per ritrovare l'ordine"
+                />
               </div>
             )}
           </div>

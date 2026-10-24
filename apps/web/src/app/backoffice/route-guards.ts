@@ -12,7 +12,7 @@ export type BackofficeRouteKey =
   | 'purchasing'
   | 'shifts'
   | 'fiscal'
-  | 'group-orders'
+  | 'approvals'
   | 'settings'
   | 'customers';
 
@@ -27,6 +27,8 @@ export interface BackofficeRouteMeta {
   label: string;
   roles: RoleKey[];
   module: ModuleKey | null;
+  /** OR-gate: the route needs at least one of these modules. */
+  anyModule?: ModuleKey[];
   permission?: string;
   domain: RouteDomain;
 }
@@ -43,7 +45,10 @@ export const BACKOFFICE_ROUTES: BackofficeRouteMeta[] = [
   { key: 'purchasing', path: '/app/purchasing', label: 'Acquisti', roles: ['admin'], module: 'purchasing_suppliers', domain: 'operations' },
   { key: 'shifts', path: '/app/shifts', label: 'Turni', roles: ['admin'], module: 'staff_shifts_timeclock', domain: 'operations' },
   { key: 'fiscal', path: '/app/fiscal', label: 'Fiscale', roles: ['admin'], module: 'fiscal_exports', domain: 'finance' },
-  { key: 'group-orders', path: '/app/group-orders', label: 'Gruppo', roles: ['admin', 'waiter'], module: 'public_group_order', domain: 'operations' },
+  // ONE inbox for every public draft (group order + online takeaway) awaiting a
+  // staff decision. Gated on either module so it appears for a tenant that only
+  // sells one of the two, and for none that sells neither.
+  { key: 'approvals', path: '/app/approvals', label: 'Da approvare', roles: ['admin', 'waiter'], module: null, anyModule: ['public_takeaway', 'public_group_order'], domain: 'operations' },
   { key: 'customers', path: '/app/customers', label: 'Clienti', roles: ['admin', 'waiter'], module: 'customers', domain: 'operations' },
   { key: 'settings', path: '/app/settings', label: 'Impostazioni', roles: ['admin'], module: null, domain: 'admin' },
 ];
@@ -131,6 +136,9 @@ export function canAccessRoute(
     return false;
   }
   if (route.module && !enabledModules.includes(route.module)) {
+    return false;
+  }
+  if (route.anyModule?.length && !route.anyModule.some((moduleKey) => enabledModules.includes(moduleKey))) {
     return false;
   }
   if (route.permission && role !== 'admin' && !(user.permissions ?? []).includes(route.permission)) {

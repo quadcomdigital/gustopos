@@ -55,6 +55,9 @@ export default function PublicTakeawayTrackingPage() {
     scheduledFor?: string;
     items: Array<{ id: string; name: string; quantity: number; price: number }>;
     customerName?: string;
+    /** `pending_approval` until a waiter/admin confirms the order. */
+    approvalStatus?: string;
+    rejectionReason?: string;
   } | null>(null);
 
   useEffect(() => {
@@ -148,10 +151,24 @@ export default function PublicTakeawayTrackingPage() {
     }).catch(() => undefined);
   }, [tenantSlug, order]);
 
+  // A public order is a draft until staff approves it: reporting "Ricevuto" (or
+  // any progress) before that would promise the kitchen something it has not
+  // accepted yet.
+  const pendingApproval = order?.approvalStatus === 'pending_approval';
+  const rejected = order?.approvalStatus === 'rejected';
+
+  const statusLabel = rejected
+    ? 'Non confermato'
+    : pendingApproval
+      ? 'In attesa di conferma'
+      : ORDER_STATUS_LABEL[order?.status ?? 'pending'];
+
   const progress = useMemo(() => {
     if (!order) {
       return 0;
     }
+    if (order.approvalStatus === 'pending_approval') return 10;
+    if (order.approvalStatus === 'rejected') return 100;
     return ORDER_STATUS_PROGRESS[order.status] ?? 0;
   }, [order]);
 
@@ -265,9 +282,24 @@ export default function PublicTakeawayTrackingPage() {
                 className="rounded-full px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-widest"
                 style={{ backgroundColor: brand?.accentSoft ?? '#f1f5f9', color: brand?.accentText ?? '#0f172a' }}
               >
-                {ORDER_STATUS_LABEL[order.status]}
+                {statusLabel}
               </span>
             </div>
+
+            {pendingApproval && (
+              <p
+                className="rounded-xl border px-3 py-2 text-xs"
+                style={{ borderColor: brand?.border ?? '#e2e8f0', backgroundColor: brand?.accentSoft ?? '#f1f5f9' }}
+              >
+                Il ristorante sta confermando il tuo ordine: appena approvato passa in cucina.
+              </p>
+            )}
+            {rejected && (
+              <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                L&apos;ordine non è stato confermato dal ristorante
+                {order.rejectionReason ? `: ${order.rejectionReason}` : '.'}
+              </p>
+            )}
 
             <div>
               <div className="h-2 w-full overflow-hidden rounded" style={{ backgroundColor: brand?.accentSoft ?? '#f1f5f9' }}>

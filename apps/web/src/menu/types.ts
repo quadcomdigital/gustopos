@@ -1,4 +1,5 @@
 import type { ConsumerUser, PublicMenuResponse, PublicMenuModuleConfig } from '@gustopos/shared';
+import type { MenuLayout } from './presets';
 
 /**
  * A cart line as shown to the public. Mirrors the API's `publicOrderLineSchema`
@@ -18,6 +19,8 @@ export type PublicCartLine = {
   isFeatured?: boolean;
   notes?: string;
   selectedModifiers: Array<{ groupId: string; optionId: string }>;
+  /** "Senza cipolla" choices, sent to the API as-is (it re-prices the line). */
+  ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
 };
 
 export type MenuSectionId = PublicMenuModuleConfig['sections'][number]['id'];
@@ -62,6 +65,8 @@ export type MenuAppearance = {
   muted: string;
   currency: string;
   preset: PublicMenuModuleConfig['preset'];
+  /** Preset-derived layout every shell reads instead of branching on `preset`. */
+  layout: MenuLayout;
   tagline?: string;
   logoUrl?: string;
   heroImageUrl?: string;
@@ -102,6 +107,9 @@ export type MenuShellActions = {
   onDecrementLine: (lineId: string) => void;
   onRemoveLine: (lineId: string) => void;
   takeawayEnabled: boolean;
+  /** Group-order entry: the shell renders its own affordance when it owns the chrome. */
+  groupOrderEnabled: boolean;
+  onGroupOrder: () => void;
 };
 
 export type MenuShellProps = {
@@ -113,7 +121,12 @@ export type MenuShellProps = {
 // The page owns all checkout state; overlays are pure views over this model, so
 // a scaffold can re-skin them without duplicating the ordering logic.
 
-export type CheckoutStep = 'cart' | 'customer' | 'confirm';
+/**
+ * Two steps only: the cart, then one confirmation screen that collects the
+ * pickup details and sends the order. Customer accounts are offered there
+ * (opt-in), never as a required step.
+ */
+export type CheckoutStep = 'cart' | 'confirm';
 
 export type TakeawayConfig = {
   minOrderAmount: number;
@@ -167,6 +180,8 @@ export type CartDrawerProps = {
   onDecrement: (lineId: string) => void;
   onRemove: (lineId: string) => void;
   optionNameById: Map<string, string>;
+  /** Recipe component id → name, so the cart can print "Senza cipolla". */
+  ingredientNameById: Map<string, string>;
   takeawayConfig: TakeawayConfig;
   submitting: boolean;
   successId: string;
@@ -188,5 +203,10 @@ export type ModifierSheetProps = {
   onConfirm: (payload: {
     selectedModifiers: Array<{ groupId: string; optionId: string }>;
     modifierPriceDelta: number;
+    /** Ingredients the guest asked to leave out (the API validates them
+     *  against the dish's recipe). */
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
+    /** Per-dish note ("ben cotta", "senza sale"): travels with the line. */
+    notes?: string;
   }) => void;
 };

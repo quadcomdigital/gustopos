@@ -127,7 +127,7 @@ import {
   groupOrderSubmitRequestSchema,
   groupOrderSubmitResponseSchema,
   groupOrderReviewQueueResponseSchema,
-  groupOrderReviewResponseSchema,
+  orderDraftReviewResponseSchema,
   consumerAuthResponseSchema,
   consumerLoginRequestSchema,
   consumerOrderHistoryResponseSchema,
@@ -175,8 +175,12 @@ import {
   unitConversionSchema,
   updatePrintingSettingsRequestSchema,
   updateUiSettingsRequestSchema,
+  fiscalDepartmentProgramRequestSchema,
+  fiscalDepartmentReadRequestSchema,
+  fiscalLiveVerificationRequestSchema,
   fiscalPrinterConfigResponseSchema,
   fiscalPrinterConfigUpdateRequestSchema,
+  fiscalProtocolsResponseSchema,
   fiscalJobSchema,
   staffAdminSchema,
   staffAdminListResponseSchema,
@@ -291,7 +295,7 @@ import {
   type GroupOrderSubmitRequest,
   type GroupOrderSubmitResponse,
   type GroupOrderReviewQueueResponse,
-  type GroupOrderReviewResponse,
+  type OrderDraftReviewResponse,
   type ConsumerAuthResponse,
   type ConsumerLoginRequest,
   type ConsumerOrderHistoryResponse,
@@ -342,8 +346,12 @@ import {
   type PrintProfileUpdateRequest,
   type PrintProfileActivateResponse,
   type FiscalPrinterConfig,
+  type FiscalProtocolsResponse,
   type FiscalPrinterConfigUpdateRequest,
+  type FiscalDepartmentProgramRequest,
+  type FiscalDepartmentReadRequest,
   type FiscalJob,
+  type FiscalLiveVerificationRequest,
   type UpdatePrintingSettingsRequest,
   type UpdateUiSettingsRequest,
   type UpdateOrderRequest,
@@ -1344,6 +1352,15 @@ export async function updateUiSettings(payload: UpdateUiSettingsRequest): Promis
 
 // ─── Certified fiscal printer (Path B) ──────────────────────────────────
 
+/**
+ * Catalogo dei dialetti fiscali (protocollo/modello/versione) per il selettore
+ * in Impostazioni: solo label e limiti, mai codici di protocollo.
+ */
+export async function fetchFiscalProtocols(): Promise<FiscalProtocolsResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/settings/fiscal/protocols`);
+  return readJson(response, fiscalProtocolsResponseSchema);
+}
+
 export async function fetchFiscalPrinterConfig(): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
   const response = await authorizedFetch(`${API_URL}/api/settings/fiscal/printer`);
   return readJson(response, fiscalPrinterConfigResponseSchema);
@@ -1359,19 +1376,98 @@ export async function updateFiscalPrinterConfig(payload: FiscalPrinterConfigUpda
   return readJson(response, fiscalPrinterConfigResponseSchema);
 }
 
-export async function enqueueFiscalTestJob(): Promise<{ job: FiscalJob }> {
+/**
+ * Accodamento di un lavoro fiscale: il server risponde con il job e con gli
+ * avvisi raccolti componendo i frame (descrizione adattata al protocollo,
+ * comando non ancora collaudato, categoria finita sul reparto di ripiego).
+ * Gli avvisi si mostrano: sono il motivo per cui un documento esce "adattato".
+ */
+const fiscalEnqueueResponseSchema = z.object({
+  job: fiscalJobSchema,
+  warnings: z.array(z.string()).default([]),
+});
+
+export interface FiscalJobEnqueueResult {
+  job: FiscalJob;
+  warnings: string[];
+}
+
+export async function enqueueFiscalTestJob(): Promise<FiscalJobEnqueueResult> {
   const response = await authorizedFetch(`${API_URL}/api/fiscal/jobs/test`, {
     method: 'POST',
   });
-  return readJson(response, z.object({ job: fiscalJobSchema }));
+  return readJson(response, fiscalEnqueueResponseSchema);
 }
 
-export async function enqueueFiscalChiusura(businessDate: string): Promise<{ job: FiscalJob }> {
+export async function enqueueFiscalChiusura(businessDate: string): Promise<FiscalJobEnqueueResult> {
   const response = await authorizedFetch(`${API_URL}/api/fiscal/chiusura`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ businessDate }),
   });
+  return readJson(response, fiscalEnqueueResponseSchema);
+}
+
+/**
+ * Lettura della programmazione reparti dal RT (`<</?C/(Rnnn)`): è il confronto
+ * fra ciò che il registratore ha in memoria e la mappatura configurata.
+ */
+export async function readFiscalDepartments(
+  payload: FiscalDepartmentReadRequest = {},
+): Promise<FiscalJobEnqueueResult> {
+  const request = fiscalDepartmentReadRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/jobs/departments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, fiscalEnqueueResponseSchema);
+}
+
+/**
+ * Programmazione dei reparti sul RT (`>R…`): scrive aliquota e natura
+ * bene/servizio nella memoria del registratore. Richiede `confirm: true`.
+ */
+export async function programFiscalDepartments(
+  payload: FiscalDepartmentProgramRequest,
+): Promise<FiscalJobEnqueueResult> {
+  const request = fiscalDepartmentProgramRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/jobs/departments/program`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, fiscalEnqueueResponseSchema);
+}
+
+/**
+ * Registra il collaudo dal vivo del protocollo attivo: sblocca i corrispettivi
+ * sui dialetti nati dai manuali. Il server accetta solo se esiste una prova
+ * gestionale completata per quel protocollo, quindi l'errore (400) spiega cosa
+ * manca invece di essere un rifiuto muto.
+ */
+export async function registerFiscalLiveVerification(
+  payload: FiscalLiveVerificationRequest = { note: '' },
+): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+  const request = fiscalLiveVerificationRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/settings/fiscal/verification`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, fiscalPrinterConfigResponseSchema);
+}
+
+/** Revoca il collaudo del protocollo attivo: l'emissione torna bloccata. */
+export async function revokeFiscalLiveVerification(): Promise<{ fiscalPrinter: FiscalPrinterConfig }> {
+  const response = await authorizedFetch(`${API_URL}/api/settings/fiscal/verification`, {
+    method: 'DELETE',
+  });
+  return readJson(response, fiscalPrinterConfigResponseSchema);
+}
+
+export async function fetchFiscalJob(id: string): Promise<{ job: FiscalJob }> {
+  const response = await authorizedFetch(`${API_URL}/api/fiscal/jobs/${encodeURIComponent(id)}`);
   return readJson(response, z.object({ job: fiscalJobSchema }));
 }
 
@@ -2590,22 +2686,26 @@ export async function fetchPublicGroupOrderSession(
   return readJson(response, groupOrderSessionSchema);
 }
 
-/** Staff review queue: submitted group-order drafts awaiting approval. */
-export async function fetchGroupOrderDrafts(): Promise<GroupOrderReviewQueueResponse> {
-  const response = await authorizedFetch(`${API_URL}/api/group-order-drafts`);
+/**
+ * Staff approval inbox: every public draft waiting for a waiter/admin — group
+ * orders and public takeaway orders alike. Nothing is printed or deducted until
+ * one of these rows is approved.
+ */
+export async function fetchOrderDrafts(): Promise<GroupOrderReviewQueueResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/order-drafts`);
   return readJson(response, groupOrderReviewQueueResponseSchema);
 }
 
-export async function reviewGroupOrderDraft(
+export async function reviewOrderDraft(
   orderId: string,
   payload: { action: 'approve' | 'reject'; reason?: string },
-): Promise<GroupOrderReviewResponse> {
-  const response = await authorizedFetch(`${API_URL}/api/group-order-drafts/${encodeURIComponent(orderId)}/review`, {
+): Promise<OrderDraftReviewResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/order-drafts/${encodeURIComponent(orderId)}/review`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return readJson(response, groupOrderReviewResponseSchema);
+  return readJson(response, orderDraftReviewResponseSchema);
 }
 
 export async function registerConsumer(tenantSlug: string, payload: ConsumerRegisterRequest): Promise<ConsumerAuthResponse> {

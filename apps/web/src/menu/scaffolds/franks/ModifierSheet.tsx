@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import type { ModifierGroup, ModifierOption, PublicMenuResponse } from '@gustopos/shared';
 import { computeGroupModifierDelta, isMultiSelectGroup, modifierOptionPriceBadge } from '@gustopos/shared';
-import { Check, X } from 'lucide-react';
+import { Check, RotateCcw, X } from 'lucide-react';
 import type { ModifierSheetProps } from '../../types';
+import { removableComponents } from '../../lib/customization';
 import { FRANKS_LOGO_URL } from './brand';
 
 type PublicMenuItem = PublicMenuResponse['items'][number];
@@ -21,6 +22,19 @@ export default function FranksModifierSheet({
   onConfirm,
 }: ModifierSheetProps) {
   const [selections, setSelections] = useState<Record<string, string[]>>({});
+  // Ingredient ids the guest asked to leave out ("senza cipolla").
+  const [removed, setRemoved] = useState<string[]>([]);
+  const [lineNote, setLineNote] = useState('');
+
+  const removable = useMemo(() => (item ? removableComponents(item) : []), [item]);
+
+  const toggleRemoved = (ingredientId: string) => {
+    setRemoved((current) =>
+      current.includes(ingredientId)
+        ? current.filter((id) => id !== ingredientId)
+        : [...current, ingredientId],
+    );
+  };
 
   const groups = useMemo<ModifierGroup[]>(() => {
     if (!item) return [];
@@ -133,8 +147,8 @@ export default function FranksModifierSheet({
           </div>
         </div>
 
-        <div className="flex-1 space-y-5 overflow-y-auto p-4">
-          {groups.length === 0 ? (
+        <div className="flex-1 space-y-5 overflow-y-auto overscroll-contain p-4">
+          {groups.length === 0 && removable.length === 0 ? (
             <p className="text-sm" style={{ color: appearance.muted }}>
               Nessuna opzione disponibile per questo piatto.
             </p>
@@ -183,10 +197,81 @@ export default function FranksModifierSheet({
               );
             })
           )}
+
+          {removable.length > 0 && (
+            <div className="space-y-2 border-t pt-5" style={{ borderColor: appearance.border }}>
+              <div className="flex items-baseline justify-between gap-2">
+                <h3 className="text-[11px] font-extrabold uppercase tracking-[0.18em]" style={{ color: appearance.muted }}>
+                  Togli ingredienti
+                </h3>
+                {removed.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setRemoved([])}
+                    className="inline-flex min-h-[32px] items-center gap-1 text-[11px] font-bold uppercase tracking-[0.14em]"
+                    style={{ color: appearance.muted }}
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    Ripristina
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px]" style={{ color: appearance.muted }}>
+                Tocca un ingrediente per farlo togliere in cucina.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {removable.map((component) => {
+                  const isRemoved = removed.includes(component.id);
+                  return (
+                    <button
+                      key={component.id}
+                      type="button"
+                      onClick={() => toggleRemoved(component.id)}
+                      aria-pressed={isRemoved}
+                      aria-label={isRemoved ? `${component.name}: rimetti` : `${component.name}: togli`}
+                      className="min-h-[44px] rounded-lg border px-4 text-xs font-bold transition-all active:scale-[0.98]"
+                      style={{
+                        backgroundColor: isRemoved ? appearance.surface : 'transparent',
+                        color: isRemoved ? appearance.muted : appearance.ink,
+                        borderColor: isRemoved ? appearance.accent : appearance.border,
+                        textDecorationLine: isRemoved ? 'line-through' : 'none',
+                      }}
+                    >
+                      {component.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <label className="block border-t pt-5" style={{ borderColor: appearance.border }}>
+            <span className="text-[11px] font-extrabold uppercase tracking-[0.18em]" style={{ color: appearance.muted }}>
+              Nota per questo piatto
+            </span>
+            <textarea
+              value={lineNote}
+              onChange={(event) => setLineNote(event.target.value)}
+              maxLength={200}
+              rows={2}
+              placeholder="Es. ben cotta, senza sale…"
+              className="mt-1.5 w-full resize-none rounded-lg border px-3 py-2 text-sm outline-none focus-visible:ring-2"
+              style={{
+                backgroundColor: appearance.pageBg,
+                borderColor: appearance.border,
+                color: appearance.ink,
+              }}
+            />
+          </label>
         </div>
 
         <div className="shrink-0 space-y-2 border-t p-4" style={{ borderColor: appearance.border }}>
           {missingRequired && <p className="text-xs text-rose-600">Seleziona le opzioni obbligatorie.</p>}
+          {removed.length > 0 && (
+            <p className="text-xs" style={{ color: appearance.muted }}>
+              Senza: {removable.filter((component) => removed.includes(component.id)).map((component) => component.name).join(', ')}
+            </p>
+          )}
           <button
             type="button"
             disabled={missingRequired}
@@ -194,7 +279,12 @@ export default function FranksModifierSheet({
               const selectedModifiers = Object.entries(selections).flatMap(([groupId, optionIds]) =>
                 optionIds.map((optionId) => ({ groupId, optionId })),
               );
-              onConfirm({ selectedModifiers, modifierPriceDelta: delta });
+              onConfirm({
+                selectedModifiers,
+                modifierPriceDelta: delta,
+                ingredientOverrides: removed.map((ingredientId) => ({ ingredientId, action: 'remove' as const })),
+                notes: lineNote.trim() || undefined,
+              });
             }}
             className="min-h-[52px] w-full rounded-full text-xs font-extrabold uppercase tracking-[0.16em] transition-transform active:scale-[0.99] disabled:opacity-50"
             style={{ backgroundColor: appearance.accent, color: appearance.accentForeground }}

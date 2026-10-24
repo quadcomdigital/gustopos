@@ -17,7 +17,7 @@ const ShiftsView = lazy(() => import('../../../components/ShiftsView'));
 const FiscalExportsView = lazy(() => import('../../../components/FiscalExportsView'));
 const SettingsView = lazy(() => import('../../../components/SettingsView'));
 const CustomersView = lazy(() => import('../../../components/CustomersView'));
-const GroupOrderReviewView = lazy(() => import('../../../components/GroupOrderReviewView'));
+const OrderApprovalsView = lazy(() => import('../../../components/OrderApprovalsView'));
 
 export function TablesRoute() {
   const data = useAppStore((s) => s.data);
@@ -486,6 +486,10 @@ export function CustomersRoute() {
   );
 }
 
-export function GroupOrdersRoute() {
-  return <GroupOrderReviewView />;
+/**
+ * Group orders and online takeaway share one approval inbox: both create drafts
+ * that only become real orders once a waiter/admin approves them.
+ */
+export function ApprovalsRoute() {
+  return <OrderApprovalsView />;
 }

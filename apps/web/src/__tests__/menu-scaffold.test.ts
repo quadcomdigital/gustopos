@@ -10,6 +10,7 @@ import {
 } from '../menu/scaffolds';
 import { resolvePublicBrand } from '../menu/brand';
 import { buildAppearance, resolveEnabledSections, resolveSectionOrder } from '../menu/useMenuConfig';
+import { PRESET_LAYOUTS, resolveMenuLayout } from '../menu/presets';
 import { ingredientLine } from '../menu/sections/ItemCard';
 import { readableOn } from '../menu/brand/tokens';
 
@@ -22,8 +23,10 @@ function config(overrides: Partial<PublicMenuModuleConfig> = {}): PublicMenuModu
     accentColor: '#0f172a',
     categoryOrder: [],
     hiddenCategoryIds: [],
+    hiddenItemIds: [],
     featuredItemIds: [],
     soldOutItemIds: [],
+    itemDescriptions: {},
     sections: [
       { id: 'hero', enabled: true, order: 0 },
       { id: 'categories_nav', enabled: true, order: 1 },
@@ -146,6 +149,12 @@ describe('menu config helpers', () => {
     }
   });
 
+  it('derives the layout from the configured preset', () => {
+    const appearance = buildAppearance(menu(), config({ preset: 'rich_visual' }));
+    expect(appearance.preset).toBe('rich_visual');
+    expect(appearance.layout).toEqual(PRESET_LAYOUTS.rich_visual);
+  });
+
   it('orders and filters sections from config', () => {
     const cfg = config({
       sections: [
@@ -158,6 +167,21 @@ describe('menu config helpers', () => {
     const enabled = resolveEnabledSections(cfg);
     expect(enabled.has('item_grid')).toBe(true);
     expect(enabled.has('hero')).toBe(false);
+  });
+});
+
+describe('preset layout', () => {
+  it('maps each preset to a distinct layout', () => {
+    expect(resolveMenuLayout('minimal_elegant').itemLayout).toBe('rows');
+    expect(resolveMenuLayout('minimal_elegant').showHighlights).toBe(false);
+    expect(resolveMenuLayout('modern_bistro').itemLayout).toBe('cards');
+    expect(resolveMenuLayout('modern_bistro').showHighlights).toBe(true);
+    expect(resolveMenuLayout('rich_visual').heroHeight).toBe('tall');
+    expect(resolveMenuLayout('rich_visual').showHighlights).toBe(true);
+  });
+
+  it('falls back to minimal_elegant for an unknown preset', () => {
+    expect(resolveMenuLayout('unknown' as never)).toEqual(PRESET_LAYOUTS.minimal_elegant);
   });
 });
 

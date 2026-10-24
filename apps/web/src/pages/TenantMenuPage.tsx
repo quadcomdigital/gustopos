@@ -22,8 +22,9 @@ import GenericModifierSheet from '../menu/overlays/ModifierSheet';
 import { resolvePublicBrand } from '../menu/brand';
 import { resolveCartAffordance, resolveCartDrawer, resolveModifierSheet } from '../menu/scaffolds';
 import { formatPrice } from '../menu/lib/display';
+import { itemIsCustomizable } from '../menu/lib/customization';
 import { resolveEnabledSections, resolveSectionOrder } from '../menu/useMenuConfig';
-import type { CartDrawerProps, MenuShellActions, MenuShellData, PublicCartLine } from '../menu/types';
+import type { CartDrawerProps, CheckoutStep, MenuShellActions, MenuShellData, PublicCartLine } from '../menu/types';
 
 const TAKEAWAY_CART_STORAGE_PREFIX = 'gustopos:public-takeaway-cart:';
 
@@ -42,13 +43,29 @@ function groupOrderIdentityKey(tenantSlug: string, joinCode: string): string {
   return `gustopos:group-order:${tenantSlug}:${joinCode}`;
 }
 
-/** Stable line id: same item + same modifier set collapses into one line. */
-function buildLineId(menuItemId: string, selectedModifiers: Array<{ groupId: string; optionId: string }>): string {
+/**
+ * Stable line id: same item + same modifier set + same "senza …" choices
+ * collapses into one line. The overrides belong in the key, otherwise a dish
+ * "senza cipolla" would merge into the plain one.
+ */
+function buildLineId(
+  menuItemId: string,
+  selectedModifiers: Array<{ groupId: string; optionId: string }>,
+  ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }> = [],
+  notes?: string,
+): string {
   const key = selectedModifiers
     .map((selection) => `${selection.groupId}:${selection.optionId}`)
     .sort()
     .join('|');
-  return key ? `${menuItemId}#${key}` : menuItemId;
+  const overrideKey = ingredientOverrides
+    .map((override) => `${override.ingredientId}:${override.action}`)
+    .sort()
+    .join('|');
+  // The note is part of the line identity: "carbonara, ben cotta" is not the
+  // same line as a plain carbonara.
+  const parts = [key, overrideKey, notes?.trim() ?? ''].filter(Boolean).join('~');
+  return parts ? `${menuItemId}#${parts}` : menuItemId;
 }
 
 export default function TenantMenuPage() {
@@ -75,7 +92,7 @@ export default function TenantMenuPage() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPhone, setAuthPhone] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [checkoutStep, setCheckoutStep] = useState<'cart' | 'customer' | 'confirm'>('cart');
+  const [checkoutStep, setCheckoutStep] = useState<CheckoutStep>('cart');
   const [modifierItem, setModifierItem] = useState<PublicMenuItem | null>(null);
   const [groupOrderOpen, setGroupOrderOpen] = useState(false);
   const [groupOrderName, setGroupOrderName] = useState('');
@@ -149,6 +166,8 @@ export default function TenantMenuPage() {
           selectedModifiers: Array.isArray(entry.selectedModifiers) ? entry.selectedModifiers : [],
           modifierPriceDelta: typeof entry.modifierPriceDelta === 'number' ? entry.modifierPriceDelta : 0,
           ingredients: Array.isArray(entry.ingredients) ? entry.ingredients : [],
+          // Carts persisted before the feature have no overrides at all.
+          ingredientOverrides: Array.isArray(entry.ingredientOverrides) ? entry.ingredientOverrides : [],
         }));
       setCart(hydrated); // eslint-disable-line react-hooks/set-state-in-effect
     } catch {
@@ -174,12 +193,18 @@ export default function TenantMenuPage() {
 
   const takeawayEnabled = menu?.capabilities.takeawayOrder ?? false;
   const groupOrderEnabled = menu?.capabilities.groupOrder ?? false;
-  const takeawayConfig = menu?.capabilities.takeawayConfig ?? {
-    minOrderAmount: 0,
-    maxItems: 20,
-    pickupEtaRequired: false,
-    allowNotes: true,
-  };
+  // Memoised so the fallback object does not recreate on every render and
+  // invalidate the hooks that depend on `takeawayConfig`.
+  const takeawayConfig = useMemo(
+    () =>
+      menu?.capabilities.takeawayConfig ?? {
+        minOrderAmount: 0,
+        maxItems: 20,
+        pickupEtaRequired: false,
+        allowNotes: true,
+      },
+    [menu],
+  );
 
   const appearance = useMemo(() => (menu ? resolvePublicBrand(menu) : null), [menu]);
   const currency = appearance?.currency ?? 'EUR';
@@ -199,6 +224,19 @@ export default function TenantMenuPage() {
     }
     for (const pool of menu.categoryModifierPools) {
       for (const option of pool.options) map.set(option.id, option.name || option.componentId || option.id);
+    }
+    return map;
+  }, [menu]);
+
+  /** Recipe component id → name, so the cart can spell out "Senza cipolla". */
+  const ingredientNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!menu) return map;
+    for (const item of menu.items) {
+      for (const component of item.recipe ?? []) {
+        const name = component.componentName?.trim();
+        if (name && !map.has(component.componentId)) map.set(component.componentId, name);
+      }
     }
     return map;
   }, [menu]);
@@ -236,9 +274,11 @@ export default function TenantMenuPage() {
     item: PublicMenuItem,
     selectedModifiers: Array<{ groupId: string; optionId: string }>,
     modifierPriceDelta: number,
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }> = [],
+    notes?: string,
   ) => {
     if (item.isSoldOut) return;
-    const lineId = buildLineId(item.id, selectedModifiers);
+    const lineId = buildLineId(item.id, selectedModifiers, ingredientOverrides, notes);
     setCart((prev) => {
       const existing = prev.find((entry) => entry.id === lineId);
       if (existing) {
@@ -255,6 +295,8 @@ export default function TenantMenuPage() {
         isSoldOut: item.isSoldOut,
         isFeatured: item.isFeatured,
         selectedModifiers,
+        ingredientOverrides,
+        notes,
       }];
     });
     if (tenantSlug) {
@@ -266,8 +308,9 @@ export default function TenantMenuPage() {
   };
 
   const onAddItem = (item: PublicMenuItem) => {
-    const hasModifiers = (item.modifierGroups?.length ?? 0) > 0 || (menu?.categoryModifierPools.length ?? 0) > 0;
-    if (hasModifiers) {
+    // Only open the sheet when there is actually something to choose: an item
+    // with no options and no removable ingredient is added directly.
+    if (itemIsCustomizable(item, menu?.categoryModifierPools ?? [])) {
       setModifierItem(item);
       return;
     }
@@ -304,6 +347,8 @@ export default function TenantMenuPage() {
           price: line.basePrice + line.modifierPriceDelta,
           quantity: line.quantity,
           selectedModifiers: line.selectedModifiers.length > 0 ? line.selectedModifiers : undefined,
+          ingredientOverrides: line.ingredientOverrides.length > 0 ? line.ingredientOverrides : undefined,
+          notes: line.notes?.trim() || undefined,
         })),
         total: cartTotal,
         pickupEta: pickupEta ? new Date(pickupEta).toISOString() : undefined,
@@ -490,6 +535,11 @@ export default function TenantMenuPage() {
     onDecrementLine: decrementLine,
     onRemoveLine: removeLine,
     takeawayEnabled,
+    groupOrderEnabled,
+    onGroupOrder: () => {
+      setGroupOrderError('');
+      setGroupOrderOpen(true);
+    },
   };
 
   const floatingVisible = cartAffordance === 'floating' && takeawayEnabled && cartCount > 0 && !isCartOpen;
@@ -511,6 +561,7 @@ export default function TenantMenuPage() {
     onDecrement: decrementLine,
     onRemove: removeLine,
     optionNameById,
+    ingredientNameById,
     takeawayConfig,
     submitting: submittingTakeaway,
     successId: takeawaySuccessId,
@@ -582,7 +633,12 @@ export default function TenantMenuPage() {
         {isCartOpen && <CartDrawerView key="cart-drawer" {...cartOverlay} />}
       </AnimatePresence>
 
-      {groupOrderEnabled && (
+      {/*
+       * Only for tenants whose shell does NOT own its chrome. A scaffold that
+       * renders its own affordance (franks) receives `onGroupOrder` and places the
+       * entry point itself, so we must not float a second, incoherent button here.
+       */}
+      {groupOrderEnabled && cartAffordance === 'floating' && (
         <button
           type="button"
           onClick={() => {
@@ -672,8 +728,8 @@ export default function TenantMenuPage() {
           currency={currency}
           formatPrice={(value) => formatPrice(currency, value)}
           onClose={() => setModifierItem(null)}
-          onConfirm={({ selectedModifiers, modifierPriceDelta }) => {
-            pushLine(modifierItem, selectedModifiers, modifierPriceDelta);
+          onConfirm={({ selectedModifiers, modifierPriceDelta, ingredientOverrides, notes }) => {
+            pushLine(modifierItem, selectedModifiers, modifierPriceDelta, ingredientOverrides, notes);
             setModifierItem(null);
           }}
         />

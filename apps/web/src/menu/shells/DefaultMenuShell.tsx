@@ -1,11 +1,15 @@
 import type { CSSProperties } from 'react';
-import { Hero, CategoryNav, ItemGrid, FooterNote } from '../sections';
+import { Hero, CategoryNav, Highlights, ItemGrid, FooterNote } from '../sections';
 import type { MenuShellProps, MenuSectionId } from '../types';
 
 /**
  * Default menu shell: a section-driven layout shared by every tenant unless a
  * per-tenant scaffold overrides it. Section order/visibility come from the
  * normalised config so the tenant can re-order blocks without code changes.
+ *
+ * The preset-driven card orientation, hero height and `In evidenza` strip are
+ * read from `appearance.layout` (see `menu/presets.ts`), so switching the preset
+ * visibly changes this shell too.
  *
  * Brand tokens are published as CSS variables so focus rings inside the shell
  * can follow the tenant accent without inline styles.
@@ -40,6 +44,8 @@ export default function DefaultMenuShell({ data, actions }: MenuShellProps) {
       </header>
 
       <div className="mx-auto max-w-7xl p-4 md:p-8">
+        {/* Self-gating (preset or section): rendered once, outside the section order. */}
+        <Highlights data={data} actions={actions} />
         {orderedBody.map((id) => {
           if (id === 'item_grid') return <ItemGrid key={id} data={data} actions={actions} />;
           if (id === 'footer_note') return <FooterNote key={id} data={data} />;

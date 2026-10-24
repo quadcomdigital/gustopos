@@ -84,6 +84,7 @@ const appearance: MenuAppearance = {
   muted: '#666666',
   currency: 'EUR',
   preset: 'minimal_elegant',
+  layout: { itemLayout: 'rows', heroHeight: 'compact', showHighlights: false, density: 'compact' },
   showPrices: true,
   showIngredients: true,
 };
@@ -137,7 +138,7 @@ describe('ModifierSheet (menu pubblico) — pool di categoria', () => {
     fireEvent.click(screen.getByRole('button', { name: /Pizza celiaca/ }));
     fireEvent.click(confirmButton());
 
-    expect(onConfirm).toHaveBeenCalledWith({ selectedModifiers: [], modifierPriceDelta: 0 });
+    expect(onConfirm).toHaveBeenCalledWith({ selectedModifiers: [], modifierPriceDelta: 0, ingredientOverrides: [] });
   });
 
   it('somma più pool e conferma le selezioni', () => {

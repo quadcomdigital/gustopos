@@ -1,0 +1,71 @@
+/**
+ * Franks scaffold polish. Scoped to this chunk; all motion is opt-in only when
+ * the user has NOT asked for reduced motion, so the reduced variant is simply
+ * "no animation" (content is visible by default).
+ *
+ * Motion is transform/opacity only (compositor-friendly) and never animates
+ * layout properties.
+ */
+
+/* Scroll-reveal: elements start hidden, then settle once observed. */
+@media (prefers-reduced-motion: no-preference) {
+  .fr-reveal {
+    opacity: 0;
+    transform: translateY(14px);
+    transition:
+      opacity 520ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .fr-reveal[data-shown='true'] {
+    opacity: 1;
+    transform: none;
+  }
+
+  .fr-enter {
+    animation: fr-enter 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes fr-enter {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+/* Touch: kill the 300ms double-tap delay and the grey tap flash. */
+.fr-press {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Inactive category chip hover (brand ink, tenue border). */
+.fr-chip:hover {
+  color: #0b0b0c;
+  border-color: rgba(11, 11, 12, 0.22);
+  background-color: rgba(11, 11, 12, 0.03);
+}
+
+/* Search placeholder must not inherit the input's ink colour. */
+.fr-input::placeholder {
+  color: #6b6a64;
+  opacity: 1;
+}
+
+/* Horizontal strips: keep overscroll inside the strip, not the page. */
+.fr-scroller {
+  overscroll-behavior-x: contain;
+}
+
+.fr-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.fr-scroller {
+  scrollbar-width: none;
+}

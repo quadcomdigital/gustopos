@@ -1,8 +1,9 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { Minus, Plus, ShoppingBag } from 'lucide-react';
 import type { CartCustomerForm, CheckoutStep, MenuAppearance, PublicCartLine, TakeawayConfig } from '../types';
 import type { CartAuthForm } from '../types';
 import { formatDatetimeLocal } from '../lib/display';
+import { removedLabel } from '../lib/customization';
 
 /**
  * Presentational pieces of the cart/checkout overlay. They are intentionally
@@ -12,7 +13,6 @@ import { formatDatetimeLocal } from '../lib/display';
 
 const steps: Array<{ id: CheckoutStep; label: string }> = [
   { id: 'cart', label: 'Carrello' },
-  { id: 'customer', label: 'Dati' },
   { id: 'confirm', label: 'Conferma' },
 ];
 
@@ -37,7 +37,7 @@ export function CheckoutStepper({
   const activeBg = activeVariant === 'accent' ? appearance.accent : appearance.ink;
   const activeFg = activeVariant === 'accent' ? appearance.accentForeground : '#ffffff';
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-2 gap-2">
       {steps.map((entry) => {
         const active = step === entry.id;
         return (
@@ -94,6 +94,7 @@ export function CartLine({
   currency,
   formatPrice,
   optionNameById,
+  ingredientNameById,
   onIncrement,
   onDecrement,
   onRemove,
@@ -103,6 +104,7 @@ export function CartLine({
   currency: string;
   formatPrice: (value: number) => string;
   optionNameById: Map<string, string>;
+  ingredientNameById: Map<string, string>;
   onIncrement: (id: string) => void;
   onDecrement: (id: string) => void;
   onRemove: (id: string) => void;
@@ -134,6 +136,16 @@ export function CartLine({
             {line.selectedModifiers
               .map((selection) => optionNameById.get(selection.optionId) ?? selection.optionId)
               .join(' · ')}
+          </p>
+        )}
+        {removedLabel(line.ingredientOverrides, ingredientNameById) && (
+          <p className="mb-1 text-[11px] font-semibold leading-snug" style={{ color: appearance.accentText }}>
+            {removedLabel(line.ingredientOverrides, ingredientNameById)}
+          </p>
+        )}
+        {line.notes && (
+          <p className="mb-1 text-[11px] italic leading-snug" style={{ color: appearance.muted }}>
+            “{line.notes}”
           </p>
         )}
         <p className="mb-2 text-[11px] tabular-nums" style={{ color: appearance.muted }}>
@@ -175,6 +187,51 @@ export function CartLine({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Account offer, collapsed by default. Ordering never requires an account: the
+ * guest can log in / register here (checkout) or skip it entirely.
+ */
+export function AccountPrompt({
+  auth,
+  appearance,
+  label = 'Hai un account? Accedi o registrati (facoltativo)',
+}: {
+  auth: CartAuthForm;
+  appearance: MenuAppearance;
+  label?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  if (auth.user) return null;
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          auth.setMode('login');
+          setOpen(true);
+        }}
+        className="min-h-[44px] w-full rounded-lg border text-[11px] font-bold uppercase tracking-widest"
+        style={{ borderColor: appearance.border, color: appearance.muted }}
+      >
+        {label}
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <AccountBlock auth={auth} appearance={appearance} />
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="min-h-[36px] w-full text-[11px] font-semibold underline"
+        style={{ color: appearance.muted }}
+      >
+        Continua senza account
+      </button>
     </div>
   );
 }
@@ -287,6 +344,9 @@ export function CustomerFields({
 }) {
   return (
     <div className="space-y-2">
+      <p className="text-[11px] font-bold uppercase tracking-widest" style={{ color: appearance.muted }}>
+        Ritiro e contatti
+      </p>
       <input
         value={customer.name}
         onChange={(event) => customer.setName(event.target.value)}
@@ -321,6 +381,10 @@ export function CustomerFields({
   );
 }
 
+/**
+ * Compact read-back of what the guest typed, shown above the submit button on
+ * the single confirmation screen (no dedicated summary step any more).
+ */
 export function ConfirmSummary({
   customer,
   appearance,
@@ -329,18 +393,15 @@ export function ConfirmSummary({
   appearance: MenuAppearance;
 }) {
   const row = (label: string, value: string) => (
-    <p className="text-sm" style={{ color: appearance.ink }}>
+    <p className="text-xs" style={{ color: appearance.ink }}>
       <span className="font-bold">{label}</span> {value}
     </p>
   );
   return (
-    <div className="space-y-2 rounded border p-3" style={{ borderColor: appearance.border, backgroundColor: appearance.surface }}>
-      <p className="text-xs" style={{ color: appearance.muted }}>
-        Controlla i dati prima di inviare l&apos;ordine.
-      </p>
+    <div className="space-y-1 rounded border p-3" style={{ borderColor: appearance.border, backgroundColor: appearance.surface }}>
       {row('Cliente:', customer.name || '-')}
       {row('Telefono:', customer.phone || '-')}
-      {row('ETA:', customer.pickupEta ? formatDatetimeLocal(customer.pickupEta) : '-')}
+      {row('Ritiro:', customer.pickupEta ? formatDatetimeLocal(customer.pickupEta) : '-')}
       {row('Note:', customer.notes || '-')}
     </div>
   );

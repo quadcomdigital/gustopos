@@ -1,5 +1,6 @@
 import type { PublicMenuResponse, PublicMenuModuleConfig } from '@gustopos/shared';
 import { darkenToContrast, mix, readableOn } from './brand/tokens';
+import { resolveMenuLayout } from './presets';
 import type { MenuAppearance, MenuSectionId, MenuShellData, PublicBrandOverride } from './types';
 
 /** Schema default accent; an explicit config value always wins over a brand. */
@@ -54,6 +55,7 @@ export function buildAppearance(
     muted: brand.muted ?? GENERIC_SURFACE.muted,
     currency: config.currency || menu.branding.currency || 'EUR',
     preset: config.preset,
+    layout: resolveMenuLayout(config.preset),
     tagline: config.content?.tagline || config.brandTagline,
     logoUrl,
     heroImageUrl: config.heroImageUrl || menu.branding.heroImageUrl,

@@ -2,8 +2,9 @@ import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { ShoppingBag, X } from 'lucide-react';
 import type { CartDrawerProps } from '../types';
+import { useDrawerChrome } from '../lib/useDrawerChrome';
 import {
-  AccountBlock,
+  AccountPrompt,
   CartEmpty,
   CartLine,
   CheckoutStepper,
@@ -31,6 +32,7 @@ export default function CartDrawer({
   onDecrement,
   onRemove,
   optionNameById,
+  ingredientNameById,
   takeawayConfig,
   submitting,
   successId,
@@ -40,8 +42,10 @@ export default function CartDrawer({
   customer,
   auth,
 }: CartDrawerProps) {
+  useDrawerChrome(onClose);
+
   return (
-    <div className="fixed inset-0 z-[60] flex justify-end">
+    <div className="fixed inset-0 z-[60] flex justify-end overflow-hidden" role="dialog" aria-modal="true" aria-label="Il tuo ordine">
       <motion.button
         type="button"
         initial={{ opacity: 0 }}
@@ -56,7 +60,7 @@ export default function CartDrawer({
         animate={{ x: 0 }}
         exit={{ x: '100%' }}
         transition={{ type: 'spring', damping: 24, stiffness: 190 }}
-        className="relative flex h-full w-full max-w-md flex-col shadow-2xl"
+        className="relative flex h-full w-full flex-col shadow-2xl sm:max-w-lg"
         style={{ backgroundColor: appearance.surface }}
       >
         <div
@@ -84,7 +88,7 @@ export default function CartDrawer({
           </div>
         )}
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4">
           {cart.length === 0 ? (
             <CartEmpty appearance={appearance} onBrowse={onClose} />
           ) : checkoutStep === 'cart' ? (
@@ -96,26 +100,31 @@ export default function CartDrawer({
                   currency={currency}
                   formatPrice={formatPrice}
                   optionNameById={optionNameById}
+                  ingredientNameById={ingredientNameById}
                   onIncrement={onIncrement}
                   onDecrement={onDecrement}
                   onRemove={onRemove}
                 />
               </motion.div>
             ))
-          ) : checkoutStep === 'customer' ? (
-            <div className="space-y-3">
-              <AccountBlock auth={auth} appearance={appearance} />
-              <CustomerFields customer={customer} takeawayConfig={takeawayConfig} appearance={appearance} />
-            </div>
           ) : (
-            <ConfirmSummary customer={customer} appearance={appearance} />
+            <div className="space-y-3">
+              <CustomerFields customer={customer} takeawayConfig={takeawayConfig} appearance={appearance} />
+              <ConfirmSummary customer={customer} appearance={appearance} />
+              {/* Accounts are offered at checkout, never required before it. */}
+              <AccountPrompt auth={auth} appearance={appearance} />
+            </div>
           )}
         </div>
 
         {cart.length > 0 && (
           <div
             className="space-y-3 border-t p-4"
-            style={{ backgroundColor: appearance.pageBg, borderColor: appearance.border }}
+            style={{
+              backgroundColor: appearance.pageBg,
+              borderColor: appearance.border,
+              paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
+            }}
           >
             <div className="flex items-center justify-between text-sm">
               <span style={{ color: appearance.muted }}>Totale</span>
@@ -130,22 +139,17 @@ export default function CartDrawer({
             </div>
             <button
               type="button"
-              onClick={onSubmit}
-              disabled={submitting || Boolean(blockedReason) || checkoutStep !== 'confirm'}
+              onClick={() => (checkoutStep === 'confirm' ? onSubmit() : setCheckoutStep('confirm'))}
+              disabled={submitting || (checkoutStep === 'confirm' && Boolean(blockedReason))}
               className="min-h-[48px] w-full rounded-xl text-xs font-extrabold uppercase tracking-[0.14em] transition-colors disabled:opacity-50"
               style={{ backgroundColor: appearance.accent, color: appearance.accentForeground }}
             >
-              {submitting ? 'Invio…' : 'Conferma ordine takeaway'}
+              {submitting ? 'Invio…' : checkoutStep === 'confirm' ? 'Conferma ordine takeaway' : 'Vai alla conferma'}
             </button>
-            {checkoutStep !== 'confirm' && (
-              <p className="text-xs" style={{ color: appearance.muted }}>
-                Completa gli step e apri &quot;Conferma&quot; per inviare l&apos;ordine.
-              </p>
-            )}
             {blockedReason && <p className="text-xs text-amber-700">{blockedReason}</p>}
             {submitError && <p className="text-xs text-rose-600">{submitError}</p>}
             {successId && (
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <p className="text-xs font-semibold text-emerald-600">Ordine inviato (ID: {successId})</p>
                 <Link
                   className="text-xs font-semibold underline"
@@ -154,6 +158,11 @@ export default function CartDrawer({
                 >
                   Traccia ordine
                 </Link>
+                <AccountPrompt
+                  auth={auth}
+                  appearance={appearance}
+                  label="Crea un account per ritrovare l'ordine"
+                />
               </div>
             )}
           </div>

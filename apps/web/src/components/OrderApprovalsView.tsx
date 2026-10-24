@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { GroupOrderReviewQueueEntry } from '@gustopos/shared';
-import { fetchGroupOrderDrafts, reviewGroupOrderDraft } from '../shared/api/client';
+import { fetchOrderDrafts, reviewOrderDraft } from '../shared/api/client';
 
 function formatEuro(value: number): string {
   return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(value);
 }
+
+const REFRESH_MS = 20_000;
+
+const SOURCE_LABEL: Record<GroupOrderReviewQueueEntry['source'], string> = {
+  group_order: 'Ordine di gruppo',
+  takeaway: 'Asporto online',
+};
 
 type LinesByParticipant = Map<string, { name: string; lines: GroupOrderReviewQueueEntry['items'] }>;
 
@@ -20,10 +27,16 @@ function groupByParticipant(entry: GroupOrderReviewQueueEntry): LinesByParticipa
 }
 
 /**
- * Staff review queue for public group orders. A submitted group order is a
- * DRAFT: nothing is printed or deducted until someone approves it here.
+ * Staff approval inbox for EVERY public draft still waiting: group orders and
+ * public takeaway orders alike.
+ *
+ * A submitted draft is not a real order yet — nothing is printed, deducted or
+ * sent to the kitchen until someone approves it here, and only then does it
+ * reach the POS. The list refreshes on a timer because a guest can submit at any
+ * moment: the alternative (pushing drafts over realtime) would leak unapproved
+ * orders into the POS/kitchen feeds.
  */
-export default function GroupOrderReviewView() {
+export default function OrderApprovalsView() {
   const [entries, setEntries] = useState<GroupOrderReviewQueueEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -34,7 +47,7 @@ export default function GroupOrderReviewView() {
   const load = useCallback(async () => {
     try {
       setError('');
-      setEntries(await fetchGroupOrderDrafts());
+      setEntries(await fetchOrderDrafts());
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Caricamento ordini non riuscito');
     } finally {
@@ -44,13 +57,15 @@ export default function GroupOrderReviewView() {
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, [load]);
 
   const decide = async (orderId: string, action: 'approve' | 'reject', reason?: string) => {
     setBusyId(orderId);
     setError('');
     try {
-      await reviewGroupOrderDraft(orderId, action === 'reject' ? { action, reason } : { action });
+      await reviewOrderDraft(orderId, action === 'reject' ? { action, reason } : { action });
       setRejectingId('');
       setRejectReason('');
       await load();
@@ -61,22 +76,19 @@ export default function GroupOrderReviewView() {
     }
   };
 
-  const total = useMemo(
-    () => entries.reduce((sum, entry) => sum + entry.order.total, 0),
-    [entries],
-  );
+  const total = useMemo(() => entries.reduce((sum, entry) => sum + entry.order.total, 0), [entries]);
 
   if (loading) {
-    return <div className="p-6 text-sm text-text-muted">Caricamento ordini di gruppo…</div>;
+    return <div className="p-6 text-sm text-text-muted">Caricamento ordini da approvare…</div>;
   }
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4 md:p-6">
       <header className="flex items-baseline justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold">Ordini di gruppo da approvare</h1>
+          <h1 className="text-xl font-bold">Ordini da approvare</h1>
           <p className="text-sm text-text-muted">
-            Gli ordini inviati dagli ospiti restano in bozza: la stampa parte solo dopo l’approvazione.
+            Gli ordini inviati online restano in bozza: stampa, scarico e conto partono solo dopo l&apos;approvazione.
           </p>
         </div>
         <button
@@ -94,7 +106,7 @@ export default function GroupOrderReviewView() {
 
       {entries.length === 0 ? (
         <div className="rounded-xl border border-border bg-white p-6 text-center text-sm text-text-muted">
-          Nessun ordine di gruppo in attesa.
+          Nessun ordine in attesa di approvazione.
         </div>
       ) : (
         <>
@@ -104,36 +116,72 @@ export default function GroupOrderReviewView() {
           {entries.map((entry) => {
             const grouped = groupByParticipant(entry);
             const busy = busyId === entry.order.id;
+            const isGroupOrder = entry.source === 'group_order';
             return (
               <section key={entry.order.id} className="rounded-xl border border-border bg-white p-4">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <div>
                     <p className="font-mono text-sm font-bold">{entry.order.ticketNumber ?? entry.order.id}</p>
-                    <p className="text-xs text-text-muted">{entry.order.customerName ?? 'Ospite'}</p>
+                    <p className="text-xs text-text-muted">
+                      <span className="font-semibold uppercase tracking-widest">{SOURCE_LABEL[entry.source]}</span>
+                      {entry.order.customerName ? ` · ${entry.order.customerName}` : ''}
+                      {entry.order.customerPhone ? ` · ${entry.order.customerPhone}` : ''}
+                    </p>
                   </div>
                   <strong className="tabular-nums">{formatEuro(entry.order.total)}</strong>
                 </div>
 
                 <div className="mt-3 space-y-3">
-                  {[...grouped.entries()].map(([participantId, group]) => (
-                    <div key={participantId}>
-                      <p className="text-xs font-bold uppercase tracking-widest text-text-muted">{group.name}</p>
-                      <ul className="mt-1 space-y-1">
-                        {group.lines.map((line) => (
-                          <li key={line.id} className="flex items-baseline justify-between gap-3 text-sm">
-                            <span>
-                              {line.quantity}× {line.name}
-                              {line.selectedModifiers.length > 0 && (
-                                <span className="text-text-muted"> · {line.selectedModifiers.length} modificatori</span>
-                              )}
-                            </span>
-                            <span className="tabular-nums text-text-muted">{formatEuro(line.price * line.quantity)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
+                  {isGroupOrder ? (
+                    [...grouped.entries()].map(([participantId, group]) => (
+                      <div key={participantId}>
+                        <p className="text-xs font-bold uppercase tracking-widest text-text-muted">{group.name}</p>
+                        <ul className="mt-1 space-y-1">
+                          {group.lines.map((line) => (
+                            <li key={line.id} className="flex items-baseline justify-between gap-3 text-sm">
+                              <span>
+                                {line.quantity}× {line.name}
+                                {line.ingredientOverrideLabels.length > 0 && (
+                                  <span className="font-semibold text-amber-700">
+                                    {' '}
+                                    ({line.ingredientOverrideLabels.join(', ')})
+                                  </span>
+                                )}
+                                {line.selectedModifiers.length > 0 && (
+                                  <span className="text-text-muted"> · {line.selectedModifiers.length} modificatori</span>
+                                )}
+                              </span>
+                              <span className="tabular-nums text-text-muted">{formatEuro(line.price * line.quantity)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))
+                  ) : (
+                    <ul className="space-y-1">
+                      {entry.items.map((line) => (
+                        <li key={line.id} className="flex items-baseline justify-between gap-3 text-sm">
+                          <span>
+                            {line.quantity}× {line.name}
+                            {line.ingredientOverrideLabels.length > 0 && (
+                              <span className="font-semibold text-amber-700">
+                                {' '}
+                                ({line.ingredientOverrideLabels.join(', ')})
+                              </span>
+                            )}
+                          </span>
+                          <span className="tabular-nums text-text-muted">{formatEuro(line.price * line.quantity)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
+
+                {entry.order.notes && (
+                  <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <span className="font-bold uppercase tracking-widest">Nota ordine</span> · {entry.order.notes}
+                  </p>
+                )}
 
                 {rejectingId === entry.order.id ? (
                   <div className="mt-4 space-y-2">
