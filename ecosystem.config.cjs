@@ -2,9 +2,10 @@ module.exports = {
   apps: [
     {
       name: "gustopos-api",
-      cwd: "/srv/gustopos",
-      script: "npm",
-      args: "run start --workspace @gustopos/api",
+      // Node diretto invece di `npm run start --workspace ...`: npm resta
+      // residente come wrapper (~60 MB RSS per app) senza servire a nulla.
+      cwd: "/srv/gustopos/apps/api",
+      script: "start.js",
       env: {
         NODE_ENV: "production",
         PORT: "11901",
@@ -29,9 +30,9 @@ module.exports = {
       // claim (and spool to disk) a job that belongs to a Go agent. Printing
       // is driven by the Go agent claiming station-id areas from the API.
       name: "gustopos-print-bridge",
-      cwd: "/srv/gustopos",
-      script: "npm",
-      args: "run start --workspace @gustopos/print-bridge",
+      // Node diretto (vedi gustopos-api): nessun wrapper npm.
+      cwd: "/srv/gustopos/apps/print-bridge",
+      script: "dist/server.js",
       env: {
         NODE_ENV: "production",
         PRINT_BRIDGE_PORT: "11905",
@@ -57,13 +58,14 @@ module.exports = {
     },
     {
       name: "gustopos-web",
-      cwd: "/srv/gustopos",
-      script: "npm",
+      // Node diretto sul bin di Vite (vedi gustopos-api): nessun wrapper npm.
       // Production static server for the built `dist/`. nginx also serves
       // `dist/` directly; this PM2 app keeps the direct :11900 path alive
       // (with /api + /socket.io proxied) without running Vite in dev mode.
       // Rebuild with `npm run build --workspace @gustopos/web` before restart.
-      args: "run preview --workspace @gustopos/web",
+      cwd: "/srv/gustopos/apps/web",
+      script: "/srv/gustopos/node_modules/vite/bin/vite.js",
+      args: "preview",
       env: {
         NODE_ENV: "production",
         VITE_WEB_PORT: "11900",
