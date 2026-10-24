@@ -157,6 +157,30 @@ type HeartbeatResponse struct {
 	// configured a device in the web UI. Applied over the local config on
 	// receipt so the server remains the source of truth for host/port/model.
 	FiscalPrinter *FiscalPrinter `json:"fiscalPrinter,omitempty"`
+	// FiscalDepartments istruisce il gate comunicante: protocollo attivo e
+	// reparti già risolti per quel protocollo (numero, aliquota, natura,
+	// categorie). Nessun codice di comando: serve a validare/loggare la
+	// mappatura, mentre i frame restano composti dal server.
+	FiscalDepartments *FiscalDepartmentBriefing `json:"fiscalDepartments,omitempty"`
+}
+
+// FiscalDepartmentBriefing è il briefing dei reparti inviato dal server.
+type FiscalDepartmentBriefing struct {
+	ProtocolID           string             `json:"protocolId"`
+	RequiresAgentVersion string             `json:"requiresAgentVersion,omitempty"`
+	DefaultDepartment    *int               `json:"defaultDepartment,omitempty"`
+	Departments          []FiscalDepartment `json:"departments"`
+}
+
+// FiscalDepartment è un reparto del RT con le categorie gustopos che vi
+// confluiscono.
+type FiscalDepartment struct {
+	Department  int      `json:"department"`
+	Label       string   `json:"label,omitempty"`
+	VatRate     *int     `json:"vatRate,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	CategoryIDs []string `json:"categoryIds,omitempty"`
+	IsDefault   bool     `json:"isDefault,omitempty"`
 }
 
 // BridgeCommand is a one-shot instruction pushed by the API in the heartbeat
@@ -260,9 +284,12 @@ func (a *API) ClaimFiscal(bridgeID string, limit int) ([]FiscalJob, error) {
 	return out.Jobs, err
 }
 
-func (a *API) CompleteFiscal(bridgeID, jobID, progressive string) error {
+// CompleteFiscal reports the exchanges observed on the device. The server
+// decodes them (checksum, <DATA_ANSW>, progressive, counters): the agent does
+// not interpret fiscal responses.
+func (a *API) CompleteFiscal(bridgeID, jobID string, response RTResponse) error {
 	return a.do(http.MethodPost, "/api/fiscal-bridge/jobs/"+url.PathEscape(jobID)+"/complete",
-		map[string]any{"bridgeId": bridgeID, "progressive": progressive}, nil)
+		map[string]any{"bridgeId": bridgeID, "response": response}, nil)
 }
 
 func (a *API) FailFiscal(bridgeID, jobID, errMsg string) error {

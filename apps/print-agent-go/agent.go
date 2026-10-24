@@ -7,6 +7,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,13 @@ type Agent struct {
 	lastCommandID string
 	// Throttles the "fiscal claim skipped" log to state changes only.
 	lastFiscalSkipAreas string
+	// fiscalBriefing è l'istruzione ricevuta dal server: protocollo attivo e
+	// reparti risolti per quel protocollo. L'agente la usa per loggare/validare
+	// la mappatura; i comandi restano composti dal server.
+	fiscalBriefing *FiscalDepartmentBriefing
+	// lastFiscalBriefing è la firma dell'ultimo briefing loggato, per non
+	// ripetere la stessa riga a ogni heartbeat.
+	lastFiscalBriefing string
 	// Cursor of the last log entry shipped to the API (diagnostics).
 	lastShippedSeq int64
 	// lastHeartbeatUnix lets an external watchdog detect a stalled agent.
@@ -629,22 +637,92 @@ func (a *Agent) applyHeartbeatConfig(response *HeartbeatResponse) {
 	// device config saved in the web UI. Apply it over the local config so the
 	// admin never has to touch the agent's config file.
 	if response.FiscalPrinter != nil && response.FiscalPrinter.Host != "" {
-		local := a.cfg.FiscalPrinter
-		if local == nil {
-			local = &FiscalPrinter{}
-		}
-		server := response.FiscalPrinter
-		local.Enabled = server.Enabled
-		local.Model = server.Model
-		local.Host = server.Host
-		if server.Port > 0 {
-			local.Port = server.Port
-		}
-		a.cfg.FiscalPrinter = local
+		a.cfg.FiscalPrinter = mergeServerFiscalPrinter(a.cfg.FiscalPrinter, response.FiscalPrinter)
 	}
+	// Briefing dei reparti: il gate comunicante ci dice su quale protocollo è
+	// configurato il locale e come sono mappati i reparti. L'agente lo logga (e
+	// avvisa se richiede un binary più nuovo): così una diagnosi è possibile
+	// anche senza guardare la UI, e nessun codice di dialetto è in ballo.
+	a.applyFiscalBriefing(response.FiscalDepartments)
 	if err := a.cfg.Save(); err != nil {
 		log.Printf("could not persist server bridge configuration: %v", err)
 	}
+}
+
+// mergeServerFiscalPrinter applica la configurazione del server su quella
+// locale. Il server è la fonte di verità per dispositivo e collegamento (TCP o
+// seriale, con il suo baud), ma un valore che non manda non è un ordine di
+// azzerare: baud/porta a 0 lasciano quelli già in uso.
+func mergeServerFiscalPrinter(local *FiscalPrinter, server *FiscalPrinter) *FiscalPrinter {
+	if local == nil {
+		local = &FiscalPrinter{}
+	}
+	local.Enabled = server.Enabled
+	local.Model = server.Model
+	local.Host = server.Host
+	local.Transport = server.Transport
+	if server.Baud > 0 {
+		local.Baud = server.Baud
+	}
+	if server.Port > 0 {
+		local.Port = server.Port
+	}
+	return local
+}
+
+// applyFiscalBriefing registra l'istruzione del server sui reparti del RT.
+func (a *Agent) applyFiscalBriefing(briefing *FiscalDepartmentBriefing) {
+	if briefing == nil {
+		return
+	}
+	signature := fiscalBriefingSignature(briefing)
+	a.mu.Lock()
+	changed := a.lastFiscalBriefing != signature
+	a.lastFiscalBriefing = signature
+	a.fiscalBriefing = briefing
+	a.mu.Unlock()
+	if !changed {
+		return
+	}
+	fallback := "nessuno"
+	if briefing.DefaultDepartment != nil {
+		fallback = strconv.Itoa(*briefing.DefaultDepartment)
+	}
+	log.Printf("fiscal briefing: protocol=%s reparti=%d ripiego=%s", briefing.ProtocolID, len(briefing.Departments), fallback)
+	for _, department := range briefing.Departments {
+		vat := "?"
+		if department.VatRate != nil {
+			vat = strconv.Itoa(*department.VatRate)
+		}
+		fallbackNote := ""
+		if department.IsDefault {
+			fallbackNote = ", ripiego"
+		}
+		log.Printf("  reparto %d: %q IVA %s, %s, %d categorie%s",
+			department.Department, department.Label, vat, department.Kind, len(department.CategoryIDs), fallbackNote)
+	}
+	if required := strings.TrimSpace(briefing.RequiresAgentVersion); required != "" && !agentVersionSatisfies(required) {
+		log.Printf("AVVISO: il protocollo %s richiede agente %s, questo è %s: i frame fiscali li compone il server, ma conviene aggiornare l'agente", briefing.ProtocolID, required, version)
+	}
+}
+
+// fiscalBriefingSignature rende confrontabile un briefing senza tenerne il
+// contenuto in una mappa: basta per capire se è cambiato.
+func fiscalBriefingSignature(briefing *FiscalDepartmentBriefing) string {
+	parts := []string{briefing.ProtocolID, briefing.RequiresAgentVersion}
+	if briefing.DefaultDepartment != nil {
+		parts = append(parts, strconv.Itoa(*briefing.DefaultDepartment))
+	}
+	for _, department := range briefing.Departments {
+		vat := "?"
+		if department.VatRate != nil {
+			vat = strconv.Itoa(*department.VatRate)
+		}
+		parts = append(parts, fmt.Sprintf("%d:%s:%s:%s:%v:%s",
+			department.Department, department.Label, vat, department.Kind, department.IsDefault,
+			strings.Join(department.CategoryIDs, ",")))
+	}
+	return strings.Join(parts, "|")
 }
 
 func (a *Agent) processJob(job PrintJob) {
