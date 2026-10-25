@@ -5,6 +5,7 @@ import {  tables, orders, orderItems, payments, paymentItems,
   menuModifierGroups, menuModifierOptions, menuModifierOptionOverrides,
   categories, categoryModifierPools, categoryModifierPoolOptions, inventory,
   printStations, printBridges, selfOrderSessions,
+  ghostOrders,
 } from "../db/schema";
 import { eq, and, ne, inArray, sql, desc, asc, gte, lte, or, like, lt, isNotNull, type SQL } from "drizzle-orm";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
@@ -438,6 +439,21 @@ export class TablesRepository {
           eq(selfOrderSessions.tableId, id),
           eq(selfOrderSessions.isActive, 1),
         ));
+
+      // A deleted table cannot keep unsent drafts alive.
+      await tx
+        .update(ghostOrders)
+        .set({
+          status: "discarded",
+          discardedAt: new Date(),
+          updatedAt: new Date(),
+          version: sql`${ghostOrders.version} + 1`,
+        })
+        .where(and(
+          eq(ghostOrders.tenantId, tenantId),
+          eq(ghostOrders.tableId, id),
+          eq(ghostOrders.status, "open"),
+        ));
     });
 
     return true;
@@ -485,6 +501,21 @@ export class TablesRepository {
       const table = tableRows[0];
       if (!table) {
         return null;
+      }
+
+      // An unsent POS draft must not be stranded by closing the table: the
+      // cashier has to send or discard it first (the ghost panel lists it).
+      const openGhosts = await tx
+        .select({ id: ghostOrders.id })
+        .from(ghostOrders)
+        .where(and(
+          eq(ghostOrders.tenantId, tenantId),
+          eq(ghostOrders.tableId, tableId),
+          eq(ghostOrders.status, "open"),
+        ))
+        .limit(1);
+      if (openGhosts.length > 0) {
+        throw new Error("Ci sono bozze non inviate su questo tavolo: inviale o scartale prima di chiudere.");
       }
 
       const openOrders = await tx
@@ -1606,6 +1637,39 @@ export class TablesRepository {
       SELECT id FROM tables
       WHERE tenant_id = ${tenantId} AND id = ${targetTableId}
       FOR UPDATE
+    `);
+
+    // Unsent ghosts follow the table. When the same waiter already has an open
+    // draft on the target, the source draft is discarded rather than silently
+    // merged (merging two carts would duplicate indistinguishable lines).
+    const targetContextKey = `dine_in:${targetTableId}`;
+    await tx.execute(sql`
+      UPDATE ghost_orders AS g
+      SET table_id = ${targetTableId},
+          table_number = ${targetTableNumber},
+          context_key = ${targetContextKey},
+          version = g.version + 1,
+          updated_at = now()
+      WHERE g.tenant_id = ${tenantId}
+        AND g.table_id = ${sourceTableId}
+        AND g.status = 'open'
+        AND NOT EXISTS (
+          SELECT 1 FROM ghost_orders AS t
+          WHERE t.tenant_id = g.tenant_id
+            AND t.context_key = ${targetContextKey}
+            AND t.owner_staff_id = g.owner_staff_id
+            AND t.status = 'open'
+        )
+    `);
+    await tx.execute(sql`
+      UPDATE ghost_orders
+      SET status = 'discarded',
+          discarded_at = now(),
+          updated_at = now(),
+          version = version + 1
+      WHERE tenant_id = ${tenantId}
+        AND table_id = ${sourceTableId}
+        AND status = 'open'
     `);
 
     const openOrders = await tx

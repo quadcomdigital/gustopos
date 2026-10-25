@@ -1,12 +1,15 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   AppData,
+  GhostOrder,
   SelfOrderSessionRotateResponse,
+  hasTenantOverride,
 } from '@gustopos/shared';
 import { cn } from '../lib/utils';
-import { X, QrCode, Link as LinkIcon, Receipt } from 'lucide-react';
+import { X, QrCode, Link as LinkIcon, Receipt, Send, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ConfirmDialog from './ConfirmDialog';
+import { useAppStore } from '../store/app-store';
 
 interface TablesViewProps {
   data: AppData;
@@ -31,6 +34,12 @@ const ORDER_STATUS_TONES: Record<string, string> = {
   served: 'bg-slate-100 text-slate-600',
 };
 
+function ghostAge(iso: string): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (minutes < 1) return 'ora';
+  return `${minutes} min`;
+}
+
 export default function TablesView({
   data,
   onSelectTable,
@@ -49,6 +58,69 @@ export default function TablesView({
   const [resumeTableNumber, setResumeTableNumber] = useState<string | null>(null);
   const [suspendPreBill, setSuspendPreBill] = useState(true);
   const [zoneFilter, setZoneFilter] = useState<string | null>(null);
+
+  // ─── Ghost orders (unsent waiter carts) ────────────────────────────────
+  const ghostOrders = useAppStore((s) => s.ghostOrders);
+  const currentUser = useAppStore((s) => s.currentUser);
+  const tenantContext = useAppStore((s) => s.tenantContext);
+  const refreshGhostOrders = useAppStore((s) => s.refreshGhostOrders);
+  const commitGhostOrder = useAppStore((s) => s.commitGhostOrder);
+  const discardGhostOrder = useAppStore((s) => s.discardGhostOrder);
+  const ghostOrdersEnabled = useMemo(
+    () => hasTenantOverride('ghostOrders', tenantContext?.tenantSlug, tenantContext?.tenantId),
+    [tenantContext?.tenantSlug, tenantContext?.tenantId],
+  );
+  const canCommitGhosts =
+    currentUser?.role === 'admin' || (currentUser?.permissions ?? []).includes('ghost_orders:commit');
+  const [ghostConfirm, setGhostConfirm] = useState<{ ghost: GhostOrder; print: boolean } | null>(null);
+  const [ghostDiscard, setGhostDiscard] = useState<GhostOrder | null>(null);
+  const [ghostBusyId, setGhostBusyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (ghostOrdersEnabled) void refreshGhostOrders();
+  }, [ghostOrdersEnabled, refreshGhostOrders]);
+
+  const handleCommitGhost = async () => {
+    if (!ghostConfirm) return;
+    const { ghost, print } = ghostConfirm;
+    setGhostBusyId(ghost.id);
+    setActionError('');
+    try {
+      await commitGhostOrder(ghost.id, {
+        expectedVersion: ghost.version,
+        expectedTotal: ghost.total,
+        print,
+      });
+      setGhostConfirm(null);
+      setActionSuccess(print ? 'Bozza inviata in cucina' : 'Bozza inviata senza stampa');
+    } catch (error) {
+      setGhostConfirm(null);
+      setActionError(error instanceof Error ? error.message : 'Invio bozza non riuscito');
+      void refreshGhostOrders();
+    } finally {
+      setGhostBusyId(null);
+    }
+  };
+
+  const handleDiscardGhost = async () => {
+    if (!ghostDiscard) return;
+    setGhostBusyId(ghostDiscard.id);
+    setActionError('');
+    try {
+      await discardGhostOrder(ghostDiscard.id, {
+        expectedVersion: ghostDiscard.version,
+        reason: 'Scartata dalla cassa',
+      });
+      setGhostDiscard(null);
+      setActionSuccess('Bozza scartata');
+    } catch (error) {
+      setGhostDiscard(null);
+      setActionError(error instanceof Error ? error.message : 'Scarto bozza non riuscito');
+      void refreshGhostOrders();
+    } finally {
+      setGhostBusyId(null);
+    }
+  };
 
   React.useEffect(() => {
     if (!actionSuccess && !actionError) return;
@@ -277,6 +349,86 @@ export default function TablesView({
         </div>
       )}
 
+      {/* Unsent carts visible to the cashier/admin. The ghost is not an order:
+          it never enters the table total and never prints until committed. */}
+      {ghostOrdersEnabled && ghostOrders.length > 0 && (
+        <section className="mb-4 rounded-xl border border-warning-700/20 bg-warning-50/60 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="text-[11px] font-bold uppercase tracking-widest text-warning-700">
+              Bozze in sala
+            </h2>
+            <span className="rounded-full bg-warning-700 px-2 py-0.5 text-[10px] font-bold text-white tabular-nums">
+              {ghostOrders.length}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {ghostOrders.map((ghost) => {
+              const busy = ghostBusyId === ghost.id;
+              return (
+                <article key={ghost.id} className="rounded-lg border border-warning-700/20 bg-white p-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-bold text-secondary">
+                        Tavolo {ghost.tableNumber} · {ghost.ownerStaffName ?? 'Cameriere'}
+                      </p>
+                      <p className="mt-0.5 text-[10px] text-text-muted tabular-nums">
+                        {ghost.itemCount} {ghost.itemCount === 1 ? 'articolo' : 'articoli'} · €{ghost.total.toFixed(2)} · {ghostAge(ghost.updatedAt)}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-warning-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-warning-700">
+                      Bozza
+                    </span>
+                  </div>
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-[10px] font-semibold text-text-muted">
+                      Vedi articoli
+                    </summary>
+                    <ul className="mt-1 space-y-0.5">
+                      {ghost.items.map((item) => (
+                        <li key={item.cartItemId} className="flex justify-between gap-2 text-[10px] text-text-muted">
+                          <span className="truncate">{item.quantity}× {item.name}</span>
+                          <span className="shrink-0 tabular-nums">€{((item.basePrice + item.modifierPriceDelta) * item.quantity).toFixed(2)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                  {canCommitGhosts && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setGhostConfirm({ ghost, print: true })}
+                        className="inline-flex min-h-[32px] items-center gap-1 rounded-full bg-accent px-2.5 text-[10px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
+                      >
+                        <Send size={11} /> Invia
+                      </button>
+                      {currentUser?.role === 'admin' && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setGhostConfirm({ ghost, print: false })}
+                          className="inline-flex min-h-[32px] items-center gap-1 rounded-full border border-border bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-text-muted disabled:opacity-50"
+                        >
+                          Senza stampa
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setGhostDiscard(ghost)}
+                        className="inline-flex min-h-[32px] items-center gap-1 rounded-full border border-red-200 bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-red-600 disabled:opacity-50"
+                      >
+                        <Trash2 size={11} /> Scarta
+                      </button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Table Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4 pr-2 pb-2">
         {visibleTables.map((table) => {
@@ -285,6 +437,10 @@ export default function TablesView({
           const isSuspended = table.status === 'suspended';
           const isOccupied = table.status === 'occupied';
           const isBusyCard = isOccupied || isSuspended;
+          const tableGhosts = ghostOrdersEnabled
+            ? ghostOrders.filter((ghost) => ghost.tableId === table.id || ghost.tableNumber === table.number)
+            : [];
+          const tableGhostCount = tableGhosts.reduce((sum, ghost) => sum + ghost.itemCount, 0);
           const statusLabel = isSuspended
             ? `Conto sospeso · €${tableTotal.toFixed(2)}`
             : isOccupied
@@ -302,6 +458,16 @@ export default function TablesView({
                     : "bg-white border-border hover:border-accent",
               )}
             >
+              {tableGhostCount > 0 && (
+                <span
+                  className={cn(
+                    "pointer-events-none absolute left-1.5 top-1.5 z-10 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider tabular-nums shadow-sm",
+                    isBusyCard ? "bg-white text-warning-700" : "bg-warning-50 text-warning-700",
+                  )}
+                >
+                  Bozza {tableGhostCount}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => onSelectTable(table.number)}
@@ -389,6 +555,34 @@ export default function TablesView({
           if (table) void handleResume(table.id);
         }}
         onCancel={() => setResumeTableNumber(null)}
+      />
+
+      {/* Ghost commit confirm */}
+      <ConfirmDialog
+        open={ghostConfirm !== null}
+        title={ghostConfirm?.print === false ? 'Inviare la bozza senza stampa?' : 'Inviare la bozza in cucina?'}
+        message={
+          ghostConfirm
+            ? `Tavolo ${ghostConfirm.ghost.tableNumber} · ${ghostConfirm.ghost.ownerStaffName ?? 'Cameriere'} · ${ghostConfirm.ghost.itemCount} articoli · €${ghostConfirm.ghost.total.toFixed(2)}.${ghostConfirm.print === false ? ' Nessun ticket verrà stampato: l’operazione è tracciata nell’audit.' : ''}`
+            : ''
+        }
+        confirmLabel={ghostConfirm?.print === false ? 'Invia senza stampa' : 'Invia'}
+        onConfirm={() => { void handleCommitGhost(); }}
+        onCancel={() => setGhostConfirm(null)}
+      />
+
+      {/* Ghost discard confirm */}
+      <ConfirmDialog
+        open={ghostDiscard !== null}
+        title="Scartare la bozza?"
+        message={
+          ghostDiscard
+            ? `La bozza di ${ghostDiscard.ownerStaffName ?? 'cameriere'} per il tavolo ${ghostDiscard.tableNumber} verrà eliminata e il carrello del cameriere svuotato.`
+            : ''
+        }
+        confirmLabel="Scarta"
+        onConfirm={() => { void handleDiscardGhost(); }}
+        onCancel={() => setGhostDiscard(null)}
       />
 
       {/* Self-Order QR Info */}

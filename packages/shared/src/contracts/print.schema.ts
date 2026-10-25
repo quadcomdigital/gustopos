@@ -72,6 +72,11 @@ export const uiSettingsSchema = z.object({
     // live registry on write (unknown/deactivated ids are dropped), so a stale
     // id can never silently swallow every ticket.
     activeStationIds: z.array(z.string()).default([]),
+    // Production stations whose ticket is ALSO enqueued on the reserved cashier
+    // station (same payload, area = cashier). Empty = no copies; this is a
+    // normal per-tenant printing setting, so it stays off for every tenant
+    // unless configured. Resolved against the live registry on write.
+    cashierCopyStationIds: z.array(z.string()).default([]),
     autoPrintKitchen: z.boolean(),
     autoPrintOnClose: z.boolean(),
     logoMode: z.enum(["none", "bitmap"]),
@@ -533,6 +538,7 @@ export const defaultUiSettings: UiSettings = {
   printing: {
     protocol: "escpos",
     activeStationIds: [],
+    cashierCopyStationIds: [],
     autoPrintKitchen: true,
     autoPrintOnClose: false,
     logoMode: "none",

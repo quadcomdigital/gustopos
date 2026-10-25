@@ -117,13 +117,25 @@ import {
   type VoidOrderRequest,
   type VoidOrderResponse,
   type UpdateOrderRequest,
+  ghostOrderSchema,
+  ghostOrderCreateRequestSchema,
+  ghostOrderPatchRequestSchema,
+  ghostOrderDiscardRequestSchema,
+  ghostOrderCommitRequestSchema,
+  ghostOrderListResponseSchema,
+  type GhostOrder,
+  type GhostOrderCreateRequest,
+  type GhostOrderPatchRequest,
+  type GhostOrderDiscardRequest,
+  type GhostOrderCommitRequest,
+  type GhostOrderItem,
   defaultUiSettings,
   convertUnit,
 } from "@gustopos/shared";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, or, SQL, sql, lt} from "drizzle-orm";
 import { Injectable, Inject } from "@nestjs/common";
 import crypto from "node:crypto";
-import { db, withTenantTx } from "../db/client";
+import { db, withTenantTx, type DbClient } from "../db/client";
 import { getTenantIdOrDefault } from "../tenant/tenant-context.store";
 import { hasTenantOverrideFor } from "../tenant/tenant-overrides";
 import { assertOrderStatusTransition } from "../orders/order-status-policy";
@@ -167,9 +179,17 @@ import {
   prepItems,
   inventoryUnitConversions,
   orderStockImpacts,
+  ghostOrders,
+  ghostOrderItems,
   printBridges,
   printBridgeOnboardingSecrets,
 } from "../db/schema";
+import {
+  GhostOrderConflictError,
+  GhostOrderForbiddenError,
+  GhostOrderInvalidError,
+  GhostOrderNotFoundError,
+} from "../orders/ghost-order-errors";
 import { StaffRepository } from "./staff.repository";
 import { ShiftsRepository } from "./shifts.repository";
 import { SuppliersRepository } from "./suppliers.repository";
@@ -297,7 +317,8 @@ function resolvePublicMenuScaffoldKey(slug: string, tenantId: string): string | 
 }
 
 @Injectable()
-export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number(process.env.SELF_ORDER_TOKEN_TTL_MINUTES ?? 30);
+export class AppRepository {
+  private readonly selfOrderTokenTtlMinutes = Number(process.env.SELF_ORDER_TOKEN_TTL_MINUTES ?? 30);
   private readonly takeawayTrackingTtlMinutes = Number(process.env.PUBLIC_TAKEAWAY_TRACKING_TTL_MINUTES ?? 360);
 
   private readonly settingsKey = "global_ui_settings";
@@ -417,6 +438,12 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     settings.printing.activeStationIds = sanitizeActiveStationIds(
       settings.printing.activeStationIds,
       new Set(activeStations.map((station) => station.id)),
+    );
+    // Copies to the cashier are production-only and must point at live zones;
+    // the cashier station itself can never be its own copy source.
+    settings.printing.cashierCopyStationIds = sanitizeActiveStationIds(
+      settings.printing.cashierCopyStationIds,
+      new Set(activeStations.filter((station) => station.kind === "production").map((station) => station.id)),
     );
     this.validatePrintingSettings(settings);
   }
@@ -1012,6 +1039,13 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
     const stationKindById = new Map(activeStations.map((station) => [station.id, station.kind]));
     const allowedFilter = settings.printing.activeStationIds;
     const isAllowed = (id: string) => activeStationIds.has(id) && (allowedFilter.length === 0 || allowedFilter.includes(id));
+    // Reserved cashier station: receives receipts/pre-bills and the copies of
+    // production tickets listed in `printing.cashierCopyStationIds`. Null when
+    // the tenant has no active cashier station or it was excluded by the
+    // "which zones print" filter — in that case no copy is produced.
+    const cashierStation = activeStations.find(
+      (station) => station.kind === "cashier" && isAllowed(station.id),
+    ) ?? null;
 
     // Production reference ("contenitore") resolution for the RIEPILOGO tally.
     // Precedence: main modifier (lowest sort_order) > product > category.
@@ -1149,35 +1183,58 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         : selectedItems;
       if (stationItems.length === 0) return [];
       const { summary: referenceSummary, total: totalItems } = buildReferenceSummary(stationItems);
-      return [{
+      const payload = this.buildStationTicketPayload({
+        order,
+        waiterName,
+        station,
+        items: stationItems,
+        summary: referenceSummary,
+        totalItems,
+        settings,
+        priceDeltaByOptionId,
+        roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
+        // `stationNotes2x1` (casale): item notes print at GS 2x1.
+        notes2x1: hasTenantOverrideFor("stationNotes2x1"),
+        // `stationHideComandaLine` (casale): production comanda drops the
+        // `Comanda:` line. `stationTable2x1` (casale): table number at GS 2x1.
+        hideComandaLine: hasTenantOverrideFor("stationHideComandaLine"),
+        table2x1: hasTenantOverrideFor("stationTable2x1"),
+      });
+      const job = {
         id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
         tenantId,
         orderId: order.id,
         area: station.id,
         protocol: settings.printing.protocol,
         status: "pending" as const,
-        payload: this.buildStationTicketPayload({
-          order,
-          waiterName,
-          station,
-          items: stationItems,
-          summary: referenceSummary,
-          totalItems,
-          settings,
-          priceDeltaByOptionId,
-          roundLabels: roundsPresentationEnabled ? roundsConfig.labels : undefined,
-          // `stationNotes2x1` (casale): item notes print at GS 2x1.
-          notes2x1: hasTenantOverrideFor("stationNotes2x1"),
-          // `stationHideComandaLine` (casale): production comanda drops the
-          // `Comanda:` line. `stationTable2x1` (casale): table number at GS 2x1.
-          hideComandaLine: hasTenantOverrideFor("stationHideComandaLine"),
-          table2x1: hasTenantOverrideFor("stationTable2x1"),
-        }),
+        payload,
         error: null,
         createdAt: now,
         updatedAt: now,
         dispatchedAt: null,
-      }];
+      };
+
+      // `cashierCopyStationIds`: enqueue the SAME production ticket on the
+      // cashier station (bar tickets also reach the till). The copy keeps the
+      // original station layout/name — only the routing area changes. It is
+      // skipped when there is no active cashier station or the cashier itself
+      // is the source.
+      if (
+        station.kind === "production"
+        && settings.printing.cashierCopyStationIds.includes(station.id)
+        && cashierStation
+        && cashierStation.id !== station.id
+      ) {
+        return [
+          job,
+          {
+            ...job,
+            id: `pj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            area: cashierStation.id,
+          },
+        ];
+      }
+      return [job];
     });
 
     if (jobs.length === 0) return;
@@ -1956,6 +2013,8 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       });
     }
 
+    const ghostOrders = hasTenantOverrideFor("ghostOrders") ? await this.listGhostOrders() : [];
+
     return appDataSchema.parse({
       staff: publicStaff,
       tables: mappedTables,
@@ -1965,6 +2024,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       orders: mappedOrders,
       categories: mappedCategories,
       categoryModifierPools: categoryModifierPoolsResult,
+      ghostOrders,
     });
   }
 
@@ -4028,7 +4088,29 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
   }
 
 
+  /**
+   * Public order creation. The whole order + stock + table mutation is one
+   * transaction; print jobs are created immediately after it, exactly as
+   * before. `createOrderTx` is also used by the ghost-order commit so that a
+   * draft can become an order atomically with its own deletion.
+   */
   async createOrder(payload: CreateOrderRequest): Promise<{ order: Order; inventory: Ingredient[] }> {
+    const parsed = createOrderRequestSchema.parse(payload);
+    const result = await withTenantTx((tx) => this.createOrderTx(parsed, tx, { skipPrint: true }));
+    await this.createPrintJobsForOrder(result.order);
+    return result;
+  }
+
+  /**
+   * Transactional core of order creation. It deliberately does NOT print:
+   * callers decide when to enqueue station tickets (normal send: immediately
+   * after commit; ghost commit: after the draft has been marked committed).
+   */
+  private async createOrderTx(
+    payload: CreateOrderRequest,
+    tx: DbClient,
+    options: { skipPrint?: boolean } = {},
+  ): Promise<{ order: Order; inventory: Ingredient[] }> {
     const parsed = createOrderRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
     const orderType: OrderType = parsed.orderType ?? "dine_in";
@@ -4096,7 +4178,7 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
       timestamp: new Date().toISOString(),
     });
 
-    const updatedInventory = await withTenantTx(async (tx) => {
+    const updatedInventory = await (async () => {
       await tx.insert(orders).values({
         id: order.id,
         tenantId,
@@ -4712,11 +4794,697 @@ export class AppRepository {  private readonly selfOrderTokenTtlMinutes = Number
         isActive: row.isActive === 1,
         isStockTracked: row.isStockTracked == null || row.isStockTracked === 1,
       }));
-    });
+    })();
 
-    await this.createPrintJobsForOrder(order);
+    if (!options.skipPrint) {
+      await this.createPrintJobsForOrder(order);
+    }
 
     return { order, inventory: updatedInventory };
+  }
+
+  // ─── Ghost orders (unsent POS drafts) ───────────────────────────────────
+  //
+  // A ghost is the server-side mirror of a waiter's cart. It is intentionally
+  // not an order: no kitchen feed, no stock, no print, no table status. The
+  // only transition to a real order is `commitGhostOrder`, which runs inside
+  // the same transaction as the draft's tombstone update.
+
+  private async loadGhostOrderItems(
+    tx: DbClient,
+    tenantId: string,
+    ghostOrderId: string,
+  ): Promise<GhostOrderItem[]> {
+    const rows = await tx
+      .select()
+      .from(ghostOrderItems)
+      .where(and(
+        eq(ghostOrderItems.tenantId, tenantId),
+        eq(ghostOrderItems.ghostOrderId, ghostOrderId),
+      ))
+      .orderBy(asc(ghostOrderItems.sortOrder), asc(ghostOrderItems.createdAt));
+
+    return rows.map((row) => ({
+      cartItemId: row.cartItemId,
+      menuItemId: row.menuItemId,
+      name: row.name,
+      basePrice: Number(row.basePrice),
+      quantity: row.quantity,
+      ...(row.round != null ? { round: row.round } : {}),
+      notes: row.notes ?? "",
+      ingredientOverrides: parseIngredientOverrides(row.ingredientOverrides),
+      selectedModifiers: parseSelectedModifiers(row.selectedModifiers),
+      modifierPriceDelta: Number(row.modifierPriceDelta),
+      ...(row.skipKitchenPrint === 1 ? { skipKitchenPrint: true } : {}),
+    }));
+  }
+
+  private async mapGhostOrderRows(
+    tx: DbClient,
+    rows: Array<{ ghost: typeof ghostOrders.$inferSelect; ownerName?: string | null }>,
+  ): Promise<GhostOrder[]> {
+    if (rows.length === 0) return [];
+    const tenantId = getTenantIdOrDefault();
+    const ids = rows.map((row) => row.ghost.id);
+    const itemRows = await tx
+      .select()
+      .from(ghostOrderItems)
+      .where(and(
+        eq(ghostOrderItems.tenantId, tenantId),
+        inArray(ghostOrderItems.ghostOrderId, ids),
+      ))
+      .orderBy(asc(ghostOrderItems.sortOrder), asc(ghostOrderItems.createdAt));
+
+    const itemsByGhostId = new Map<string, GhostOrderItem[]>();
+    for (const row of itemRows) {
+      const list = itemsByGhostId.get(row.ghostOrderId) ?? [];
+      list.push({
+        cartItemId: row.cartItemId,
+        menuItemId: row.menuItemId,
+        name: row.name,
+        basePrice: Number(row.basePrice),
+        quantity: row.quantity,
+        ...(row.round != null ? { round: row.round } : {}),
+        notes: row.notes ?? "",
+        ingredientOverrides: parseIngredientOverrides(row.ingredientOverrides),
+        selectedModifiers: parseSelectedModifiers(row.selectedModifiers),
+        modifierPriceDelta: Number(row.modifierPriceDelta),
+        ...(row.skipKitchenPrint === 1 ? { skipKitchenPrint: true } : {}),
+      });
+      itemsByGhostId.set(row.ghostOrderId, list);
+    }
+
+    return rows.map(({ ghost, ownerName }) => ghostOrderSchema.parse({
+      id: ghost.id,
+      contextKey: ghost.contextKey,
+      ownerStaffId: ghost.ownerStaffId,
+      ...(ownerName ? { ownerStaffName: ownerName } : {}),
+      orderType: "dine_in",
+      tableId: ghost.tableId,
+      tableNumber: ghost.tableNumber,
+      status: ghost.status,
+      version: ghost.version,
+      items: itemsByGhostId.get(ghost.id) ?? [],
+      total: Number(ghost.total),
+      itemCount: ghost.itemCount,
+      ...(ghost.committedOrderId ? { committedOrderId: ghost.committedOrderId } : {}),
+      ...(ghost.committedAt ? { committedAt: ghost.committedAt.toISOString() } : {}),
+      ...(ghost.discardedAt ? { discardedAt: ghost.discardedAt.toISOString() } : {}),
+      createdAt: ghost.createdAt.toISOString(),
+      updatedAt: ghost.updatedAt.toISOString(),
+    }));
+  }
+
+  private async validateGhostItems(
+    tx: DbClient,
+    tenantId: string,
+    items: GhostOrderItem[],
+  ): Promise<{ total: number; itemCount: number }> {
+    if (items.length === 0) {
+      throw new GhostOrderInvalidError("A ghost order needs at least one item");
+    }
+
+    const seenCartIds = new Set<string>();
+    for (const item of items) {
+      if (seenCartIds.has(item.cartItemId)) {
+        throw new GhostOrderInvalidError("Duplicate cart line in ghost order");
+      }
+      seenCartIds.add(item.cartItemId);
+    }
+
+    const menuIds = [...new Set(items.map((item) => item.menuItemId))];
+    const menuRows = await tx
+      .select({ id: menuItems.id, name: menuItems.name, isActive: menuItems.isActive })
+      .from(menuItems)
+      .where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuIds)));
+    const menuById = new Map(menuRows.map((row) => [row.id, row]));
+
+    for (const item of items) {
+      const menuItem = menuById.get(item.menuItemId);
+      if (!menuItem) {
+        throw new GhostOrderInvalidError(`Menu item "${item.name}" not found in catalog`);
+      }
+      if (menuItem.isActive !== 1) {
+        throw new GhostOrderInvalidError(`Menu item "${menuItem.name}" is not active`);
+      }
+    }
+
+    const total = items.reduce(
+      (sum, item) => sum + (item.basePrice + item.modifierPriceDelta) * item.quantity,
+      0,
+    );
+    const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
+    return { total: Number(total.toFixed(2)), itemCount };
+  }
+
+  private async resolveGhostTable(
+    tx: DbClient,
+    tenantId: string,
+    tableId: string,
+  ): Promise<typeof tables.$inferSelect> {
+    const rows = await tx
+      .select()
+      .from(tables)
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId), eq(tables.isActive, 1)))
+      .limit(1);
+    const table = rows[0];
+    if (!table || table.isVirtual === 1) {
+      throw new GhostOrderInvalidError("Ghost orders can only be bound to an active physical table");
+    }
+    return table;
+  }
+
+  async listGhostOrders(): Promise<GhostOrder[]> {
+    const tenantId = getTenantIdOrDefault();
+    const rows = await db
+      .select({ ghost: ghostOrders, ownerName: staff.name })
+      .from(ghostOrders)
+      .leftJoin(staff, and(eq(staff.tenantId, ghostOrders.tenantId), eq(staff.id, ghostOrders.ownerStaffId)))
+      .where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.status, "open")))
+      .orderBy(desc(ghostOrders.updatedAt));
+    return ghostOrderListResponseSchema.parse(await this.mapGhostOrderRows(db, rows));
+  }
+
+  async getGhostOrderById(id: string): Promise<GhostOrder | null> {
+    return this.getGhostOrderByIdTx(db, id);
+  }
+
+  /**
+   * Guard against the legacy/direct send path duplicating an open draft.
+   * Returns the open ghost only when the incoming order payload matches it
+   * exactly, so a genuinely different direct send is not blocked.
+   */
+  async findOpenGhostMatchingOrder(
+    staffId: string,
+    tableNumber: string,
+    items: CreateOrderRequest["items"],
+  ): Promise<GhostOrder | null> {
+    const tenantId = getTenantIdOrDefault();
+    const tableRows = await db
+      .select({ id: tables.id })
+      .from(tables)
+      .where(and(
+        eq(tables.tenantId, tenantId),
+        eq(tables.number, tableNumber),
+        eq(tables.isActive, 1),
+        eq(tables.isVirtual, 0),
+      ))
+      .limit(1);
+    const tableId = tableRows[0]?.id;
+    if (!tableId) return null;
+
+    const rows = await db
+      .select({ id: ghostOrders.id })
+      .from(ghostOrders)
+      .where(and(
+        eq(ghostOrders.tenantId, tenantId),
+        eq(ghostOrders.tableId, tableId),
+        eq(ghostOrders.ownerStaffId, staffId),
+        eq(ghostOrders.status, "open"),
+      ))
+      .limit(1);
+    const ghostId = rows[0]?.id;
+    if (!ghostId) return null;
+
+    const ghost = await this.getGhostOrderById(ghostId);
+    if (!ghost) return null;
+
+    const normalize = (list: Array<{
+      id?: string;
+      menuItemId?: string;
+      quantity: number;
+      notes?: string | null;
+      round?: number | null;
+      skipKitchenPrint?: boolean;
+      selectedModifiers?: Array<{ groupId: string; optionId: string }>;
+      ingredientOverrides?: Array<{ ingredientId: string; action: string }>;
+    }>) => list.map((item) => JSON.stringify({
+      menuItemId: item.menuItemId ?? item.id,
+      quantity: item.quantity,
+      notes: item.notes ?? "",
+      round: item.round ?? null,
+      skipKitchenPrint: item.skipKitchenPrint === true,
+      selectedModifiers: [...(item.selectedModifiers ?? [])]
+        .map((mod) => `${mod.groupId}:${mod.optionId}`)
+        .sort(),
+      ingredientOverrides: [...(item.ingredientOverrides ?? [])]
+        .map((override) => `${override.ingredientId}:${override.action}`)
+        .sort(),
+    })).sort();
+
+    return JSON.stringify(normalize(ghost.items)) === JSON.stringify(normalize(items))
+      ? ghost
+      : null;
+  }
+
+  private async getGhostOrderByIdTx(tx: DbClient, id: string): Promise<GhostOrder | null> {
+    const tenantId = getTenantIdOrDefault();
+    const rows = await tx
+      .select({ ghost: ghostOrders, ownerName: staff.name })
+      .from(ghostOrders)
+      .leftJoin(staff, and(eq(staff.tenantId, ghostOrders.tenantId), eq(staff.id, ghostOrders.ownerStaffId)))
+      .where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, id)))
+      .limit(1);
+    if (rows.length === 0) return null;
+    const [mapped] = await this.mapGhostOrderRows(tx, rows);
+    return mapped ?? null;
+  }
+
+  async createGhostOrder(
+    payload: GhostOrderCreateRequest,
+    ownerStaffId: string,
+  ): Promise<GhostOrder> {
+    const parsed = ghostOrderCreateRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+
+    return withTenantTx(async (tx) => {
+      const table = await this.resolveGhostTable(tx, tenantId, parsed.tableId);
+      const contextKey = `dine_in:${table.id}`;
+
+      const existingRows = await tx
+        .select({ ghost: ghostOrders, ownerName: staff.name })
+        .from(ghostOrders)
+        .leftJoin(staff, and(eq(staff.tenantId, ghostOrders.tenantId), eq(staff.id, ghostOrders.ownerStaffId)))
+        .where(and(
+          eq(ghostOrders.tenantId, tenantId),
+          eq(ghostOrders.contextKey, contextKey),
+          eq(ghostOrders.ownerStaffId, ownerStaffId),
+          eq(ghostOrders.status, "open"),
+        ))
+        .limit(1);
+      if (existingRows.length > 0) {
+        const [existing] = await this.mapGhostOrderRows(tx, existingRows);
+        if (existing) return existing;
+      }
+
+      const { total, itemCount } = await this.validateGhostItems(tx, tenantId, parsed.items);
+      const now = new Date();
+      const id = `gho_${crypto.randomUUID()}`;
+      const inserted = await tx
+        .insert(ghostOrders)
+        .values({
+          id,
+          tenantId,
+          contextKey,
+          ownerStaffId,
+          orderType: "dine_in",
+          tableId: table.id,
+          tableNumber: table.number,
+          status: "open",
+          version: 0,
+          total: String(total),
+          itemCount,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      // A concurrent create won the partial-unique race: return its canonical
+      // state instead of duplicating the draft.
+      if (inserted.length === 0) {
+        const racedRows = await tx
+          .select({ ghost: ghostOrders, ownerName: staff.name })
+          .from(ghostOrders)
+          .leftJoin(staff, and(eq(staff.tenantId, ghostOrders.tenantId), eq(staff.id, ghostOrders.ownerStaffId)))
+          .where(and(
+            eq(ghostOrders.tenantId, tenantId),
+            eq(ghostOrders.contextKey, contextKey),
+            eq(ghostOrders.ownerStaffId, ownerStaffId),
+            eq(ghostOrders.status, "open"),
+          ))
+          .limit(1);
+        const [raced] = await this.mapGhostOrderRows(tx, racedRows);
+        if (raced) return raced;
+        throw new GhostOrderConflictError(null, "Ghost order could not be created");
+      }
+
+      await tx.insert(ghostOrderItems).values(parsed.items.map((item, index) => ({
+        id: `ghoi_${crypto.randomUUID()}`,
+        tenantId,
+        ghostOrderId: id,
+        cartItemId: item.cartItemId,
+        menuItemId: item.menuItemId,
+        name: item.name,
+        basePrice: String(item.basePrice),
+        modifierPriceDelta: String(item.modifierPriceDelta),
+        quantity: item.quantity,
+        round: item.round ?? null,
+        notes: item.notes ?? null,
+        ingredientOverrides: JSON.stringify(item.ingredientOverrides ?? []),
+        selectedModifiers: JSON.stringify(item.selectedModifiers ?? []),
+        skipKitchenPrint: item.skipKitchenPrint ? 1 : 0,
+        sortOrder: index,
+        createdAt: now,
+      })));
+
+      const [created] = await this.mapGhostOrderRows(tx, [{
+        ghost: inserted[0]!,
+        ownerName: await this.resolveStaffName(tx, tenantId, ownerStaffId),
+      }]);
+      if (!created) throw new GhostOrderConflictError(null, "Ghost order could not be created");
+      return created;
+    });
+  }
+
+  private async resolveStaffName(
+    tx: DbClient,
+    tenantId: string,
+    staffId: string,
+  ): Promise<string | undefined> {
+    const rows = await tx
+      .select({ name: staff.name })
+      .from(staff)
+      .where(and(eq(staff.tenantId, tenantId), eq(staff.id, staffId)))
+      .limit(1);
+    return rows[0]?.name;
+  }
+
+  async patchGhostOrder(
+    id: string,
+    payload: GhostOrderPatchRequest,
+    actorStaffId: string,
+  ): Promise<GhostOrder> {
+    const parsed = ghostOrderPatchRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+
+    return withTenantTx(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(ghostOrders)
+        .where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, id)))
+        .limit(1)
+        .for("update");
+      const current = rows[0];
+      if (!current) throw new GhostOrderNotFoundError();
+      if (current.ownerStaffId !== actorStaffId) throw new GhostOrderForbiddenError();
+      if (current.status !== "open") {
+        throw new GhostOrderConflictError(
+          await this.getGhostOrderByIdTx(tx, id),
+          current.status === "committed" ? "Ghost order already committed" : "Ghost order is no longer open",
+        );
+      }
+      if (current.version !== parsed.expectedVersion) {
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, id));
+      }
+
+      const tableRows = await tx
+        .select({ id: tables.id, number: tables.number, isActive: tables.isActive, isVirtual: tables.isVirtual })
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, current.tableId)))
+        .limit(1);
+      const table = tableRows[0];
+      if (!table || table.isActive !== 1 || table.isVirtual === 1) {
+        // Leave the tombstone for the table-cleanup hook; throwing here must
+        // not silently commit a partial state inside the transaction.
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, id), "Table is no longer available");
+      }
+
+      const now = new Date();
+      if (parsed.items.length === 0) {
+        await tx.delete(ghostOrderItems).where(and(
+          eq(ghostOrderItems.tenantId, tenantId),
+          eq(ghostOrderItems.ghostOrderId, id),
+        ));
+        await tx.update(ghostOrders).set({
+          status: "discarded",
+          version: current.version + 1,
+          total: "0",
+          itemCount: 0,
+          discardedAt: now,
+          discardedByStaffId: actorStaffId,
+          updatedAt: now,
+        }).where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, id)));
+        const updated = await this.getGhostOrderByIdTx(tx, id);
+        if (!updated) throw new GhostOrderNotFoundError();
+        return updated;
+      }
+
+      const { total, itemCount } = await this.validateGhostItems(tx, tenantId, parsed.items);
+      await tx.delete(ghostOrderItems).where(and(
+        eq(ghostOrderItems.tenantId, tenantId),
+        eq(ghostOrderItems.ghostOrderId, id),
+      ));
+      await tx.insert(ghostOrderItems).values(parsed.items.map((item, index) => ({
+        id: `ghoi_${crypto.randomUUID()}`,
+        tenantId,
+        ghostOrderId: id,
+        cartItemId: item.cartItemId,
+        menuItemId: item.menuItemId,
+        name: item.name,
+        basePrice: String(item.basePrice),
+        modifierPriceDelta: String(item.modifierPriceDelta),
+        quantity: item.quantity,
+        round: item.round ?? null,
+        notes: item.notes ?? null,
+        ingredientOverrides: JSON.stringify(item.ingredientOverrides ?? []),
+        selectedModifiers: JSON.stringify(item.selectedModifiers ?? []),
+        skipKitchenPrint: item.skipKitchenPrint ? 1 : 0,
+        sortOrder: index,
+        createdAt: now,
+      })));
+      await tx.update(ghostOrders).set({
+        tableNumber: table.number,
+        version: current.version + 1,
+        total: String(total),
+        itemCount,
+        updatedAt: now,
+      }).where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, id)));
+
+      const updated = await this.getGhostOrderByIdTx(tx, id);
+      if (!updated) throw new GhostOrderNotFoundError();
+      return updated;
+    });
+  }
+
+  async discardGhostOrder(
+    id: string,
+    payload: GhostOrderDiscardRequest,
+    actorStaffId: string,
+    canDiscardAny: boolean,
+  ): Promise<GhostOrder> {
+    const parsed = ghostOrderDiscardRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+
+    return withTenantTx(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(ghostOrders)
+        .where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, id)))
+        .limit(1)
+        .for("update");
+      const current = rows[0];
+      if (!current) throw new GhostOrderNotFoundError();
+      if (current.ownerStaffId !== actorStaffId && !canDiscardAny) {
+        throw new GhostOrderForbiddenError();
+      }
+      if (current.status === "committed") {
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, id), "Ghost order already committed");
+      }
+      if (current.status === "discarded") {
+        const already = await this.getGhostOrderByIdTx(tx, id);
+        if (!already) throw new GhostOrderNotFoundError();
+        return already;
+      }
+      if (parsed.expectedVersion != null && current.version !== parsed.expectedVersion) {
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, id));
+      }
+
+      const now = new Date();
+      await tx.update(ghostOrders).set({
+        status: "discarded",
+        version: current.version + 1,
+        discardedAt: now,
+        discardedByStaffId: actorStaffId,
+        updatedAt: now,
+      }).where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, id)));
+
+      const updated = await this.getGhostOrderByIdTx(tx, id);
+      if (!updated) throw new GhostOrderNotFoundError();
+      return updated;
+    });
+  }
+
+  async commitGhostOrder(params: {
+    id: string;
+    payload: GhostOrderCommitRequest;
+    actorStaffId: string;
+    canCommitAny: boolean;
+    print: boolean;
+  }): Promise<{ order: Order; inventory: Ingredient[]; ghostOrder: GhostOrder }> {
+    const parsed = ghostOrderCommitRequestSchema.parse(params.payload);
+    const tenantId = getTenantIdOrDefault();
+
+    const committed = await withTenantTx(async (tx) => {
+      const initialRows = await tx
+        .select()
+        .from(ghostOrders)
+        .where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, params.id)))
+        .limit(1);
+      const initial = initialRows[0];
+      if (!initial) throw new GhostOrderNotFoundError();
+      if (initial.ownerStaffId !== params.actorStaffId && !params.canCommitAny) {
+        throw new GhostOrderForbiddenError("You cannot commit another operator's ghost order");
+      }
+
+      // Lock order: table first, then the draft. This mirrors closeTable /
+      // transferTable and avoids a deadlock with a concurrent table operation.
+      await tx.execute(sql`
+        SELECT id FROM tables
+        WHERE tenant_id = ${tenantId} AND id = ${initial.tableId}
+        FOR UPDATE
+      `);
+
+      const currentRows = await tx
+        .select()
+        .from(ghostOrders)
+        .where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, params.id)))
+        .limit(1)
+        .for("update");
+      const current = currentRows[0];
+      if (!current) throw new GhostOrderNotFoundError();
+      if (current.tableId !== initial.tableId) {
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, params.id), "Ghost order moved to another table");
+      }
+      if (current.status !== "open") {
+        throw new GhostOrderConflictError(
+          await this.getGhostOrderByIdTx(tx, params.id),
+          current.status === "committed" ? "Ghost order already committed" : "Ghost order is no longer open",
+        );
+      }
+      if (current.version !== parsed.expectedVersion) {
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, params.id));
+      }
+
+      // A non-owner must not snapshot a draft while the waiter is mid-edit:
+      // the debounce window would make the commit silently miss the last
+      // additions. The owner's own send is exempt (it carries the final cart).
+      if (
+        current.ownerStaffId !== params.actorStaffId &&
+        Date.now() - current.updatedAt.getTime() < 3000
+      ) {
+        throw new GhostOrderConflictError(
+          await this.getGhostOrderByIdTx(tx, params.id),
+          "La bozza è in modifica: riprova tra qualche secondo",
+        );
+      }
+
+      const tableRows = await tx
+        .select()
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, current.tableId)))
+        .limit(1);
+      const table = tableRows[0];
+      if (!table || table.isActive !== 1 || table.isVirtual === 1) {
+        throw new GhostOrderInvalidError("The table is no longer available");
+      }
+
+      let finalItems: GhostOrderItem[];
+      if (parsed.items) {
+        // Only the owner may replace the draft content at commit time; the
+        // cashier/admin commits exactly what they saw.
+        if (current.ownerStaffId !== params.actorStaffId) {
+          throw new GhostOrderForbiddenError("Only the owner can send the final cart snapshot");
+        }
+        finalItems = parsed.items;
+      } else {
+        finalItems = await this.loadGhostOrderItems(tx, tenantId, current.id);
+      }
+
+      const { total, itemCount } = await this.validateGhostItems(tx, tenantId, finalItems);
+      if (parsed.expectedTotal != null && Math.abs(total - parsed.expectedTotal) > 0.009) {
+        throw new GhostOrderConflictError(
+          await this.getGhostOrderByIdTx(tx, params.id),
+          "Ghost order total changed since confirmation",
+        );
+      }
+
+      const orderPayload: CreateOrderRequest = {
+        orderType: "dine_in",
+        table: table.number,
+        items: finalItems.map((item) => ({
+          id: item.menuItemId,
+          name: item.name,
+          price: Number((item.basePrice + item.modifierPriceDelta).toFixed(2)),
+          quantity: item.quantity,
+          ...(item.round != null ? { round: item.round } : {}),
+          ...(item.notes ? { notes: item.notes } : {}),
+          ...(item.skipKitchenPrint ? { skipKitchenPrint: true } : {}),
+          ...(item.ingredientOverrides && item.ingredientOverrides.length > 0
+            ? { ingredientOverrides: item.ingredientOverrides }
+            : {}),
+          ...(item.selectedModifiers && item.selectedModifiers.length > 0
+            ? { selectedModifiers: item.selectedModifiers }
+            : {}),
+        })),
+        total,
+        // Attribution stays with the waiter who composed the cart; the actor
+        // who pressed "send" is recorded in the ghost tombstone + audit log.
+        staffId: current.ownerStaffId,
+      };
+
+      const created = await this.createOrderTx(orderPayload, tx, { skipPrint: true });
+      const now = new Date();
+
+      // Keep the tombstone's items in sync with what was actually sent, so the
+      // cashier can still inspect the draft for a short while after commit.
+      await tx.delete(ghostOrderItems).where(and(
+        eq(ghostOrderItems.tenantId, tenantId),
+        eq(ghostOrderItems.ghostOrderId, current.id),
+      ));
+      if (finalItems.length > 0) {
+        await tx.insert(ghostOrderItems).values(finalItems.map((item, index) => ({
+          id: `ghoi_${crypto.randomUUID()}`,
+          tenantId,
+          ghostOrderId: current.id,
+          cartItemId: item.cartItemId,
+          menuItemId: item.menuItemId,
+          name: item.name,
+          basePrice: String(item.basePrice),
+          modifierPriceDelta: String(item.modifierPriceDelta),
+          quantity: item.quantity,
+          round: item.round ?? null,
+          notes: item.notes ?? null,
+          ingredientOverrides: JSON.stringify(item.ingredientOverrides ?? []),
+          selectedModifiers: JSON.stringify(item.selectedModifiers ?? []),
+          skipKitchenPrint: item.skipKitchenPrint ? 1 : 0,
+          sortOrder: index,
+          createdAt: now,
+        })));
+      }
+
+      await tx.update(ghostOrders).set({
+        status: "committed",
+        version: current.version + 1,
+        tableNumber: table.number,
+        total: String(total),
+        itemCount,
+        committedOrderId: created.order.id,
+        committedAt: now,
+        committedByStaffId: params.actorStaffId,
+        updatedAt: now,
+      }).where(and(eq(ghostOrders.tenantId, tenantId), eq(ghostOrders.id, current.id)));
+
+      const ghostOrder = await this.getGhostOrderByIdTx(tx, current.id);
+      if (!ghostOrder) throw new GhostOrderNotFoundError();
+      return { ...created, ghostOrder };
+    });
+
+    if (params.print) {
+      // Printing is best-effort, exactly like the normal send path: the order
+      // and the ghost tombstone are already committed. A printer/job failure
+      // must not turn a successful send into a 500 (the client would retry a
+      // committed draft and get a confusing conflict).
+      try {
+        await this.createPrintJobsForOrder(committed.order);
+      } catch (error) {
+        console.warn(
+          `[ghost-order] print jobs failed for committed order ${committed.order.id}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    return committed;
   }
 
   async updateOrderItemQuantity(orderId: string, orderItemId: number, quantity: number): Promise<Order | null> {

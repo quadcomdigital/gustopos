@@ -11,6 +11,8 @@ test("an unknown tenant gets base behaviour (every capability off)", () => {
     stationHideComandaLine: false,
     stationTable2x1: false,
     openPrice: false,
+    ghostOrders: false,
+    newOrderSound: false,
   };
   assert.deepEqual(resolveTenantOverrides("unknown-tenant"), base);
   assert.deepEqual(resolveTenantOverrides(), base);
@@ -69,6 +71,10 @@ test("a capability is read per key, not as an all-or-nothing blob", () => {
   assert.equal(hasTenantOverride("stationTable2x1", "casale"), true);
   assert.equal(hasTenantOverride("stationTable2x1", "franks"), false);
   assert.equal(hasTenantOverride("stationTable2x1"), false);
+  // The new-order beep is opt-in and currently OFF for every tenant.
+  assert.equal(hasTenantOverride("newOrderSound", "casale"), false);
+  assert.equal(hasTenantOverride("newOrderSound", "franks"), false);
+  assert.equal(hasTenantOverride("newOrderSound"), false);
   // The open-price capability is the mirror image: franks only.
   assert.equal(hasTenantOverride("openPrice", "franks"), true);
   assert.equal(hasTenantOverride("openPrice", "casale"), false);

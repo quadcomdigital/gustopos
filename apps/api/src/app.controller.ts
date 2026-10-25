@@ -173,6 +173,17 @@ import {
   type VoidOrderResponse,
   type CloseTableRequest,
   type CreateOrderRequest,
+  ghostOrderCreateRequestSchema,
+  ghostOrderPatchRequestSchema,
+  ghostOrderDiscardRequestSchema,
+  ghostOrderCommitRequestSchema,
+  ghostOrderListResponseSchema,
+  type GhostOrder,
+  type GhostOrderCreateRequest,
+  type GhostOrderPatchRequest,
+  type GhostOrderDiscardRequest,
+  type GhostOrderCommitRequest,
+  type GhostOrderCommitResponse,
   type CourseRoundsConfig,
   type PublicMenuModuleConfig,
   type IngredientCreateRequest,
@@ -299,6 +310,13 @@ import {
 } from "@gustopos/shared";
 import { RealtimeGateway } from "./realtime.gateway";
 import { AppRepository } from "./repository/app.repository";
+import {
+  GhostOrderConflictError,
+  GhostOrderForbiddenError,
+  GhostOrderInvalidError,
+  GhostOrderNotFoundError,
+} from "./orders/ghost-order-errors";
+import { hasTenantOverrideFor } from "./tenant/tenant-overrides";
 import { StaffRepository } from "./repository/staff.repository";
 import { ShiftsRepository } from "./repository/shifts.repository";
 import { SuppliersRepository } from "./repository/suppliers.repository";
@@ -2490,8 +2508,29 @@ export class AppController {
   @Post("orders")
   @Roles("admin", "waiter")
   @RequiresModule("kitchen")
-  async createOrder(@Body() payload: CreateOrderRequest) {
+  async createOrder(@Body() payload: CreateOrderRequest, @Req() request: AuthenticatedRequest) {
     const parsed = createOrderRequestSchema.parse(payload);
+    // Legacy/direct send guard: if the same waiter already has an open ghost
+    // with exactly this cart, the only allowed path is the ghost commit.
+    // A genuinely different direct send is still accepted.
+    if (
+      hasTenantOverrideFor("ghostOrders") &&
+      (parsed.orderType ?? "dine_in") === "dine_in" &&
+      parsed.table &&
+      request.user?.sub
+    ) {
+      const matchingGhost = await this.appRepository.findOpenGhostMatchingOrder(
+        request.user.sub,
+        parsed.table,
+        parsed.items,
+      );
+      if (matchingGhost) {
+        throw new ConflictException({
+          message: "This cart is already an open ghost order; send it from the draft",
+          ghostOrderId: matchingGhost.id,
+        });
+      }
+    }
     let created;
     try {
       created = await this.appRepository.createOrder(parsed);
@@ -2505,6 +2544,210 @@ export class AppController {
       await this.emitTablesUpdateSafely();
     }
     return created.order;
+  }
+
+  // ─── Ghost orders (unsent POS drafts) ──────────────────────────────────
+
+  private assertGhostOrdersEnabled(): void {
+    if (!hasTenantOverrideFor("ghostOrders")) {
+      throw new ForbiddenException("Ghost orders are not enabled for this tenant");
+    }
+  }
+
+  private canCommitAnyGhost(request: AuthenticatedRequest): boolean {
+    if (request.user?.role === "admin") return true;
+    return (request.user?.permissions ?? []).includes("ghost_orders:commit");
+  }
+
+  private isGhostError(error: unknown): boolean {
+    return (
+      error instanceof GhostOrderNotFoundError ||
+      error instanceof GhostOrderForbiddenError ||
+      error instanceof GhostOrderConflictError ||
+      error instanceof GhostOrderInvalidError
+    );
+  }
+
+  private throwGhostError(error: unknown): never {
+    if (error instanceof GhostOrderNotFoundError) {
+      throw new NotFoundException(error.message);
+    }
+    if (error instanceof GhostOrderForbiddenError) {
+      throw new ForbiddenException(error.message);
+    }
+    if (error instanceof GhostOrderConflictError) {
+      throw new ConflictException({ message: error.message, ghostOrder: error.current });
+    }
+    if (error instanceof GhostOrderInvalidError) {
+      throw new BadRequestException(error.message);
+    }
+    throw error;
+  }
+
+  @Get("ghost-orders")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("kitchen")
+  async listGhostOrders(): Promise<GhostOrder[]> {
+    this.assertGhostOrdersEnabled();
+    return this.appRepository.listGhostOrders();
+  }
+
+  @Get("ghost-orders/:id")
+  @Roles("admin", "waiter", "chef")
+  @RequiresModule("kitchen")
+  async getGhostOrder(@Param("id") id: string): Promise<GhostOrder> {
+    this.assertGhostOrdersEnabled();
+    const ghost = await this.appRepository.getGhostOrderById(id);
+    if (!ghost) throw new NotFoundException("Ghost order not found");
+    return ghost;
+  }
+
+  @Post("ghost-orders")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async createGhostOrder(
+    @Body() payload: GhostOrderCreateRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<GhostOrder> {
+    this.assertGhostOrdersEnabled();
+    const staffId = request.user?.sub;
+    if (!staffId) throw new UnauthorizedException("Missing staff identity");
+    const parsed = ghostOrderCreateRequestSchema.parse(payload);
+    let created: GhostOrder;
+    try {
+      created = await this.appRepository.createGhostOrder(parsed, staffId);
+    } catch (error) {
+      this.throwGhostError(error);
+    }
+    await this.realtimeGateway.emit(socketEvents.ghostOrderUpdated, created);
+    this.auditLogService.log("ghost_order.created", {
+      targetId: created.id,
+      details: { tableId: created.tableId, itemCount: created.itemCount, total: created.total },
+    });
+    return created;
+  }
+
+  @Patch("ghost-orders/:id")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async patchGhostOrder(
+    @Param("id") id: string,
+    @Body() payload: GhostOrderPatchRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<GhostOrder> {
+    this.assertGhostOrdersEnabled();
+    const staffId = request.user?.sub;
+    if (!staffId) throw new UnauthorizedException("Missing staff identity");
+    const parsed = ghostOrderPatchRequestSchema.parse(payload);
+    let updated: GhostOrder;
+    try {
+      updated = await this.appRepository.patchGhostOrder(id, parsed, staffId);
+    } catch (error) {
+      this.throwGhostError(error);
+    }
+    if (updated.status === "open") {
+      await this.realtimeGateway.emit(socketEvents.ghostOrderUpdated, updated);
+    } else {
+      await this.realtimeGateway.emit(socketEvents.ghostOrderRemoved, {
+        id: updated.id,
+        reason: "discarded",
+      });
+    }
+    return updated;
+  }
+
+  @Post("ghost-orders/:id/discard")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async discardGhostOrder(
+    @Param("id") id: string,
+    @Body() payload: GhostOrderDiscardRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<GhostOrder> {
+    this.assertGhostOrdersEnabled();
+    const staffId = request.user?.sub;
+    if (!staffId) throw new UnauthorizedException("Missing staff identity");
+    const parsed = ghostOrderDiscardRequestSchema.parse(payload);
+    let discarded: GhostOrder;
+    try {
+      discarded = await this.appRepository.discardGhostOrder(
+        id,
+        parsed,
+        staffId,
+        this.canCommitAnyGhost(request),
+      );
+    } catch (error) {
+      this.throwGhostError(error);
+    }
+    await this.realtimeGateway.emit(socketEvents.ghostOrderRemoved, {
+      id: discarded.id,
+      reason: "discarded",
+    });
+    this.auditLogService.log("ghost_order.discarded", {
+      targetId: discarded.id,
+      details: { tableId: discarded.tableId, reason: parsed.reason ?? null },
+    });
+    return discarded;
+  }
+
+  @Post("ghost-orders/:id/commit")
+  @Roles("admin", "waiter")
+  @RequiresModule("kitchen")
+  async commitGhostOrder(
+    @Param("id") id: string,
+    @Body() payload: GhostOrderCommitRequest,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<GhostOrderCommitResponse> {
+    this.assertGhostOrdersEnabled();
+    const staffId = request.user?.sub;
+    if (!staffId) throw new UnauthorizedException("Missing staff identity");
+    const parsed = ghostOrderCommitRequestSchema.parse(payload);
+    const role = request.user?.role;
+    if (parsed.print === false && role !== "admin") {
+      throw new ForbiddenException("Only an admin can send without printing");
+    }
+    const print = parsed.print !== false;
+
+    let committed;
+    try {
+      committed = await this.appRepository.commitGhostOrder({
+        id,
+        payload: parsed,
+        actorStaffId: staffId,
+        canCommitAny: this.canCommitAnyGhost(request),
+        print,
+      });
+    } catch (error) {
+      if (this.isGhostError(error)) {
+        this.throwGhostError(error);
+      }
+      // Stock/menu validation errors from the normal order pipeline are
+      // user-actionable (the draft stays open and untouched).
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Ghost order commit failed",
+      );
+    }
+
+    await this.realtimeGateway.emit(socketEvents.orderNew, committed.order);
+    await this.realtimeGateway.emit(socketEvents.inventoryUpdate, committed.inventory);
+    await this.emitTablesUpdateSafely();
+    await this.realtimeGateway.emit(socketEvents.ghostOrderRemoved, {
+      id: committed.ghostOrder.id,
+      reason: "committed",
+      orderId: committed.order.id,
+    });
+    this.auditLogService.log("ghost_order.committed", {
+      targetId: committed.ghostOrder.id,
+      details: {
+        orderId: committed.order.id,
+        tableId: committed.ghostOrder.tableId,
+        ownerStaffId: committed.ghostOrder.ownerStaffId,
+        actorStaffId: staffId,
+        printed: print,
+        total: committed.order.total,
+      },
+    });
+    return { order: committed.order, ghostOrderId: committed.ghostOrder.id };
   }
 
   @Get("group-order-drafts")

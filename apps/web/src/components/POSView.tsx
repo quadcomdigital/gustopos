@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
+import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, GhostOrder, GhostOrderItem, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
+import { hasTenantOverride } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, MoveRight, GitMerge } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, MoveRight, GitMerge, Send } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { buildComponentNameById, buildModifierOptionNameById } from '../lib/catalog-names';
 import { sortPosMenuAlphabetically, usesAlphabeticalPosOrder } from '../lib/pos-menu-order';
@@ -16,6 +17,7 @@ import ConfirmDialog from './ConfirmDialog';
 import { CheckoutModal } from './checkout';
 import { useCheckoutStore } from '../store/checkout-store';
 import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
+import { useGhostOrderSync } from '../hooks/useGhostOrderSync';
 import Modal from '../shared/ui/molecules/Modal';
 import TableMoveMergeDialog, { type TableRelocateMode } from './TableMoveMergeDialog';
 
@@ -34,6 +36,11 @@ function buildPickupEtaIso(time: string): string | undefined {
 function formatTimeOfDay(iso: string): string {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatGhostAge(iso: string): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  return minutes < 1 ? 'ora' : `${minutes} min`;
 }
 
 interface POSViewProps {
@@ -96,11 +103,17 @@ export default function POSView({
   const updatePosCartItem = useAppStore((s) => s.updatePosCartItem);
   const removeFromPosCart = useAppStore((s) => s.removeFromPosCart);
   const clearPosCart = useAppStore((s) => s.clearPosCart);
+  const removePosCartItems = useAppStore((s) => s.removePosCartItems);
   const setCartContext = useAppStore((s) => s.setCartContext);
   const relocateCart = useAppStore((s) => s.relocateCart);
   const prepItems = useAppStore((s) => s.prepItems);
   const deliveryOrders = useAppStore((s) => s.deliveryOrders);
   const refreshDeliveryOrders = useAppStore((s) => s.refreshDeliveryOrders);
+  const currentUser = useAppStore((s) => s.currentUser);
+  const ghostOrders = useAppStore((s) => s.ghostOrders);
+  const refreshGhostOrders = useAppStore((s) => s.refreshGhostOrders);
+  const commitExternalGhost = useAppStore((s) => s.commitGhostOrder);
+  const discardExternalGhost = useAppStore((s) => s.discardGhostOrder);
   const [takeawayCustomerName, setTakeawayCustomerName] = useState('');
   const [takeawayCustomerPhone, setTakeawayCustomerPhone] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -116,6 +129,9 @@ export default function POSView({
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
+  const [externalGhostBusyId, setExternalGhostBusyId] = useState<string | null>(null);
+  const [externalGhostConfirm, setExternalGhostConfirm] = useState<{ ghost: GhostOrder; print: boolean } | null>(null);
+  const [externalGhostDiscard, setExternalGhostDiscard] = useState<GhostOrder | null>(null);
   const [showCartMobile, setShowCartMobile] = useState(false);
   const { band } = useViewport();
   // Side cart from tablet up, matching the shell's `md` breakpoint; the
@@ -508,6 +524,176 @@ export default function POSView({
       .map((entry) => entry.item);
   }, [posCart, roundsActive]);
 
+  // ─── Ghost order (server-side mirror of the unsent cart) ────────────────
+  // Dine-in only: the draft follows the physical table and is visible to the
+  // cashier/admin. The local cart stays authoritative while editing.
+  const ghostOrdersEnabled = useMemo(
+    () => hasTenantOverride('ghostOrders', tenantContext?.tenantSlug, tenantContext?.tenantId),
+    [tenantContext?.tenantSlug, tenantContext?.tenantId],
+  );
+  const ghostItems = useMemo<GhostOrderItem[]>(
+    () => sortedPosCart.map((ci) => ({
+      ...ci,
+      skipKitchenPrint:
+        skipKitchenById.has(ci.cartItemId) || openPriceMenuItemIds.has(ci.menuItemId)
+          ? true
+          : undefined,
+    })),
+    [sortedPosCart, skipKitchenById, openPriceMenuItemIds],
+  );
+  const handleGhostExternalRemoval = React.useCallback(() => {
+    clearPosCart();
+    setSkipKitchenById(new Set());
+    setShowCartMobile(false);
+    setActionError('La bozza è stata chiusa dalla cassa: il carrello è stato svuotato');
+  }, [clearPosCart]);
+  const ghostSync = useGhostOrderSync({
+    enabled: ghostOrdersEnabled,
+    active:
+      effectiveOrderMode === 'dine_in' &&
+      !contextMatchesMode &&
+      Boolean(physicalDineInTable) &&
+      !selectedTableMissing,
+    tableId: physicalDineInTable?.id ?? null,
+    items: ghostItems,
+    onExternalRemoval: handleGhostExternalRemoval,
+  });
+  const ghostOrderRemoval = useAppStore((s) => s.ghostOrderRemoval);
+  const ghostCommitInFlightRef = React.useRef(false);
+  const committedGhostIdsRef = React.useRef<Set<string>>(new Set());
+
+  // Another operator committed/discarded the draft: never let the owner resend
+  // the same cart. The event is only acted on when it targets OUR ghost.
+  useEffect(() => {
+    if (!ghostOrderRemoval) return;
+    if (committedGhostIdsRef.current.has(ghostOrderRemoval.id)) {
+      committedGhostIdsRef.current.delete(ghostOrderRemoval.id);
+      return;
+    }
+    if (ghostSync.ghostOrderId !== ghostOrderRemoval.id) return;
+    // Our own send flow already owns the cart/messages; the server event can
+    // arrive before the HTTP response.
+    if (ghostCommitInFlightRef.current) {
+      useAppStore.setState({ ghostOrderRemoval: null });
+      return;
+    }
+    // Consume the event so it cannot be re-applied on a later render.
+    useAppStore.setState({ ghostOrderRemoval: null });
+    ghostSync.reset();
+    if (ghostOrderRemoval.reason === 'committed') {
+      clearPosCart();
+      setSkipKitchenById(new Set());
+      setShowCartMobile(false);
+      setActionSuccess('Bozza inviata dalla cassa');
+      return;
+    }
+    if (ghostOrderRemoval.reason === 'discarded') {
+      clearPosCart();
+      setSkipKitchenById(new Set());
+      setShowCartMobile(false);
+      setActionError('Bozza scartata dalla cassa: il carrello è stato svuotato');
+      return;
+    }
+    setActionError('Il tavolo della bozza è cambiato: verifica il carrello');
+  }, [ghostOrderRemoval, ghostSync.ghostOrderId, ghostSync.reset, clearPosCart]);
+
+  // ─── Ghosts of OTHER waiters on the selected table ─────────────────────
+  // The operator's own draft is already the visible cart; this strip surfaces
+  // the unsent carts of colleagues so the cashier can resolve them before the
+  // checkout. It never joins the payable total.
+  const canCommitOtherGhosts =
+    currentUser?.role === 'admin' ||
+    (currentUser?.permissions ?? []).includes('ghost_orders:commit');
+  const externalTableGhosts = useMemo(() => {
+    if (!ghostOrdersEnabled || effectiveOrderMode !== 'dine_in' || contextMatchesMode || !physicalDineInTable) {
+      return [];
+    }
+    return ghostOrders
+      .filter((ghost) => ghost.tableId === physicalDineInTable.id && ghost.ownerStaffId !== currentStaffId)
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  }, [
+    ghostOrders,
+    ghostOrdersEnabled,
+    effectiveOrderMode,
+    contextMatchesMode,
+    physicalDineInTable,
+    currentStaffId,
+  ]);
+
+  // Refresh on table selection: a device that missed a socket event must still
+  // show the drafts before the cashier opens the checkout.
+  useEffect(() => {
+    if (!ghostOrdersEnabled) return;
+    if (effectiveOrderMode !== 'dine_in' || contextMatchesMode || !physicalDineInTable) return;
+    void refreshGhostOrders();
+  }, [ghostOrdersEnabled, effectiveOrderMode, contextMatchesMode, physicalDineInTable?.id, refreshGhostOrders]);
+
+  // A POS terminal is often backgrounded/locked: on resume, reconcile the
+  // ghost list even if the socket missed events while asleep.
+  useEffect(() => {
+    if (!ghostOrdersEnabled) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refreshGhostOrders();
+    };
+    window.addEventListener('focus', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [ghostOrdersEnabled, refreshGhostOrders]);
+
+  const handleCommitExternalGhost = async () => {
+    const target = externalGhostConfirm;
+    if (!target) return;
+    setExternalGhostBusyId(target.ghost.id);
+    setActionError('');
+    setActionSuccess('');
+    try {
+      await commitExternalGhost(target.ghost.id, {
+        expectedVersion: target.ghost.version,
+        expectedTotal: target.ghost.total,
+        print: target.print,
+      });
+      setExternalGhostConfirm(null);
+      setActionSuccess(
+        target.print
+          ? `Bozza di ${target.ghost.ownerStaffName ?? 'cameriere'} inviata in cucina`
+          : `Bozza di ${target.ghost.ownerStaffName ?? 'cameriere'} inviata senza stampa`,
+      );
+      await refreshGhostOrders();
+    } catch (error) {
+      setExternalGhostConfirm(null);
+      setActionError(error instanceof Error ? error.message : 'Invio bozza non riuscito');
+      void refreshGhostOrders();
+    } finally {
+      setExternalGhostBusyId(null);
+    }
+  };
+
+  const handleDiscardExternalGhost = async () => {
+    const target = externalGhostDiscard;
+    if (!target) return;
+    setExternalGhostBusyId(target.id);
+    setActionError('');
+    setActionSuccess('');
+    try {
+      await discardExternalGhost(target.id, {
+        expectedVersion: target.version,
+        reason: 'Scartata dal POS',
+      });
+      setExternalGhostDiscard(null);
+      setActionSuccess(`Bozza di ${target.ownerStaffName ?? 'cameriere'} scartata`);
+      await refreshGhostOrders();
+    } catch (error) {
+      setExternalGhostDiscard(null);
+      setActionError(error instanceof Error ? error.message : 'Scarto bozza non riuscito');
+      void refreshGhostOrders();
+    } finally {
+      setExternalGhostBusyId(null);
+    }
+  };
+
   // --- Modal handlers ---
   const openProductModal = (item: MenuItem, existingCartItem?: CartItem) => {
     setModalItem({ item, editCartItem: existingCartItem });
@@ -617,6 +803,27 @@ export default function POSView({
     setActionError('');
     setActionSuccess('');
     try {
+      // Dine-in sends go through the ghost commit: one server-authoritative
+      // path, idempotent, atomic with the draft tombstone. Other modes keep the
+      // existing direct order flow.
+      if (ghostOrdersEnabled && effectiveOrderMode === 'dine_in' && !contextMatchesMode) {
+        const sentCartItemIds = ghostItems.map((item) => item.cartItemId);
+        ghostCommitInFlightRef.current = true;
+        try {
+          const committed = await ghostSync.commit({ expectedTotal: cartTotal, print: true });
+          committedGhostIdsRef.current.add(committed.ghostOrderId);
+        } finally {
+          ghostCommitInFlightRef.current = false;
+        }
+        // Preserve anything added while the commit was in flight: only the
+        // lines that were actually sent leave the cart.
+        removePosCartItems(sentCartItemIds);
+        setSkipKitchenById(new Set());
+        setShowCartMobile(false);
+        setActionSuccess('Ordine inviato in cucina');
+        return;
+      }
+
       let customerId = selectedCustomerId || undefined;
       if (
         (effectiveOrderMode === 'takeaway' || effectiveOrderMode === 'delivery') &&
@@ -704,10 +911,22 @@ export default function POSView({
       // A double-tap on "Invia" makes the API middleware reject the second
       // request with 409 (same idempotency key). The order was already
       // submitted — show a clear message instead of the raw English error.
+      const message = error instanceof Error ? error.message : 'Invio ordine non riuscito';
+      if (
+        ghostOrdersEnabled &&
+        effectiveOrderMode === 'dine_in' &&
+        /changed|already|no longer open/i.test(message)
+      ) {
+        void useAppStore.getState().refreshGhostOrders();
+      }
       setActionError(
         isDuplicateIdempotentError(error)
           ? 'Ordine già inviato'
-          : (error instanceof Error ? error.message : 'Invio ordine non riuscito'),
+          : /already committed/i.test(message)
+            ? 'La bozza era già stata inviata dalla cassa'
+            : /no longer open/i.test(message)
+              ? 'La bozza è stata chiusa dalla cassa'
+              : message,
       );
     } finally {
       setIsProcessing(false);
@@ -1093,6 +1312,89 @@ export default function POSView({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-4 sm:px-4 md:p-5 md:space-y-6">
+          {/* Other waiters' unsent drafts on this table */}
+          {externalTableGhosts.length > 0 && (
+            <div className="space-y-2 rounded-xl border border-warning-700/20 bg-warning-50/70 p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[9px] font-bold uppercase tracking-widest text-warning-700">
+                  Bozze sul tavolo
+                </h3>
+                <span className="rounded-full bg-warning-700 px-1.5 py-0.5 text-[9px] font-bold text-white tabular-nums">
+                  {externalTableGhosts.length}
+                </span>
+              </div>
+              <p className="text-[9px] text-text-muted">
+                Non sono ancora nel conto.
+              </p>
+              {externalTableGhosts.map((ghost) => {
+                const busy = externalGhostBusyId === ghost.id;
+                return (
+                  <div key={ghost.id} className="rounded-lg border border-warning-700/15 bg-white p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-[11px] font-bold text-secondary">
+                          {ghost.ownerStaffName ?? 'Cameriere'}
+                        </p>
+                        <p className="text-[9px] text-text-muted tabular-nums">
+                          {ghost.itemCount} {ghost.itemCount === 1 ? 'articolo' : 'articoli'} · €{ghost.total.toFixed(2)} · {formatGhostAge(ghost.updatedAt)}
+                        </p>
+                      </div>
+                    </div>
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-[9px] font-semibold text-text-muted">
+                        Vedi articoli
+                      </summary>
+                      <ul className="mt-1 space-y-0.5">
+                        {ghost.items.map((item) => (
+                          <li key={item.cartItemId} className="flex justify-between gap-2 text-[9px] text-text-muted">
+                            <span className="truncate">{item.quantity}× {item.name}</span>
+                            <span className="shrink-0 tabular-nums">
+                              €{((item.basePrice + item.modifierPriceDelta) * item.quantity).toFixed(2)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                    {canCommitOtherGhosts ? (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setExternalGhostConfirm({ ghost, print: true })}
+                          className="inline-flex min-h-[32px] items-center gap-1 rounded-full bg-accent px-2 text-[9px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
+                        >
+                          <Send size={10} /> Invia
+                        </button>
+                        {currentUser?.role === 'admin' && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setExternalGhostConfirm({ ghost, print: false })}
+                            className="inline-flex min-h-[32px] items-center rounded-full border border-border bg-white px-2 text-[9px] font-bold uppercase tracking-wider text-text-muted disabled:opacity-50"
+                          >
+                            Senza stampa
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setExternalGhostDiscard(ghost)}
+                          className="inline-flex min-h-[32px] items-center gap-1 rounded-full border border-red-200 bg-white px-2 text-[9px] font-bold uppercase tracking-wider text-red-600 disabled:opacity-50"
+                        >
+                          <Trash2 size={10} /> Scarta
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-[9px] text-text-muted">
+                        Solo cassa o responsabile può inviarla.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Already Ordered */}
           {alreadyOrdered.length > 0 && (
             <div className="space-y-1.5">
@@ -1154,9 +1456,26 @@ export default function POSView({
 
           {/* New Items */}
           <div className="space-y-2">
-            <h3 className="text-[10px] font-bold text-accent uppercase tracking-widest border-b border-accent/20 pb-1">
-              Nuovi Articoli
-            </h3>
+            <div className="flex items-center justify-between gap-2 border-b border-accent/20 pb-1">
+              <h3 className="text-[10px] font-bold text-accent uppercase tracking-widest">
+                Nuovi Articoli
+              </h3>
+              {ghostOrdersEnabled && (ghostSync.ghostOrderId || ghostSync.state !== 'idle') && (
+                <span
+                  className={cn(
+                    'text-[9px] font-bold uppercase tracking-wider tabular-nums',
+                    ghostSync.state === 'error' ? 'text-warning-700' : 'text-text-muted',
+                  )}
+                  title={ghostSync.state === 'error' ? 'Bozza non sincronizzata con la cassa' : 'Bozza visibile in cassa'}
+                >
+                  {ghostSync.state === 'syncing'
+                    ? 'Sincronizzo…'
+                    : ghostSync.state === 'error'
+                      ? 'Non sincronizzata'
+                      : 'Bozza condivisa'}
+                </span>
+              )}
+            </div>
             <AnimatePresence initial={false}>
               {posCart.length === 0 ? (
                 <div className="py-8 flex flex-col items-center justify-center text-text-muted space-y-2 opacity-40">
@@ -1655,6 +1974,34 @@ export default function POSView({
           void handleSendToKitchen();
         }}
         onCancel={() => setShowSendConfirm(false)}
+      />
+
+      {/* ============ EXTERNAL GHOST CONFIRM ============ */}
+      <ConfirmDialog
+        open={externalGhostConfirm !== null}
+        title={externalGhostConfirm?.print === false ? 'Inviare la bozza senza stampa?' : 'Inviare la bozza in cucina?'}
+        message={
+          externalGhostConfirm
+            ? `Tavolo ${physicalDineInTable?.number ?? ''} · ${externalGhostConfirm.ghost.ownerStaffName ?? 'Cameriere'} · ${externalGhostConfirm.ghost.itemCount} articoli · €${externalGhostConfirm.ghost.total.toFixed(2)}.${externalGhostConfirm.print === false ? ' Nessun ticket verrà stampato: l’operazione è tracciata nell’audit.' : ''}`
+            : ''
+        }
+        confirmLabel={externalGhostConfirm?.print === false ? 'Invia senza stampa' : 'Invia'}
+        onConfirm={() => { void handleCommitExternalGhost(); }}
+        onCancel={() => setExternalGhostConfirm(null)}
+      />
+
+      {/* ============ EXTERNAL GHOST DISCARD ============ */}
+      <ConfirmDialog
+        open={externalGhostDiscard !== null}
+        title="Scartare la bozza?"
+        message={
+          externalGhostDiscard
+            ? `La bozza di ${externalGhostDiscard.ownerStaffName ?? 'cameriere'} per il tavolo ${externalGhostDiscard.tableNumber} verrà eliminata e il carrello del cameriere svuotato.`
+            : ''
+        }
+        confirmLabel="Scarta"
+        onConfirm={() => { void handleDiscardExternalGhost(); }}
+        onCancel={() => setExternalGhostDiscard(null)}
       />
 
       {/* ============ CHECKOUT MODAL ============ */}

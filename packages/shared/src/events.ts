@@ -3,6 +3,7 @@ import {
   appDataSchema,
   ingredientSchema,
   orderSchema,
+  ghostOrderSchema,
   reservationSchema,
   tableSchema,
   uiSettingsSchema,
@@ -16,6 +17,7 @@ import {
   type AppData,
   type Ingredient,
   type Order,
+  type GhostOrder,
   type Reservation,
   type PrintBridge,
   type PrintJob,
@@ -29,6 +31,10 @@ export const socketEvents = {
    *  Separate from `order:new` on purpose: the POS/kitchen feeds must NOT pick a
    *  draft up, only the approval inbox reacts to it. */
   orderDraftPending: "order:draft_pending",
+  /** A waiter's unsent POS cart changed. Cashier/admin views react to it. */
+  ghostOrderUpdated: "ghost_order:updated",
+  /** A ghost was committed, discarded, expired or invalidated by a table op. */
+  ghostOrderRemoved: "ghost_order:removed",
   orderUpdate: "order:update",
   ordersUpdate: "orders:update",
   reservationUpdate: "reservation:update",
@@ -71,6 +77,12 @@ export type OrdersUpdatePatch = z.infer<typeof ordersUpdatePatchSchema>;
 
 export const bridgeRemovedPayloadSchema = z.object({ id: z.string() });
 
+export const ghostOrderRemovedPayloadSchema = z.object({
+  id: z.string(),
+  reason: z.enum(["committed", "discarded", "expired", "table_changed"]),
+  orderId: z.string().optional(),
+});
+
 /**
  * Zod schema for every socket event payload (Epic 7). Every emit is validated
  * against its schema on the server before fan-out, and every client handler
@@ -79,6 +91,8 @@ export const bridgeRemovedPayloadSchema = z.object({ id: z.string() });
 export const socketEventPayloadSchema = {
   [socketEvents.orderNew]: orderSchema,
   [socketEvents.orderDraftPending]: orderSchema,
+  [socketEvents.ghostOrderUpdated]: ghostOrderSchema,
+  [socketEvents.ghostOrderRemoved]: ghostOrderRemovedPayloadSchema,
   [socketEvents.orderUpdate]: orderSchema,
   [socketEvents.ordersUpdate]: ordersUpdatePatchSchema,
   [socketEvents.reservationUpdate]: reservationSchema,
@@ -145,4 +159,4 @@ export function onSocketEvent<E extends SocketEventName>(
 
 // Re-exported payload types for convenience so consumers do not need to
 // import from the contract modules directly when typing socket handlers.
-export type { AppData, Ingredient, Order, Reservation, PrintBridge, PrintJob, Table, UiSettings };
+export type { AppData, Ingredient, Order, GhostOrder, Reservation, PrintBridge, PrintJob, Table, UiSettings };

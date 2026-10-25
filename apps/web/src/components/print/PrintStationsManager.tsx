@@ -44,6 +44,18 @@ export default function PrintStationsManager({
     onSetDraft((prev) => ({ ...prev, printing: { ...prev.printing, ...patch } }));
   };
 
+  // ── "Copia in cassa" (settings.printing.cashierCopyStationIds) ────────────
+  // Production zones listed here also enqueue their ticket on the cashier
+  // station. Empty = no copies (the default for every tenant).
+  const cashierCopyStationIds = draft.printing.cashierCopyStationIds;
+  const toggleCashierCopy = (zoneId: string) => {
+    setPrinting({
+      cashierCopyStationIds: cashierCopyStationIds.includes(zoneId)
+        ? cashierCopyStationIds.filter((id) => id !== zoneId)
+        : [...cashierCopyStationIds, zoneId],
+    });
+  };
+
   // ── "Quali zone stampano" (settings.printing.activeStationIds) ────────────
   // EMPTY list = every active station (that is exactly how the API reads it at
   // ticket-creation time). Once something is deselected the list becomes
@@ -238,6 +250,20 @@ export default function PrintStationsManager({
                   className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border ${station.ownItemsOnly ? 'border-accent/50 text-accent' : 'border-border text-text-muted'}`}
                 >
                   {station.ownItemsOnly ? 'Solo reparto' : 'Intero ordine'}
+                </button>
+              )}
+              {station.kind === 'production' && (
+                <button
+                  type="button"
+                  onClick={() => toggleCashierCopy(station.id)}
+                  title={
+                    cashierCopyStationIds.includes(station.id)
+                      ? 'Una copia di questo ticket viene stampata anche sulla stampante della cassa'
+                      : 'Il ticket viene stampato solo sulla stampante di questa zona'
+                  }
+                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border ${cashierCopyStationIds.includes(station.id) ? 'border-accent/50 text-accent' : 'border-border text-text-muted'}`}
+                >
+                  {cashierCopyStationIds.includes(station.id) ? 'Copia in cassa' : 'No copia cassa'}
                 </button>
               )}
               {confirming ? (

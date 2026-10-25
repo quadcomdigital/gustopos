@@ -27,6 +27,7 @@ export type {
 
 // ─── Re-export order domain ───────────────────────────────────────────────
 import { orderSchema } from "./contracts/order.schema";
+import { ghostOrderSchema } from "./contracts/ghost-order.schema";
 export * from "./contracts/order.schema";
 
 // ─── Re-export auth domain ────────────────────────────────────────────────
@@ -76,6 +77,9 @@ export * from "./contracts/fiscal.schema";
 // ─── Re-export diagnostics (client terminal reporting) ────────────────────
 export * from "./contracts/diagnostics.schema";
 
+// ─── Re-export ghost-order (POS draft) domain ─────────────────────────────
+export * from "./contracts/ghost-order.schema";
+
 // ─── Re-export misc domains ───────────────────────────────────────────────
 export * from "./contracts/prep.schema";
 export * from "./contracts/inventory-workflow.schema";
@@ -100,6 +104,12 @@ export const appDataSchema = z.object({
   tables: z.array(tableSchema),
   categories: z.array(categorySchema).default([]),
   categoryModifierPools: z.array(categoryModifierPoolSchema).default([]),
+  /**
+   * Open POS drafts ("ghost orders"). Populated by the staff bootstrap only;
+   * public/consumer payloads never include it. Optional so mixed-version
+   * clients and older fixtures keep parsing.
+   */
+  ghostOrders: z.array(ghostOrderSchema).optional(),
 });
 
 export type AppData = z.infer<typeof appDataSchema>;

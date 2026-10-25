@@ -37,7 +37,11 @@ export type TenantOverrideKey =
   /** Station-ticket `Tavolo:` value printed at GS 2x1 (double width, same height). */
   | "stationTable2x1"
   /** POS-only line whose price is typed BY HAND on the product modal (open price). */
-  | "openPrice";
+  | "openPrice"
+  /** Server-side mirror of unsent POS carts, visible to the cashier/admin. */
+  | "ghostOrders"
+  /** Audio alert (short Web Audio beep) on `order_new` for chef/admin terminals. */
+  | "newOrderSound";
 
 export type TenantOverrides = Readonly<Record<TenantOverrideKey, boolean>>;
 
@@ -50,6 +54,8 @@ const BASE_BEHAVIOUR: TenantOverrides = Object.freeze({
   stationHideComandaLine: false,
   stationTable2x1: false,
   openPrice: false,
+  ghostOrders: false,
+  newOrderSound: false,
 });
 
 /**
@@ -59,6 +65,8 @@ const BASE_BEHAVIOUR: TenantOverrides = Object.freeze({
  * default. Keys may be a slug or a tenant id.
  */
 const TENANT_OVERRIDES: Readonly<Record<string, Partial<TenantOverrides>>> = Object.freeze({
+  // No tenant opts into `newOrderSound`: the new-order beep stays off for
+  // every tenant until one explicitly asks for it.
   // Antico Casale — the only tenant with a JOLLY product, a ×2 (MAXI) pool, an
   // alphabetically sorted POS product grid, 2x1 notes on station tickets, no
   // `Comanda:` line and a 2x1 table number in the kitchen header.
@@ -69,6 +77,7 @@ const TENANT_OVERRIDES: Readonly<Record<string, Partial<TenantOverrides>>> = Obj
     stationNotes2x1: true,
     stationHideComandaLine: true,
     stationTable2x1: true,
+    ghostOrders: true,
   },
   "ten_2ad3a695-8893-411f-b922-f28c9b30a6d8": {
     jolly: true,
@@ -77,14 +86,17 @@ const TENANT_OVERRIDES: Readonly<Record<string, Partial<TenantOverrides>>> = Obj
     stationNotes2x1: true,
     stationHideComandaLine: true,
     stationTable2x1: true,
+    ghostOrders: true,
   },
   // Franks — the only tenant with an open-price product (PRODOTTO): a POS-only
   // line whose price the waiter types by hand.
   franks: {
     openPrice: true,
+    ghostOrders: true,
   },
   "ten_26ed333e-9dbd-43f7-85b1-fe57054e9e6f": {
     openPrice: true,
+    ghostOrders: true,
   },
 });
 

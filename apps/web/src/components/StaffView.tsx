@@ -27,6 +27,7 @@ const initialCreate: StaffCreateRequest = {
 
 const AVAILABLE_PERMISSIONS = [
   { key: 'tables:pay', label: 'Checkout Tavoli', description: 'Chiudi conto e gestisci pagamenti' },
+  { key: 'ghost_orders:commit', label: 'Invia Bozze di Sala', description: 'Invia o scarta le bozze non inviate degli altri camerieri' },
   { key: 'orders:void', label: 'Annulla Ordini', description: 'Annulla ordini attivi' },
   { key: 'printing:dispatch', label: 'Dispatch Stampa', description: 'Invia job di stampa' },
 ] as const;

@@ -7,6 +7,19 @@ import {
   bomUpdateRequestSchema,
   bomUpsertComponentsRequestSchema,
   createOrderRequestSchema,
+  ghostOrderCreateRequestSchema,
+  ghostOrderPatchRequestSchema,
+  ghostOrderDiscardRequestSchema,
+  ghostOrderCommitRequestSchema,
+  ghostOrderSchema,
+  ghostOrderListResponseSchema,
+  ghostOrderCommitResponseSchema,
+  type GhostOrder,
+  type GhostOrderCreateRequest,
+  type GhostOrderPatchRequest,
+  type GhostOrderDiscardRequest,
+  type GhostOrderCommitRequest,
+  type GhostOrderCommitResponse,
   closeTableRequestSchema,
   closeTableResponseSchema,
   ingredientCreateRequestSchema,
@@ -1651,8 +1664,72 @@ export async function createOrder(payload: CreateOrderRequest): Promise<Order> {
   return readJson(response, orderSchema);
 }
 
-export async function updateOrderItemQuantity(orderId: string, orderItemId: number, quantity: number): Promise<Order> {
-  const response = await authorizedFetch(`${API_URL}/api/orders/${orderId}/items/${orderItemId}`, {
+// ─── Ghost orders (unsent POS drafts) ─────────────────────────────────────
+// Patch/commit retries must reuse the same Idempotency-Key, otherwise a lost
+// response followed by a retry would either conflict (patch) or create a
+// second order (commit).
+const pendingGhostPatchKeys = new Map<string, string>();
+const pendingGhostCommitKeys = new Map<string, string>();
+
+function resolveGhostPendingKey(fingerprint: string, pending: Map<string, string>): string {
+  const { key, pending: next } = resolveOrderIdempotencyKey(fingerprint, pending);
+  pending.clear();
+  for (const [fp, k] of next) pending.set(fp, k);
+  return key;
+}
+
+export async function fetchGhostOrders(): Promise<GhostOrder[]> {
+  const response = await authorizedFetch(`${API_URL}/api/ghost-orders`);
+  return readJson(response, ghostOrderListResponseSchema);
+}
+
+export async function createGhostOrder(payload: GhostOrderCreateRequest): Promise<GhostOrder> {
+  const request = ghostOrderCreateRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/ghost-orders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, ghostOrderSchema);
+}
+
+export async function patchGhostOrder(id: string, payload: GhostOrderPatchRequest): Promise<GhostOrder> {
+  const request = ghostOrderPatchRequestSchema.parse(payload);
+  const fingerprint = `${id}:${request.expectedVersion}:${JSON.stringify(request.items)}`;
+  const key = resolveGhostPendingKey(fingerprint, pendingGhostPatchKeys);
+  const response = await authorizedFetch(`${API_URL}/api/ghost-orders/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  }, false, key);
+  pendingGhostPatchKeys.delete(fingerprint);
+  return readJson(response, ghostOrderSchema);
+}
+
+export async function discardGhostOrder(id: string, payload: GhostOrderDiscardRequest): Promise<GhostOrder> {
+  const request = ghostOrderDiscardRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/ghost-orders/${id}/discard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, ghostOrderSchema);
+}
+
+export async function commitGhostOrder(id: string, payload: GhostOrderCommitRequest): Promise<GhostOrderCommitResponse> {
+  const request = ghostOrderCommitRequestSchema.parse(payload);
+  const fingerprint = `${id}:${request.expectedVersion}:${JSON.stringify(request.items ?? null)}:${request.print ?? true}`;
+  const key = resolveGhostPendingKey(fingerprint, pendingGhostCommitKeys);
+  const response = await authorizedFetch(`${API_URL}/api/ghost-orders/${id}/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  }, false, key);
+  pendingGhostCommitKeys.delete(fingerprint);
+  return readJson(response, ghostOrderCommitResponseSchema);
+}
+
+export async function updateOrderItemQuantity(orderId: string, orderItemId: number, quantity: number): Promise<Order> {  const response = await authorizedFetch(`${API_URL}/api/orders/${orderId}/items/${orderItemId}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',

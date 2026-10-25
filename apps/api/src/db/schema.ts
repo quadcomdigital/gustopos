@@ -349,6 +349,95 @@ export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   }),
 }));
 
+/**
+ * POS draft ("ghost order"): the server-side mirror of a waiter's cart before
+ * it is sent. Intentionally separate from `orders` — a ghost must never reach
+ * the kitchen, order history, analytics or fiscal flows, and it never prints
+ * or deducts stock. Only the atomic commit creates a real order.
+ */
+export const ghostOrders = pgTable(
+  "ghost_orders",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    /** Stable key, always `dine_in:<tableId>`; unique per owner while open. */
+    contextKey: text("context_key").notNull(),
+    ownerStaffId: text("owner_staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    orderType: text("order_type").notNull().default("dine_in"),
+    tableId: text("table_id")
+      .notNull()
+      .references(() => tables.id, { onDelete: "cascade" }),
+    tableNumber: text("table_number").notNull(),
+    status: text("status").notNull().default("open"),
+    /** Optimistic-concurrency counter, incremented on every accepted patch. */
+    version: integer("version").notNull().default(0),
+    total: numeric("total", { precision: 12, scale: 2 }).notNull().default("0"),
+    itemCount: integer("item_count").notNull().default(0),
+    committedOrderId: text("committed_order_id"),
+    committedAt: timestamp("committed_at", { withTimezone: true }),
+    committedByStaffId: text("committed_by_staff_id").references(() => staff.id, { onDelete: "set null" }),
+    discardedAt: timestamp("discarded_at", { withTimezone: true }),
+    discardedByStaffId: text("discarded_by_staff_id").references(() => staff.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // At most one OPEN ghost per waiter/table. Committed tombstones are kept
+    // for a while so a delayed PATCH can be answered with "already sent"
+    // instead of silently recreating the draft.
+    uniqueIndex("ghost_orders_open_owner_table_idx")
+      .on(table.tenantId, table.contextKey, table.ownerStaffId)
+      .where(sql`${table.status} = 'open'`),
+    index("ghost_orders_tenant_status_idx").on(table.tenantId, table.status),
+    index("ghost_orders_tenant_table_idx").on(table.tenantId, table.tableId),
+  ],
+);
+
+export const ghostOrderItems = pgTable(
+  "ghost_order_items",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("tenant_legacy"),
+    ghostOrderId: text("ghost_order_id")
+      .notNull()
+      .references(() => ghostOrders.id, { onDelete: "cascade" }),
+    /** POS cart line id, kept for traceability across snapshots. */
+    cartItemId: text("cart_item_id").notNull(),
+    menuItemId: text("menu_item_id").notNull(),
+    name: text("name").notNull(),
+    basePrice: numeric("base_price", { precision: 12, scale: 2 }).notNull(),
+    modifierPriceDelta: numeric("modifier_price_delta", { precision: 12, scale: 2 }).notNull().default("0"),
+    quantity: integer("quantity").notNull(),
+    round: integer("round"),
+    notes: text("notes"),
+    ingredientOverrides: text("ingredient_overrides").notNull().default("[]"),
+    selectedModifiers: text("selected_modifiers").notNull().default("[]"),
+    skipKitchenPrint: integer("skip_kitchen_print").notNull().default(0),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("ghost_order_items_tenant_draft_idx").on(table.tenantId, table.ghostOrderId),
+  ],
+);
+
+export const ghostOrdersRelations = relations(ghostOrders, ({ many, one }) => ({
+  items: many(ghostOrderItems),
+  table: one(tables, {
+    fields: [ghostOrders.tableId],
+    references: [tables.id],
+  }),
+}));
+
+export const ghostOrderItemsRelations = relations(ghostOrderItems, ({ one }) => ({
+  ghostOrder: one(ghostOrders, {
+    fields: [ghostOrderItems.ghostOrderId],
+    references: [ghostOrders.id],
+  }),
+}));
+
 export const authSessions = pgTable(
   "auth_sessions",
   {

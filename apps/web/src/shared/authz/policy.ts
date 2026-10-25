@@ -3,6 +3,7 @@ import type { ModuleKey } from '@gustopos/shared';
 export type UiActionKey =
   | 'ordersUpdate'
   | 'ordersVoid'
+  | 'ghostOrdersCommit'
   | 'tablesPay'
   | 'printingDispatch'
   | 'paymentsRefund'
@@ -41,6 +42,13 @@ export const uiActionPolicyMatrix: Record<UiActionKey, UiActionPolicy> = {
     module: 'kitchen',
     roles: ['admin', 'waiter'],
     permission: 'orders:void',
+  },
+  ghostOrdersCommit: {
+    action: 'ghostOrdersCommit',
+    endpoint: 'POST /api/ghost-orders/:id/commit',
+    module: 'kitchen',
+    roles: ['admin', 'waiter'],
+    permission: 'ghost_orders:commit',
   },
   tablesPay: {
     action: 'tablesPay',

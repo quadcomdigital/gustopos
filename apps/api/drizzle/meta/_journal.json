@@ -624,6 +624,13 @@
       "when": 1792148183727,
       "tag": "0091_spicy_warpath",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1792848009519,
+      "tag": "0092_chief_madame_masque",
+      "breakpoints": true
     }
   ]
 }

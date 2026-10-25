@@ -5,6 +5,7 @@ export const permissionsByRole: Record<Role, string[]> = {
     "orders:update",
     "orders:void",
     "tables:pay",
+    "ghost_orders:commit",
     "payments:refund",
     "fiscal:close",
     "fiscal:export",
@@ -55,6 +56,7 @@ export function resolveRolePermissions(role: Role, customPermissions?: string[] 
 /** All permissions that can be assigned as custom overrides */
 export const AVAILABLE_CUSTOM_PERMISSIONS = [
   { key: "tables:pay", label: "Checkout Tavoli", description: "Chiudi conto e gestisci pagamenti tavoli" },
+  { key: "ghost_orders:commit", label: "Invia Bozze di Sala", description: "Invia o scarta le bozze non inviate di altri camerieri" },
   { key: "orders:void", label: "Annulla Ordini", description: "Annulla ordini attivi" },
   { key: "orders:update", label: "Aggiorna Ordini", description: "Modifica stato ordini in cucina" },
   { key: "printing:dispatch", label: "Dispatch Stampa", description: "Invia job di stampa alle stampanti" },

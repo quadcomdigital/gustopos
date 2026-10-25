@@ -4,6 +4,7 @@ import { persist } from 'zustand/middleware';
 import {
   socketEvents,
   onSocketEvent,
+  hasTenantOverride,
   type OrdersUpdatePatch,
   type Table,
   type AppData,
@@ -114,6 +115,12 @@ import {
   type CategoryModifierPoolCreateRequest,
   type CategoryModifierPoolUpdateRequest,
   type CartItem,
+  type GhostOrder,
+  type GhostOrderCreateRequest,
+  type GhostOrderPatchRequest,
+  type GhostOrderDiscardRequest,
+  type GhostOrderCommitRequest,
+  type GhostOrderCommitResponse,
   type LocalBridgeConfig,
   type LocalBridgeArea,
   type PrintBridge,
@@ -150,6 +157,11 @@ import {
   createSimpleCatalogItem as createSimpleCatalogItemRequest,
   closeTable as closeTableRequest,
   createOrder,
+  fetchGhostOrders,
+  createGhostOrder as createGhostOrderRequest,
+  patchGhostOrder as patchGhostOrderRequest,
+  discardGhostOrder as discardGhostOrderRequest,
+  commitGhostOrder as commitGhostOrderRequest,
   fetchBomItems,
   fetchData,
   fetchBootstrap,
@@ -534,6 +546,8 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   socket.off(socketEvents.reservationUpdate);
   socket.off(socketEvents.inventoryUpdate);
   socket.off(socketEvents.tablesUpdate);
+  socket.off(socketEvents.ghostOrderUpdated);
+  socket.off(socketEvents.ghostOrderRemoved);
   socket.off(socketEvents.dataUpdate);
   socket.off(socketEvents.settingsUpdate);
   socket.off(socketEvents.bridgeStatus);
@@ -546,9 +560,14 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     if (!hasModuleEnabled(get(), 'kitchen')) {
       return;
     }
-    // Audio alert for new orders (chef/admin only)
-    const role = get().currentUser?.role;
-    if (role === 'chef' || role === 'admin') {
+    // Audio alert for new orders: chef/admin only, and a per-tenant capability
+    // (`newOrderSound`) so the beep is off by default for every tenant.
+    const { currentUser, tenantContext } = get();
+    const role = currentUser?.role;
+    if (
+      (role === 'chef' || role === 'admin') &&
+      hasTenantOverride('newOrderSound', tenantContext?.tenantSlug, tenantContext?.tenantId)
+    ) {
       try {
         const ctx = new AudioContext();
         const osc = ctx.createOscillator();
@@ -651,6 +670,37 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
     set((state: AppState) =>
       state.data ? { data: { ...state.data, tables } } : state,
     );
+  });
+
+  onSocketEvent(socket, socketEvents.ghostOrderUpdated, (ghost) => {
+    if (!hasModuleEnabled(get(), 'kitchen')) {
+      return;
+    }
+    set((state: AppState) => ({
+      ghostOrders: [
+        ...state.ghostOrders.filter((entry) => entry.id !== ghost.id),
+        ghost,
+      ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    }));
+  });
+
+  onSocketEvent(socket, socketEvents.ghostOrderRemoved, (payload) => {
+    set((state: AppState) => ({
+      ghostOrders: state.ghostOrders.filter((entry) => entry.id !== payload.id),
+      ghostOrderRemoval: {
+        id: payload.id,
+        reason: payload.reason,
+        ...(payload.orderId ? { orderId: payload.orderId } : {}),
+        at: Date.now(),
+      },
+    }));
+  });
+
+  // The socket is an accelerator, not the source of truth: after a reconnect
+  // any event missed while offline is reconciled by a REST refetch.
+  socket.off('connect');
+  socket.on('connect', () => {
+    void get().refreshGhostOrders();
   });
 
   onSocketEvent(socket, socketEvents.inventoryUpdate, (inventory) => {
@@ -831,6 +881,8 @@ interface AppState {
   posCart: CartItem[];
   cartStore: Record<string, CartItem[]>;
   cartContextKey: string;
+  ghostOrders: GhostOrder[];
+  ghostOrderRemoval: { id: string; reason: string; orderId?: string; at: number } | null;
   posOrderMode: 'dine_in' | 'takeaway' | 'delivery';
   posTableNumber: string;
   // Stable selected-table identity (the table row id). Survives renames and
@@ -845,6 +897,11 @@ interface AppState {
   loginWithPin: (staffId: string, pin: string) => Promise<boolean>;
   logout: () => Promise<void>;
   createOrder: (order: CreateOrderRequest) => Promise<Order>;
+  refreshGhostOrders: () => Promise<void>;
+  createGhostOrder: (payload: GhostOrderCreateRequest) => Promise<GhostOrder>;
+  patchGhostOrder: (id: string, payload: GhostOrderPatchRequest) => Promise<GhostOrder>;
+  discardGhostOrder: (id: string, payload: GhostOrderDiscardRequest) => Promise<GhostOrder>;
+  commitGhostOrder: (id: string, payload: GhostOrderCommitRequest) => Promise<GhostOrderCommitResponse>;
   upsertDeliveryOrder: (orderId: string, payload: DeliveryUpsertRequest) => Promise<void>;
   updateOrderItemQuantity: (orderId: string, orderItemId: number, quantity: number) => Promise<Order>;
   resendOrderPrintJobs: (orderId: string) => Promise<void>;
@@ -970,6 +1027,7 @@ interface AppState {
   updatePosCartItem: (cartItemId: string, updates: Partial<CartItem>) => void;
   removeFromPosCart: (cartItemId: string) => void;
   clearPosCart: () => void;
+  removePosCartItems: (cartItemIds: string[]) => void;
   setCartContext: (key: string) => void;
   relocateCart: (sourceKey: string, targetKey: string) => void;
   // Atomically set the selected table (id + number).
@@ -1312,6 +1370,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   posCart: [],
   cartStore: {},
   cartContextKey: '',
+  ghostOrders: [],
+  ghostOrderRemoval: null,
   posOrderMode: 'dine_in',
   // No default table: an empty selection lets the POS resolve the first active
   // table ONCE. A persisted number would otherwise trigger the "first table"
@@ -1410,6 +1470,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           orderHistory: bootstrap.orderHistory,
           customerAnalytics: bootstrap.customerAnalytics,
           categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
+          ghostOrders: bootstrap.data.ghostOrders ?? [],
           currentUser,
           tenantContext,
           enabledModules,
@@ -1492,6 +1553,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           orderHistory: bootstrap.orderHistory,
           customerAnalytics: bootstrap.customerAnalytics,
           categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
+          ghostOrders: bootstrap.data.ghostOrders ?? [],
           ...courseRoundsState,
           currentUser,
           enabledModules,
@@ -1685,6 +1747,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           orderHistory: bootstrap.orderHistory,
           customerAnalytics: bootstrap.customerAnalytics,
           categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
+          ghostOrders: bootstrap.data.ghostOrders ?? [],
           ...courseRoundsState,
           loading: false,
         });
@@ -1737,6 +1800,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       courseRoundsModuleEnabled: false,
       permissions: [],
       data: null,
+      ghostOrders: [],
+      ghostOrderRemoval: null,
       staffAdmin: [],
       payments: [],
       printJobs: [],
@@ -1828,6 +1893,25 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     });
   },
 
+  /**
+   * Remove only the lines that were actually sent. Lines added while the
+   * commit was in flight stay in the cart and are synced as a new ghost.
+   */
+  removePosCartItems: (cartItemIds) => {
+    if (cartItemIds.length === 0) return;
+    const ids = new Set(cartItemIds);
+    set((state) => {
+      const newPosCart = state.posCart.filter((item) => !ids.has(item.cartItemId));
+      const newCartStore = { ...state.cartStore };
+      if (newPosCart.length === 0) {
+        delete newCartStore[state.cartContextKey];
+      } else {
+        newCartStore[state.cartContextKey] = newPosCart;
+      }
+      return { posCart: newPosCart, cartStore: newCartStore };
+    });
+  },
+
   createOrder: async (orderPayload) => {
     try {
       const state = get();
@@ -1841,7 +1925,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       // Refetch completo solo come fallback quando il socket è disconnesso.
       if (!getSocket().connected) {
         const data = await fetchData();
-        set({ data });
+        set({ data, ghostOrders: data.ghostOrders ?? get().ghostOrders });
       }
       set((state) => {
         const newCartStore = { ...state.cartStore };
@@ -1853,6 +1937,63 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       set({ error: handleActionError(err) });
       throw err;
     }
+  },
+
+  refreshGhostOrders: async () => {
+    if (!hasModuleEnabled(get(), 'kitchen')) {
+      set({ ghostOrders: [] });
+      return;
+    }
+    try {
+      const ghostOrders = await fetchGhostOrders();
+      set({ ghostOrders });
+    } catch {
+      // Transient network failure: keep the last known drafts (the socket or
+      // the next reconnect will reconcile). A disabled capability simply
+      // leaves the list empty from bootstrap.
+    }
+  },
+
+  createGhostOrder: async (payload) => {
+    const ghost = await createGhostOrderRequest(payload);
+    set((state) => ({
+      ghostOrders: [
+        ...state.ghostOrders.filter((entry) => entry.id !== ghost.id),
+        ghost,
+      ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    }));
+    return ghost;
+  },
+
+  patchGhostOrder: async (id, payload) => {
+    const ghost = await patchGhostOrderRequest(id, payload);
+    set((state) => ({
+      ghostOrders: ghost.status === 'open'
+        ? [...state.ghostOrders.filter((entry) => entry.id !== ghost.id), ghost]
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        : state.ghostOrders.filter((entry) => entry.id !== ghost.id),
+    }));
+    return ghost;
+  },
+
+  discardGhostOrder: async (id, payload) => {
+    const ghost = await discardGhostOrderRequest(id, payload);
+    set((state) => ({
+      ghostOrders: state.ghostOrders.filter((entry) => entry.id !== ghost.id),
+    }));
+    return ghost;
+  },
+
+  commitGhostOrder: async (id, payload) => {
+    const result = await commitGhostOrderRequest(id, payload);
+    set((state) => ({
+      ghostOrders: state.ghostOrders.filter((entry) => entry.id !== id),
+    }));
+    if (!getSocket().connected) {
+      const data = await fetchData();
+      set({ data, ghostOrders: data.ghostOrders ?? get().ghostOrders });
+    }
+    return result;
   },
 
   upsertDeliveryOrder: async (orderId, payload) => {
