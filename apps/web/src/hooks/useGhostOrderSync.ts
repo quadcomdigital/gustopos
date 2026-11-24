@@ -49,6 +49,7 @@ export function useGhostOrderSync({
   const discardGhostOrder = useAppStore((s) => s.discardGhostOrder);
   const commitGhostOrder = useAppStore((s) => s.commitGhostOrder);
   const refreshGhostOrders = useAppStore((s) => s.refreshGhostOrders);
+  const ghostOrders = useAppStore((s) => s.ghostOrders);
 
   const [ghostOrderId, setGhostOrderId] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -111,6 +112,25 @@ export function useGhostOrderSync({
   useEffect(() => {
     reset();
   }, [active, tableId, enabled, reset]);
+
+  // Fallback reconciliation for a missed `ghost_order:removed` event (tab in
+  // background, gap between reconnect and the refetch, event dropped). The
+  // store list is the authoritative set of open drafts: if ours is no longer
+  // open, the cashier committed or discarded it. Release the binding and let
+  // the POS empty the cart — otherwise those same lines stay in `posCart`
+  // while the committed order lands in `data.orders`, and the POS total counts
+  // them twice.
+  useEffect(() => {
+    if (!ghostOrderId) return;
+    // Our own commit/discard/sync owns the transition; do not race it.
+    if (suppressRef.current || inFlightRef.current) return;
+    const stillOpen = ghostOrders.some(
+      (ghost) => ghost.id === ghostOrderId && ghost.status === 'open',
+    );
+    if (stillOpen) return;
+    reset();
+    onExternalRemovalRef.current?.();
+  }, [ghostOrderId, ghostOrders, reset]);
 
   const syncNow = useCallback(async (): Promise<void> => {
     if (!enabled || !active || !tableIdRef.current || suppressRef.current) return;

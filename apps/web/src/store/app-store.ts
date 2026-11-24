@@ -18,6 +18,7 @@ import {
   type CreateOrderRequest,
   type CloseTableRequest,
   type CloseTableResponse,
+  type SettleTableResponse,
   type Ingredient,
   type IngredientCreateRequest,
   type IngredientUpdateRequest,
@@ -83,9 +84,12 @@ import {
   type OrderHistoryFilters,
   type SplitBillRequest,
   type SplitBillResponse,
+  type UpdateSplitSharesRequest,
+  type UpdateSplitSharesResponse,
   type PaySelectedItemsRequest,
   type PaySelectedItemsResponse,
   type MarkShareAsPaidRequest,
+  type CancelSplitBillResponse,
   type MarkShareAsPaidResponse,
   type StaffAdmin,
   type StaffCreateRequest,
@@ -116,6 +120,7 @@ import {
   type CategoryModifierPoolUpdateRequest,
   type CartItem,
   type GhostOrder,
+  type PosPresenceEntry,
   type GhostOrderCreateRequest,
   type GhostOrderPatchRequest,
   type GhostOrderDiscardRequest,
@@ -156,6 +161,7 @@ import {
   createMenuProduct as createMenuProductRequest,
   createSimpleCatalogItem as createSimpleCatalogItemRequest,
   closeTable as closeTableRequest,
+  settleTable as settleTableRequest,
   createOrder,
   fetchGhostOrders,
   createGhostOrder as createGhostOrderRequest,
@@ -187,8 +193,10 @@ import {
   logout as logoutRequest,
   payTable,
   splitBill as splitBillRequest,
+  updateSplitShares as updateSplitSharesRequest,
   paySelectedItems as paySelectedItemsRequest,
   markShareAsPaid as markShareAsPaidRequest,
+  cancelSplitBill as cancelSplitBillRequest,
   getTablePaymentStatus as getTablePaymentStatusRequest,
   isDuplicateIdempotentError,
   transferTable as transferTableRequest,
@@ -295,6 +303,9 @@ import {
 } from '../shared/api/client';
 import { disconnectSocket, getSocket } from '../shared/api/socket';
 import { applyUiTheme } from '../lib/theme';
+import { clearDashboardUnlocks } from '../lib/dashboard-unlock';
+import { shouldApplySnapshot } from '../lib/snapshot-freshness';
+import { nextPosContext, type PosContextAction, type PosTableLike } from '@gustopos/shared';
 import { uiActionPolicyMatrix } from '../shared/authz/policy';
 import {
   isReservationsQueryFresh,
@@ -548,6 +559,7 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   socket.off(socketEvents.tablesUpdate);
   socket.off(socketEvents.ghostOrderUpdated);
   socket.off(socketEvents.ghostOrderRemoved);
+  socket.off(socketEvents.posPresence);
   socket.off(socketEvents.dataUpdate);
   socket.off(socketEvents.settingsUpdate);
   socket.off(socketEvents.bridgeStatus);
@@ -697,10 +709,28 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   });
 
   // The socket is an accelerator, not the source of truth: after a reconnect
-  // any event missed while offline is reconciled by a REST refetch.
+  // any event missed while offline is reconciled by a REST refetch. The first
+  // connect of a session follows the bootstrap, so only later ones reconcile.
+  let connectedOnce = false;
   socket.off('connect');
   socket.on('connect', () => {
+    // Il POS mostra lo stato realetime: senza socket i dati restano quelli
+    // dell'ultimo evento, e l'operatore deve saperlo (tavoli/totali stantii).
+    set({ socketConnected: true });
     void get().refreshGhostOrders();
+    if (connectedOnce) {
+      void get().reconcileOperationalData();
+    }
+    connectedOnce = true;
+  });
+  socket.off('disconnect');
+  socket.on('disconnect', () => {
+    set({ socketConnected: false });
+  });
+
+  // Presenza POS: elenco completo a ogni claim/rilascio o disconnessione.
+  onSocketEvent(socket, socketEvents.posPresence, (presence) => {
+    set({ posPresence: presence });
   });
 
   onSocketEvent(socket, socketEvents.inventoryUpdate, (inventory) => {
@@ -716,7 +746,9 @@ function attachSocketListeners(set: StoreSet, get: () => AppState) {
   // (mutations now send targeted orders:update/tables:update), but keep this
   // handler so a mixed-version deployment never leaves a client stale.
   onSocketEvent(socket, socketEvents.dataUpdate, (payload: AppData) => {
-    set({ data: payload, inventoryItems: payload.inventory });
+    // `dataRevision` è la marca di freschezza: serve a NON lasciare che una
+    // risposta REST partita prima sovrascriva questo push al suo ritorno.
+    set((state) => ({ data: payload, inventoryItems: payload.inventory, dataRevision: state.dataRevision + 1 }));
   });
 
   onSocketEvent(socket, socketEvents.settingsUpdate, (payload: UiSettings) => {
@@ -829,6 +861,10 @@ interface AppState {
   permissions: string[];
   offlineQueue: Array<{ id: string; moduleKey: ModuleKey; payload: unknown; createdAt: string }>;
   data: AppData | null;
+  /** Marca di freschezza dello snapshot (vedi `shouldApplySnapshot`). */
+  dataRevision: number;
+  /** Canale realtime connesso (indicatore in POS/UI). */
+  socketConnected: boolean;
   staff: Staff[];
   staffAdmin: StaffAdmin[];
   payments: Payment[];
@@ -882,8 +918,19 @@ interface AppState {
   cartStore: Record<string, CartItem[]>;
   cartContextKey: string;
   ghostOrders: GhostOrder[];
+  // Presenza POS per tenant (socket): quale postazione sta lavorando su quale
+  // tavolo. Effimera, arriva dal gateway e serve alla mappa tavoli.
+  posPresence: PosPresenceEntry[];
   ghostOrderRemoval: { id: string; reason: string; orderId?: string; at: number } | null;
   posOrderMode: 'dine_in' | 'takeaway' | 'delivery';
+  // Conto aperto a cui la postazione è agganciata. Vive nello store e NON è
+  // derivato da `data.orders`: se l'ordine viene chiuso/annullato lo snapshot
+  // live lo perde, ma la postazione non deve cambiare modalità né carrello.
+  posOrder: { id: string; orderType: 'dine_in' | 'takeaway' | 'delivery'; table: string | null } | null;
+  // Ultimo tavolo reale in sala: rientrando da Asporto/Consegna si torna lì
+  // invece di restare appesi al tavolo virtuale del conto.
+  posLastDineInTableId: string;
+  posLastDineInTableNumber: string;
   posTableNumber: string;
   // Stable selected-table identity (the table row id). Survives renames and
   // lets the POS tell "renamed" (id still exists) from "deleted" (id gone)
@@ -893,6 +940,7 @@ interface AppState {
   initDone: boolean;
   hydrate: () => Promise<void>;
   refreshAllData: () => Promise<void>;
+  reconcileOperationalData: () => Promise<void>;
   syncSessionModules: () => Promise<void>;
   loginWithPin: (staffId: string, pin: string) => Promise<boolean>;
   logout: () => Promise<void>;
@@ -909,9 +957,13 @@ interface AppState {
   voidOrder: (id: string, payload: VoidOrderRequest) => Promise<VoidOrderResponse>;
   payTable: (tableId: string) => Promise<PayTableResponse>;
   closeTable: (tableId: string, payload: CloseTableRequest) => Promise<CloseTableResponse>;
+  /** Chiude un conto già interamente incassato a voci (nessun nuovo pagamento). */
+  settleTable: (tableId: string) => Promise<SettleTableResponse>;
   splitBill: (tableId: string, payload: SplitBillRequest) => Promise<SplitBillResponse>;
+  updateSplitShares: (tableId: string, payload: UpdateSplitSharesRequest) => Promise<UpdateSplitSharesResponse>;
   paySelectedItems: (tableId: string, payload: PaySelectedItemsRequest) => Promise<PaySelectedItemsResponse>;
   markShareAsPaid: (tableId: string, shareIndex: number, payload: MarkShareAsPaidRequest) => Promise<MarkShareAsPaidResponse>;
+  cancelSplitBill: (tableId: string) => Promise<CancelSplitBillResponse>;
   getTablePaymentStatus: (tableId: string) => Promise<TablePaymentStatus>;
   transferTable: (
     sourceTableId: string,
@@ -1030,8 +1082,16 @@ interface AppState {
   removePosCartItems: (cartItemIds: string[]) => void;
   setCartContext: (key: string) => void;
   relocateCart: (sourceKey: string, targetKey: string) => void;
-  // Atomically set the selected table (id + number).
-  selectPosTable: (id: string, number: string) => void;
+  // Atomically set the selected table (id + number). `virtual` marks the hidden
+  // takeaway/delivery conto tables, which are never remembered as "last sala".
+  selectPosTable: (id: string, number: string, options?: { virtual?: boolean }) => void;
+  /**
+   * UNICO scrittore del contesto POS (modalità + tavolo + conto agganciato).
+   * Delega la decisione a `nextPosContext` (shared) e applica il patch in un
+   * solo `set()`, così id/numero/modalità non possono divergere.
+   */
+  applyPosContextAction: (action: PosContextAction, tables: readonly PosTableLike[]) => void;
+  setPosOrder: (order: { id: string; orderType: 'dine_in' | 'takeaway' | 'delivery'; table: string | null } | null) => void;
 
   // ─── Print-bridge pool (Phase E) ───────────────────────────────────────
   printBridges: PrintBridge[];
@@ -1318,6 +1378,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   permissions: [],
   offlineQueue: [],
   data: null,
+  // Contatore monotono degli snapshot applicati (socket o REST): distingue
+  // "arrivato prima/dopo" sulla stessa sessione (vedi shouldApplySnapshot).
+  dataRevision: 0,
+  // Stato del canale realtime (acceleratore): false = dati potenzialmente stantii.
+  socketConnected: false,
   staff: [],
   staffAdmin: [],
   payments: [],
@@ -1371,8 +1436,12 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   cartStore: {},
   cartContextKey: '',
   ghostOrders: [],
+  posPresence: [],
   ghostOrderRemoval: null,
   posOrderMode: 'dine_in',
+  posOrder: null,
+  posLastDineInTableId: '',
+  posLastDineInTableNumber: '',
   // No default table: an empty selection lets the POS resolve the first active
   // table ONCE. A persisted number would otherwise trigger the "first table"
   // fallback on every realtime update (the D1 misassignment class).
@@ -1528,17 +1597,24 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         return;
       }
       const enabledModules = normalizeEnabledModules(currentUser.enabledModules ?? []);
+      const capturedRevision = get().dataRevision;
       const bootstrap = await fetchBootstrap(enabledModules).catch(() => null);
       const courseRoundsState = await loadCourseRoundsState(enabledModules);
 
       if (bootstrap) {
         applyUiTheme(bootstrap.uiSettings);
+        // Stessa regola del reconcile: se durante la fetch è arrivato uno
+        // snapshot più recente dal socket, non lo si sovrascrive con questo.
+        const dataIsFresh = shouldApplySnapshot({
+          capturedRevision,
+          currentRevision: get().dataRevision,
+        });
         set({
           ...invalidateDeliveryCache(),
           ...invalidatePurchasingCache(),
           ...invalidateShiftsCache(),
           ...invalidateFiscalExportsCache(),
-          data: bootstrap.data,
+          ...(dataIsFresh ? { data: bootstrap.data, dataRevision: capturedRevision + 1 } : {}),
           staff: bootstrap.staff,
           uiSettings: bootstrap.uiSettings,
           staffAdmin: bootstrap.staffAdmin,
@@ -1553,7 +1629,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           orderHistory: bootstrap.orderHistory,
           customerAnalytics: bootstrap.customerAnalytics,
           categoryModifierPools: bootstrap.data.categoryModifierPools ?? [],
-          ghostOrders: bootstrap.data.ghostOrders ?? [],
+          // Le bozze viaggiano nello snapshot: se è vecchio non vanno azzerate.
+          ...(dataIsFresh ? { ghostOrders: bootstrap.data.ghostOrders ?? [] } : {}),
           ...courseRoundsState,
           currentUser,
           enabledModules,
@@ -1586,6 +1663,35 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     } catch {
       // Keep existing data on failure; the button's spinner will stop and the
       // user can retry. No destructive state change here.
+    }
+  },
+
+  // Reconcile the operational snapshot (orders, tables, menu, drafts) against
+  // REST without touching the cart or the session. Socket events are the fast
+  // path, so a connection gap — or the checkout opening after the tab was in
+  // background — can leave `data.orders` behind the server. Mutations always
+  // read totals/payments from the server, so a stale list shows rows that no
+  // longer match the amount due.
+  reconcileOperationalData: async () => {
+    if (!hasAuthSession() || !get().currentUser) {
+      return;
+    }
+    try {
+      const capturedRevision = get().dataRevision;
+      const data = await fetchData();
+      // Un push socket arrivato durante la fetch è più recente di questa
+      // risposta: scartarla (altrimenti si torna indietro di uno stato).
+      if (!shouldApplySnapshot({ capturedRevision, currentRevision: get().dataRevision })) {
+        return;
+      }
+      set((state) => ({
+        data,
+        ghostOrders: data.ghostOrders ?? state.ghostOrders,
+        dataRevision: state.dataRevision + 1,
+      }));
+    } catch {
+      // Transient failure: keep the last known snapshot and retry on the next
+      // reconnect / checkout open. Never clear data here.
     }
   },
 
@@ -1792,6 +1898,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
     disconnectSocket();
     applyUiTheme(defaultUiSettings);
+    // The dashboard PIN gate is per browser session: a new login must re-enter it.
+    clearDashboardUnlocks();
     set({
       currentUser: null,
       tenantContext: null,
@@ -1800,7 +1908,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       courseRoundsModuleEnabled: false,
       permissions: [],
       data: null,
+      // Contatore monotono degli snapshot applicati (socket o REST). Non è una data:
+      // serve solo a distinguere "arrivato prima/dopo" sulla stessa sessione.
+      dataRevision: 0,
       ghostOrders: [],
+      posPresence: [],
       ghostOrderRemoval: null,
       staffAdmin: [],
       payments: [],
@@ -1862,9 +1974,71 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     });
   },
 
-  selectPosTable: (id, number) => {
-    set({ posTableId: id, posTableNumber: number });
+  selectPosTable: (id, number, options) => {
+    // Stessa transizione usata da `applyPosContextAction`: una sola regola per
+    // id + numero + memoria dell'ultimo tavolo di sala.
+    const patch = nextPosContext({
+      state: {
+        mode: get().posOrderMode,
+        tableId: get().posTableId,
+        tableNumber: get().posTableNumber,
+        lastDineInTableId: get().posLastDineInTableId,
+        lastDineInTableNumber: get().posLastDineInTableNumber,
+        pinnedOrderId: get().posOrder?.id ?? null,
+      },
+      action: { type: 'selectTable', tableId: id, tableNumber: number, virtual: options?.virtual },
+      tables: [],
+    });
+    set({
+      posTableId: patch.tableId ?? '',
+      posTableNumber: patch.tableNumber ?? '',
+      ...(patch.lastDineInTableId !== undefined
+        ? { posLastDineInTableId: patch.lastDineInTableId, posLastDineInTableNumber: patch.lastDineInTableNumber ?? '' }
+        : {}),
+    });
   },
+
+  applyPosContextAction: (action, tables) => {
+    const state = get();
+    const patch = nextPosContext({
+      state: {
+        mode: state.posOrderMode,
+        tableId: state.posTableId,
+        tableNumber: state.posTableNumber,
+        lastDineInTableId: state.posLastDineInTableId,
+        lastDineInTableNumber: state.posLastDineInTableNumber,
+        pinnedOrderId: state.posOrder?.id ?? null,
+      },
+      action,
+      tables,
+    });
+
+    // `nextPosContext` ritorna solo l'id: l'oggetto del conto agganciato resta
+    // quello passato dall'azione (o viene azzerato quando il patch lo slega).
+    let posOrder = state.posOrder;
+    if (action.type === 'pinOrder') {
+      posOrder = action.order
+        ? { id: action.order.id, orderType: action.order.orderType, table: action.order.table ?? null }
+        : null;
+    } else if (patch.pinnedOrderId === null) {
+      posOrder = null;
+    }
+
+    set({
+      ...(patch.mode !== undefined ? { posOrderMode: patch.mode } : {}),
+      ...(patch.tableId !== undefined ? { posTableId: patch.tableId } : {}),
+      ...(patch.tableNumber !== undefined ? { posTableNumber: patch.tableNumber } : {}),
+      ...(patch.lastDineInTableId !== undefined
+        ? { posLastDineInTableId: patch.lastDineInTableId }
+        : {}),
+      ...(patch.lastDineInTableNumber !== undefined
+        ? { posLastDineInTableNumber: patch.lastDineInTableNumber }
+        : {}),
+      ...(patch.pinnedOrderId !== undefined ? { posOrder } : {}),
+    });
+  },
+
+  setPosOrder: (order) => set({ posOrder: order }),
 
   addToPosCart: (item) => {
     const cartItemId = `ci_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2337,6 +2511,29 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
+  settleTable: async (tableId) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        enqueueBlockedAction(set as StoreSet, 'kitchen', { action: 'settleTable', tableId });
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      if (!hasPermission(state, uiActionPolicyMatrix.tablesPay.permission)) {
+        throw new Error('Permessi insufficienti per chiudere il tavolo');
+      }
+      const result = await settleTableRequest(tableId);
+      // Socket-first: ordini pagati + tavolo libero arrivano dagli eventi.
+      if (!getSocket().connected) {
+        const data = await fetchData();
+        set({ data });
+      }
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
   splitBill: async (tableId, payload) => {
     try {
       const state = get();
@@ -2405,6 +2602,50 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         const data = await fetchData();
         set({ data });
       }
+      if (shouldRefreshPayments) {
+        const payments = await fetchPayments({ limit: 200 });
+        set({ payments });
+      }
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  updateSplitShares: async (tableId, payload) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      if (!hasPermission(state, uiActionPolicyMatrix.tablesPay.permission)) {
+        throw new Error('Permessi insufficienti per modificare la divisione');
+      }
+      const result = await updateSplitSharesRequest(tableId, payload);
+      const shouldRefreshPayments = state.currentUser?.role === 'admin' && hasModuleEnabled(state, 'analytics');
+      if (shouldRefreshPayments) {
+        const payments = await fetchPayments({ limit: 200 });
+        set({ payments });
+      }
+      return result;
+    } catch (err) {
+      set({ error: handleActionError(err) });
+      throw err;
+    }
+  },
+
+  cancelSplitBill: async (tableId) => {
+    try {
+      const state = get();
+      if (!hasModuleEnabled(state, 'kitchen')) {
+        throw new Error('Modulo kitchen disabilitato per questo tenant');
+      }
+      if (!hasPermission(state, uiActionPolicyMatrix.tablesPay.permission)) {
+        throw new Error('Permessi insufficienti per annullare la divisione');
+      }
+      const result = await cancelSplitBillRequest(tableId);
+      const shouldRefreshPayments = state.currentUser?.role === 'admin' && hasModuleEnabled(state, 'analytics');
       if (shouldRefreshPayments) {
         const payments = await fetchPayments({ limit: 200 });
         set({ payments });
@@ -4031,6 +4272,9 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
     cartStore: state.cartStore,
     cartContextKey: state.cartContextKey,
     posOrderMode: state.posOrderMode,
+    posOrder: state.posOrder,
+    posLastDineInTableId: state.posLastDineInTableId,
+    posLastDineInTableNumber: state.posLastDineInTableNumber,
     posTableNumber: state.posTableNumber,
     posTableId: state.posTableId,
     localBridgeConfig: state.localBridgeConfig,
