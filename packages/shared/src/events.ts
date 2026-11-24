@@ -14,6 +14,7 @@ import {
   groupOrderRealtimeMasterChangedSchema,
   groupOrderRealtimeSubmittedSchema,
   groupOrderRealtimeReviewUpdatedSchema,
+  posPresenceListSchema,
   type AppData,
   type Ingredient,
   type Order,
@@ -47,6 +48,8 @@ export const socketEvents = {
   groupOrderMasterChanged: "group_order_master_changed",
   groupOrderSubmitted: "group_order_submitted",
   groupOrderReviewUpdated: "group_order_review_updated",
+  /** Which POS station is working on which table (ephemeral presence). */
+  posPresence: "pos:presence",
   bridgeStatus: "bridge:status",
   bridgeRemoved: "bridge:removed",
   jobClaimed: "job:claimed",
@@ -105,6 +108,7 @@ export const socketEventPayloadSchema = {
   [socketEvents.groupOrderMasterChanged]: groupOrderRealtimeMasterChangedSchema,
   [socketEvents.groupOrderSubmitted]: groupOrderRealtimeSubmittedSchema,
   [socketEvents.groupOrderReviewUpdated]: groupOrderRealtimeReviewUpdatedSchema,
+  [socketEvents.posPresence]: posPresenceListSchema,
   [socketEvents.bridgeStatus]: printBridgeSchema,
   [socketEvents.bridgeRemoved]: bridgeRemovedPayloadSchema,
   [socketEvents.jobClaimed]: printJobSchema,
@@ -160,3 +164,4 @@ export function onSocketEvent<E extends SocketEventName>(
 // Re-exported payload types for convenience so consumers do not need to
 // import from the contract modules directly when typing socket handlers.
 export type { AppData, Ingredient, Order, GhostOrder, Reservation, PrintBridge, PrintJob, Table, UiSettings };
+export type { PosPresenceEntry } from "./contracts";

@@ -12,7 +12,15 @@ import { PushDispatcher } from "./push/push-dispatcher.service";
 import { getJwtSecret } from "./auth/jwt-secret";
 import { getTenantContext, runWithTenantContext } from "./tenant/tenant-context.store";
 import { TenantService } from "./tenant/tenant.service";
-import { isSocketEventName, parseSocketEventPayload, type ModuleKey, type SocketEventName } from "@gustopos/shared";
+import {
+  isSocketEventName,
+  parseSocketEventPayload,
+  posClaimTableRequestSchema,
+  socketEvents,
+  type ModuleKey,
+  type PosPresenceEntry,
+  type SocketEventName,
+} from "@gustopos/shared";
 
 const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
   "order:new": ["kitchen"],
@@ -23,6 +31,7 @@ const EVENT_MODULE_MAP: Record<string, Array<ModuleKey>> = {
   "reservation:update": ["reservations"],
   "inventory:update": ["inventory"],
   "tables:update": ["kitchen"],
+  "pos:presence": ["kitchen"],
   "settings:update": [],
 };
 
@@ -46,6 +55,24 @@ export class RealtimeGateway implements OnModuleInit {
 
   @WebSocketServer()
   server!: Server;
+
+  /**
+   * Presenza POS effimera: tenantId → socketId → aggancio. Vive in memoria e
+   * muore con la connessione (non è un lock di autorizzazione né stato di
+   * dominio): serve alla mappa tavoli per mostrare chi sta lavorando sul tavolo.
+   */
+  private readonly posPresence = new Map<string, Map<string, PosPresenceEntry>>();
+
+  private presenceSnapshot(tenantId: string): PosPresenceEntry[] {
+    return [...(this.posPresence.get(tenantId)?.values() ?? [])].sort((a, b) =>
+      a.tableNumber.localeCompare(b.tableNumber, "it", { numeric: true, sensitivity: "base" }),
+    );
+  }
+
+  private async broadcastPresence(tenantId: string): Promise<void> {
+    const snapshot = this.presenceSnapshot(tenantId);
+    await this.emit(socketEvents.posPresence, snapshot, tenantId);
+  }
 
   onModuleInit(): void {
     this.server.use(async (socket, next) => {
@@ -124,6 +151,7 @@ export class RealtimeGateway implements OnModuleInit {
         socket.data.authenticated = true;
         socket.data.isGroupOrder = false;
         socket.data.tenantId = payload.tenantId;
+        socket.data.staffId = payload.sub;
         socket.data.enabledModules = enabledModules;
         // Room-based fan-out: each authenticated staff socket joins its tenant
         // room, one room per enabled feature module, and a cross-tenant
@@ -231,6 +259,75 @@ export class RealtimeGateway implements OnModuleInit {
       return false;
     }
     return true;
+  }
+
+  /**
+   * La postazione dichiara su quale tavolo sta lavorando (o lo rilascia con
+   * `null`). Il payload è validato col contratto shared; gli errori non sono
+   * fatali per il client (la mappa è un'informazione, non un permesso).
+   */
+  @SubscribeMessage("pos_claim_table")
+  async handlePosClaimTable(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() payload: unknown,
+  ): Promise<{ ok: boolean }> {
+    if (socket.data.authenticated !== true) {
+      return { ok: false };
+    }
+    const tenantId = socket.data.tenantId as string | undefined;
+    const staffId = socket.data.staffId as string | undefined;
+    if (!tenantId || !staffId) {
+      return { ok: false };
+    }
+
+    const parsed = posClaimTableRequestSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { ok: false };
+    }
+
+    // Nome dello staff risolto lato server (mai auto-dichiarato dal client),
+    // memoizzato sulla socket: un claim per tavolo, non una query per evento.
+    let staffName = socket.data.staffName as string | undefined;
+    if (!staffName) {
+      const staff = await runWithTenantContext(
+        { tenantId, resolutionSource: "jwt", enabledModules: [] },
+        () => this.staffRepo.getStaffById(staffId),
+      );
+      staffName = staff?.name ?? "POS";
+      socket.data.staffName = staffName;
+    }
+
+    const perTenant = this.posPresence.get(tenantId) ?? new Map<string, PosPresenceEntry>();
+    if (parsed.data === null) {
+      perTenant.delete(socket.id);
+    } else {
+      perTenant.set(socket.id, {
+        tableId: parsed.data.tableId,
+        tableNumber: parsed.data.tableNumber,
+        staffId,
+        staffName,
+        orderId: parsed.data.orderId ?? null,
+        orderType: parsed.data.orderType,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    if (perTenant.size > 0) {
+      this.posPresence.set(tenantId, perTenant);
+    } else {
+      this.posPresence.delete(tenantId);
+    }
+
+    await this.broadcastPresence(tenantId);
+    return { ok: true };
+  }
+
+  async handleDisconnect(socket: Socket): Promise<void> {
+    const tenantId = socket.data.tenantId as string | undefined;
+    if (!tenantId) return;
+    const perTenant = this.posPresence.get(tenantId);
+    if (!perTenant?.delete(socket.id)) return;
+    if (perTenant.size === 0) this.posPresence.delete(tenantId);
+    await this.broadcastPresence(tenantId);
   }
 
   @SubscribeMessage("group_order_join_room")

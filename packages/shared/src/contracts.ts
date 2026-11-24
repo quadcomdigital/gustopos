@@ -66,6 +66,9 @@ export * from "./contracts/menu.schema";
 // ─── Re-export payment domain ─────────────────────────────────────────────
 export * from "./contracts/payment.schema";
 
+// ─── Re-export POS presence (which station holds a table) ─────────────────
+export * from "./contracts/pos-presence.schema";
+
 // ─── Re-export BoM domain ─────────────────────────────────────────────────
 import { bomItemSchema } from "./contracts/bom.schema";
 export * from "./contracts/bom.schema";
