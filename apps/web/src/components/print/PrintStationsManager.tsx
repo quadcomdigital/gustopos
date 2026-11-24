@@ -39,6 +39,9 @@ export default function PrintStationsManager({
   const [newName, setNewName] = useState('');
   const [newKind, setNewKind] = useState<PrintStationKind>('production');
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  // Spegnere una zona con articoli assegnati li lascia senza destinazione:
+  // il click chiede conferma invece di applicare subito.
+  const [confirmDeactivateId, setConfirmDeactivateId] = useState<string | null>(null);
 
   const setPrinting = (patch: Partial<UiSettings['printing']>) => {
     onSetDraft((prev) => ({ ...prev, printing: { ...prev.printing, ...patch } }));
@@ -233,11 +236,52 @@ export default function PrintStationsManager({
               )}
               <button
                 type="button"
-                onClick={() => void patch(station.id, { isActive: !station.isActive })}
+                onClick={() => {
+                  if (!station.isActive) {
+                    void patch(station.id, { isActive: true });
+                    return;
+                  }
+                  if (assignedTotal > 0) {
+                    setConfirmDeactivateId(station.id);
+                    return;
+                  }
+                  void patch(station.id, { isActive: false });
+                }}
+                title={
+                  station.isActive
+                    ? 'Clic per disattivare: la zona smette di ricevere ticket'
+                    : 'Clic per riattivare la zona'
+                }
                 className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border ${station.isActive ? 'border-success/40 text-success' : 'border-border text-text-muted'}`}
               >
                 {station.isActive ? 'Attiva' : 'Inattiva'}
               </button>
+              {confirmDeactivateId === station.id && (
+                <span className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-danger">
+                    {assignedTotal === 1
+                      ? '1 articolo assegnato resterà senza zona. Disattivare?'
+                      : `${assignedTotal} articoli assegnati resteranno senza zona. Disattivare?`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmDeactivateId(null);
+                      void patch(station.id, { isActive: false });
+                    }}
+                    className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider bg-danger text-white"
+                  >
+                    Sì, disattiva
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeactivateId(null)}
+                    className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border border-border"
+                  >
+                    Annulla
+                  </button>
+                </span>
+              )}
               {station.kind === 'production' && (
                 <button
                   type="button"

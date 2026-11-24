@@ -22,6 +22,7 @@ import PrintProfilesPanel from './print/PrintProfilesPanel';
 import PrintStationsManager from './print/PrintStationsManager';
 import PrintSettingsSection from './print/PrintSettingsSection';
 import PrintOpsSection from './print/PrintOpsSection';
+import ConfirmDialog from './ConfirmDialog';
 import PublicMenuDesignEditor from './PublicMenuDesignEditor';
 import NotificationSettingsPanel from './notifications/NotificationSettingsPanel';
 import { useAppStore } from '../store/app-store';
@@ -124,6 +125,9 @@ export default function SettingsView({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [printingSuccess, setPrintingSuccess] = useState('');
+  // Spegnere il protocollo ferma OGNI ticket: va confermato, non scoperto
+  // dopo la prima comanda che non arriva in cucina.
+  const [confirmDisablePrinting, setConfirmDisablePrinting] = useState(false);
   // Printing sections: setup (what makes the configurations work) · operations
   // (runtime) · advanced (receipt layout).
   const [printingSection, setPrintingSection] = useState<'setup' | 'ops' | 'advanced'>('setup');
@@ -174,7 +178,9 @@ export default function SettingsView({
   const invalidChecks = checks.filter((entry) => entry.ratio < entry.min);
 
   const applyReset = () => {
-    setDraft(defaultUiSettings);
+    // Solo i colori: il vecchio reset sostituiva tutto il draft (nome, logo,
+    // footer, auto-print) e il salvataggio successivo cancellava anche quelli.
+    setDraft((prev) => ({ ...prev, theme: defaultUiSettings.theme }));
     setError('');
   };
 
@@ -207,6 +213,14 @@ export default function SettingsView({
       }
     }
     return null;
+  };
+
+  const requestSavePrinting = async () => {
+    if (draft.printing.protocol === 'disabled' && settings.printing.protocol === 'escpos') {
+      setConfirmDisablePrinting(true);
+      return;
+    }
+    await savePrinting();
   };
 
   const savePrinting = async () => {
@@ -435,7 +449,7 @@ export default function SettingsView({
                 onClick={applyReset}
                 className="px-4 py-2 rounded border border-border text-xs font-bold uppercase tracking-wider"
               >
-                Reset default tema
+                Ripristina colori di default
               </button>
             </div>
           </div>
@@ -477,7 +491,7 @@ export default function SettingsView({
                 <PrintStationsManager
                   draft={draft}
                   onSetDraft={setDraft}
-                  onSavePrinting={savePrinting}
+                  onSavePrinting={requestSavePrinting}
                   savingSettings={saving}
                   printingSuccess={printingSuccess}
                 />
@@ -503,7 +517,7 @@ export default function SettingsView({
                 printingSuccess={printingSuccess}
                 saving={saving}
                 onSetDraft={setDraft}
-                onSavePrinting={savePrinting}
+                onSavePrinting={requestSavePrinting}
               />
             )}
           </div>
@@ -557,6 +571,18 @@ export default function SettingsView({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmDisablePrinting}
+        title="Disattivare tutte le stampe?"
+        message="Con il protocollo su “Disabilitato” non verranno più accodati ticket di produzione, scontrini né preconti. La cucina non riceverà le comande finché non riattivi ESC/POS."
+        confirmLabel="Disattiva le stampe"
+        onConfirm={() => {
+          setConfirmDisablePrinting(false);
+          void savePrinting();
+        }}
+        onCancel={() => setConfirmDisablePrinting(false)}
+      />
     </div>
   );
 }

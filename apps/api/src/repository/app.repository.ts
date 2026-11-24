@@ -929,10 +929,16 @@ export class AppRepository {
     }
   }
 
-  private async createPrintJobsForOrder(order: Order): Promise<void> {
+  private async createPrintJobsForOrder(order: Order, opts: { force?: boolean } = {}): Promise<void> {
     const tenantId = this.currentTenantId();
     const settings = await this.getUiSettings();
     if (settings.printing.protocol !== "escpos") {
+      return;
+    }
+    // `autoPrintKitchen` era un toggle senza effetto: la lettura non esisteva.
+    // Ora spegne solo l'invio automatico dei ticket di produzione; il reinvio
+    // manuale ("Reinvia in cucina") passa `force` e continua a funzionare.
+    if (!opts.force && !settings.printing.autoPrintKitchen) {
       return;
     }
 
@@ -6145,7 +6151,7 @@ export class AppRepository {
     if (!order) {
       return { dispatched: false };
     }
-    await this.createPrintJobsForOrder(order);
+    await this.createPrintJobsForOrder(order, { force: true });
     return { dispatched: true };
   }
 

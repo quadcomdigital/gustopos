@@ -119,3 +119,42 @@ non la vede, non la capisce e non riesce ad agire.
 - **Corretto**: la sheet resta aperta durante la generazione, mostra l'errore
   inline, e avvisa prima che il QR attuale verrà invalidato. Il banner del QR
   ora ha anche "Copia link" (con feedback), utile per stamparlo o inviarlo.
+
+## Terzo passaggio — impostazioni: toggle inerti e azioni senza conferma
+
+### Toggle senza effetto
+- **`printing.autoPrintKitchen`** (Settings → Stampa → Avanzate, "Auto-print
+  cucina"): nessuna lettura lato API. I ticket di produzione partivano sempre,
+  qualunque valore avesse il flag. **Corretto**: `createPrintJobsForOrder` lo
+  legge; il reinvio manuale ("Reinvia in cucina") passa `force: true` e resta
+  disponibile anche a flag spento. Entrambi i tenant in produzione hanno il
+  flag `true`, quindi il deploy non spegne nulla.
+  - Etichetta resa esplicita: "Ticket produzione all'invio" + hint sul reinvio.
+
+### Azioni distruttive senza conferma
+- **Reset tema** ("Reset default tema"): sostituiva l'intero draft con
+  `defaultUiSettings`, quindi nome brand, logo bitmap, footer, protocollo e
+  auto-print; un salvataggio successivo cancellava anche quelli. **Corretto**:
+  ripristina solo `theme` (label "Ripristina colori di default").
+- **Protocollo stampa → Disabilitato**: ferma ogni ticket, scontrino e
+  preconto, ma si salvava senza conferma. **Corretto**: conferma esplicita che
+  elenca cosa smette di stampare; il valore nel select dice "nessuna stampa".
+- **Zona di stampa "Attiva/Inattiva"**: il bottone mostrava lo stato, non
+  l'azione (cliccando "Attiva" si disattivava) e applicava subito. **Corretto**:
+  tooltip azione + conferma quando la zona ha articoli assegnati (che
+  resterebbero senza destinazione).
+- **Tenant "Disattiva"** (Superadmin): chiude l'accesso all'intero locale senza
+  conferma, mentre la disattivazione di un modulo critico la chiedeva.
+  **Corretto**: conferma prima di spegnere, con l'elenco degli effetti.
+- **Moduli alternativi** (Superadmin): attivare `simple_catalog` disattivava
+  `inventory` (e a cascata `purchasing_suppliers`) e viceversa; il cascade era
+  raccontato solo nel messaggio di successo. **Corretto**: conferma prima.
+
+### Verificati e lasciati come sono
+- Zone che stampano: `[]` = tutte, l'ultima zona non è deselezionabile (già
+  gestito, nessun toggle "senza effetto").
+- Coda stampa e diagnostica (azioni esplicite), profili di stampa (attiva /
+  snapshot / elimina già confermati), collaudo fiscale e chiusura giornata
+  (già confermati), categorie notifiche (salvataggio esplicito).
+- `taxRate` esiste nel contratto ma non è esposto da nessuna superficie:
+  nessun toggle da correggere.

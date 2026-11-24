@@ -176,6 +176,18 @@ export default function SuperadminPage() {
   const [cardMenuTenantId, setCardMenuTenantId] = useState<string | null>(null);
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
   const [criticalToggle, setCriticalToggle] = useState<{ tenantId: string; moduleKey: ModuleKey; enabled: boolean; label: string } | null>(null);
+  // inventory ↔ simple_catalog si escludono: abilitarne uno disattiva l'altro
+  // (e a cascata i figli). Era una scrittura immediata raccontata solo a fatto
+  // avvenuto nel messaggio di successo.
+  const [exclusionToggle, setExclusionToggle] = useState<{
+    tenantId: string;
+    moduleKey: ModuleKey;
+    counterpart: ModuleKey;
+    counterpartLabel: string;
+  } | null>(null);
+  // Disattivare un tenant chiude il locale fuori orario: prima si chiedeva
+  // solo al server, non all'operatore.
+  const [confirmTenantOff, setConfirmTenantOff] = useState<Tenant | null>(null);
 
   const selectedTenant = useMemo(
     () => tenants.find((tenant) => tenant.id === selectedTenantId) ?? null,
@@ -296,6 +308,14 @@ export default function SuperadminPage() {
     }
   }
 
+  function requestSetTenantActive(tenant: Tenant, nextActive: boolean) {
+    if (!nextActive) {
+      setConfirmTenantOff(tenant);
+      return;
+    }
+    void setTenantActive(tenant, true);
+  }
+
   async function setTenantActive(tenant: Tenant, nextActive: boolean) {
     try {
       setIsBusy(true);
@@ -327,6 +347,22 @@ export default function SuperadminPage() {
         return;
       }
 
+      if (enabled && (moduleKey === 'inventory' || moduleKey === 'simple_catalog') && !skipCriticalConfirm) {
+        const counterpart: ModuleKey = moduleKey === 'inventory' ? 'simple_catalog' : 'inventory';
+        const counterpartOn = (modulesByTenant[tenantId] ?? []).some(
+          (entry) => entry.moduleKey === counterpart && entry.enabled,
+        );
+        if (counterpartOn) {
+          setExclusionToggle({
+            tenantId,
+            moduleKey,
+            counterpart,
+            counterpartLabel: MODULES.find((entry) => entry.key === counterpart)?.label ?? counterpart,
+          });
+          return;
+        }
+      }
+
       await superadminFetch(`/tenants/${tenantId}/modules/toggle`, {
         method: 'POST',
         body: JSON.stringify({ moduleKey, enabled }),
@@ -356,6 +392,15 @@ export default function SuperadminPage() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function confirmExclusionToggle() {
+    if (!exclusionToggle) {
+      return;
+    }
+    const { tenantId, moduleKey } = exclusionToggle;
+    setExclusionToggle(null);
+    await toggleModule(tenantId, moduleKey, true, true);
   }
 
   async function confirmCriticalToggle() {
@@ -1102,7 +1147,7 @@ export default function SuperadminPage() {
                           Moduli
                         </button>
                         <button
-                          onClick={() => void setTenantActive(tenant, !tenant.isActive)}
+                          onClick={() => requestSetTenantActive(tenant, !tenant.isActive)}
                           className="px-2 py-1 rounded bg-slate-900 text-white font-semibold"
                           disabled={isBusy}
                         >
@@ -1183,7 +1228,7 @@ export default function SuperadminPage() {
                       Menu Builder
                     </button>
                     <button
-                      onClick={() => void setTenantActive(tenant, !tenant.isActive)}
+                      onClick={() => requestSetTenantActive(tenant, !tenant.isActive)}
                       className="px-2 py-2 rounded bg-slate-900 text-white font-semibold text-xs min-h-[44px] col-span-2"
                       disabled={isBusy}
                     >
@@ -1251,7 +1296,7 @@ export default function SuperadminPage() {
                         <button
                           onClick={() => {
                             setCardMenuTenantId(null);
-                            void setTenantActive(tenant, !tenant.isActive);
+                            requestSetTenantActive(tenant, !tenant.isActive);
                           }}
                           className="w-full px-3 py-3.5 rounded-lg border border-red-300 bg-red-50 text-red-700 font-semibold text-xs min-h-[48px]"
                           disabled={isBusy}
@@ -1756,6 +1801,36 @@ export default function SuperadminPage() {
         cancelLabel="Annulla"
         onCancel={() => setCriticalToggle(null)}
         onConfirm={() => void confirmCriticalToggle()}
+      />
+      <ConfirmDialog
+        open={Boolean(confirmTenantOff)}
+        title="Disattivare il tenant?"
+        message={
+          confirmTenantOff
+            ? `'${confirmTenantOff.name}' (${confirmTenantOff.slug}) perde l'accesso: staff, cassa e menu pubblico smettono di funzionare finché non lo riattivi. I dati restano intatti.`
+            : ''
+        }
+        confirmLabel="Disattiva tenant"
+        cancelLabel="Annulla"
+        onCancel={() => setConfirmTenantOff(null)}
+        onConfirm={() => {
+          const tenant = confirmTenantOff;
+          setConfirmTenantOff(null);
+          if (tenant) void setTenantActive(tenant, false);
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(exclusionToggle)}
+        title="Moduli alternativi"
+        message={
+          exclusionToggle
+            ? `Attivare '${exclusionToggle.moduleKey}' disattiva '${exclusionToggle.counterpartLabel}': i due moduli si escludono e i dati dell'altro restano nascosti (non cancellati) finché non lo riattivi. Continuare?`
+            : ''
+        }
+        confirmLabel="Attiva e disattiva l'altro"
+        cancelLabel="Annulla"
+        onCancel={() => setExclusionToggle(null)}
+        onConfirm={() => void confirmExclusionToggle()}
       />
     </main>
   );

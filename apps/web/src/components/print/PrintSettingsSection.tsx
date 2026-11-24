@@ -99,7 +99,7 @@ export default function PrintSettingsSection({
               className="mt-1 w-full px-3 py-2 rounded border border-border text-sm"
             >
               <option value="escpos">ESC/POS</option>
-              <option value="disabled">Disabilitato</option>
+              <option value="disabled">Disabilitato (nessuna stampa)</option>
             </select>
           </div>
           <div>
@@ -203,7 +203,12 @@ export default function PrintSettingsSection({
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label className="flex items-center justify-between border border-border rounded p-3 text-sm">
-            <span>Auto-print cucina</span>
+            <span className="space-y-0.5">
+              <span className="block">Ticket produzione all'invio</span>
+              <span className="block text-[10px] font-medium text-text-muted">
+                Se spento, nessuna comanda parte da sola: resta il reinvio manuale dalla cucina.
+              </span>
+            </span>
             <input
               type="checkbox"
               checked={draft.printing.autoPrintKitchen}
@@ -211,7 +216,7 @@ export default function PrintSettingsSection({
             />
           </label>
           <label className="flex items-center justify-between border border-border rounded p-3 text-sm">
-            <span>Auto-print chiusura tavolo</span>
+            <span>Scontrino di chiusura automatico</span>
             <input
               type="checkbox"
               checked={draft.printing.autoPrintOnClose}
