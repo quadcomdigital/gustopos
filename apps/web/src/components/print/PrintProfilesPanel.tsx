@@ -201,6 +201,7 @@ export default function PrintProfilesPanel({
   const [editing, setEditing] = useState<PrintProfile | null>(null);
   const [focusBridgeId, setFocusBridgeId] = useState<string | null>(null);
   const [confirmActivateId, setConfirmActivateId] = useState<string | null>(null);
+  const [confirmSnapshotId, setConfirmSnapshotId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'ok' | 'warn'; lines: string[] } | null>(null);
 
@@ -255,6 +256,7 @@ export default function PrintProfilesPanel({
       } finally {
         setBusyId(null);
         setConfirmActivateId(null);
+        setConfirmSnapshotId(null);
         setConfirmDeleteId(null);
       }
     },
@@ -496,6 +498,7 @@ export default function PrintProfilesPanel({
             const stationCount = profileStationCount(profile);
             const conflicts = findClaimedStationConflicts(profile.bridges);
             const confirmingActivate = confirmActivateId === profile.id;
+            const confirmingSnapshot = confirmSnapshotId === profile.id;
             const confirmingDelete = confirmDeleteId === profile.id;
             const busy = busyId === profile.id;
 
@@ -586,6 +589,20 @@ export default function PrintProfilesPanel({
                           Annulla
                         </Button>
                       </>
+                    ) : confirmingSnapshot ? (
+                      <>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          loading={busy}
+                          onClick={() => void handleSnapshot(profile)}
+                        >
+                          Conferma sovrascrittura
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setConfirmSnapshotId(null)}>
+                          Annulla
+                        </Button>
+                      </>
                     ) : confirmingActivate ? (
                       <>
                         <Button
@@ -636,9 +653,9 @@ export default function PrintProfilesPanel({
                         <Button
                           variant="secondary"
                           size="sm"
-                          title="Aggiorna dallo stato attuale dei bridge"
+                          title="Sovrascrive questa configurazione con il routing attuale dei bridge"
                           loading={busy}
-                          onClick={() => void handleSnapshot(profile)}
+                          onClick={() => setConfirmSnapshotId(profile.id)}
                         >
                           <RefreshCw size={13} />
                         </Button>
@@ -668,10 +685,24 @@ export default function PrintProfilesPanel({
                         Bridge del profilo non più presenti: {missing.map((entry) => entry.label ?? entry.bridgeId).join(', ')}.
                       </p>
                     )}
-                    <p className="text-amber-700">
-                      ⚠ Riscrive questa configurazione con il routing <strong>attuale</strong> dei
-                      bridge: i contenuti salvati verranno sovrascritti (è il modo per riportare
-                      dentro la configurazione una modifica avvenuta fuori).
+                    <p>
+                      La configurazione salvata <strong>non</strong> viene modificata: vengono
+                      aggiornati i bridge con quello che contiene.
+                    </p>
+                  </div>
+                )}
+
+                {confirmingSnapshot && (
+                  <div className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 space-y-1">
+                    <p>
+                      ⚠ <strong>Sovrascrittura distruttiva.</strong> Stazioni e stampanti salvate in
+                      questa configurazione ({profile.bridges.length} bridge) verranno sostituite
+                      con il routing <strong>attuale</strong> dei bridge. Le modifiche salvate ma non
+                      ancora applicate andranno perse.
+                    </p>
+                    <p>
+                      La stampa in servizio non cambia. Per modificare il routing usa la matita; per
+                      applicare la configurazione ai bridge usa <strong>Attiva</strong>.
                     </p>
                   </div>
                 )}
@@ -684,7 +715,9 @@ export default function PrintProfilesPanel({
           <p className="text-[11px] text-text-muted">
             <strong>Modifica</strong> cambia nome, bridge associati, stazioni e stampanti senza
             toccare la stampa in servizio. <strong>Attiva</strong> riscrive il routing di tutti i
-            bridge del profilo; <strong>Disattiva</strong> lascia il routing attuale invariato.
+            bridge del profilo; <strong>Disattiva</strong> lascia il routing attuale invariato. La
+            freccia circolare fa l'opposto di Attiva: sovrascrive la configurazione salvata con il
+            routing attuale dei bridge.
           </p>
         )}
       </div>
