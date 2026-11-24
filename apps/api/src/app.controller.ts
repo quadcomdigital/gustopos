@@ -157,6 +157,7 @@ import {
   menuItemUpdateRequestSchema,
   socketEvents,
   splitBillRequestSchema,
+  updateSplitSharesRequestSchema,
   paySelectedItemsRequestSchema,
   markShareAsPaidRequestSchema,
   transferTableRequestSchema,
@@ -297,6 +298,7 @@ import {
   type PrepItemUpdateRequest,
   type Order,
   type SplitBillRequest,
+  type UpdateSplitSharesRequest,
   type PaySelectedItemsRequest,
   type MarkShareAsPaidRequest,
   type TransferTableRequest,
@@ -3075,6 +3077,46 @@ export class AppController {
     return result;
   }
 
+  /**
+   * Chiude un conto già interamente incassato a voci: nessun nuovo pagamento,
+   * nessuno scontrino, solo gli ordini aperti a `paid` e il tavolo libero.
+   * Serve a sbloccare i conti rimasti aperti dopo aver incassato/rimosso le
+   * ultime voci non pagate.
+   */
+  @Post("tables/:id/settle")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async settleTable(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    let result;
+    try {
+      result = await this.tablesRepo.settleTable(id);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Settle table failed");
+    }
+
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+
+    await this.realtimeGateway.emit(socketEvents.ordersUpdate, {
+      action: "set_paid",
+      tableNumber: result.tableNumber,
+    });
+    await this.emitTablesUpdateSafely();
+    this.auditLogService.log("table.settle", {
+      actorStaffId,
+      targetId: id,
+      details: { closedOrders: result.closedOrders, total: result.totalAmount, paid: result.paidAmount },
+    });
+    return result;
+  }
+
   @Post("tables/:id/suspend")
   @Roles("admin", "waiter")
   @RequiresPermissions("tables:pay")
@@ -3202,6 +3244,57 @@ export class AppController {
         paymentId: result.payment.id,
         allSharesPaid: result.allSharesPaid,
       },
+    });
+
+    return result;
+  }
+
+  @Patch("tables/:id/split-bill/shares")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async updateSplitShares(@Param("id") id: string, @Body() payload: UpdateSplitSharesRequest, @Req() request: AuthenticatedRequest) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+    const parsed = updateSplitSharesRequestSchema.parse(payload);
+    let result;
+    try {
+      result = await this.tablesRepo.updateSplitShares(id, parsed);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Invalid update split shares request");
+    }
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+    this.auditLogService.log("table.split.shares_updated", {
+      actorStaffId,
+      targetId: id,
+      details: { total: result.total, shares: result.shares },
+    });
+    return result;
+  }
+
+  @Delete("tables/:id/split-bill")
+  @Roles("admin", "waiter")
+  @RequiresPermissions("tables:pay")
+  @RequiresModule("kitchen")
+  async cancelSplitBill(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    const actorStaffId = request.user?.sub;
+    if (!actorStaffId) {
+      throw new UnauthorizedException("Missing authenticated user");
+    }
+
+    const result = await this.tablesRepo.cancelSplitBill(id);
+    if (!result) {
+      throw new NotFoundException("Table not found");
+    }
+
+    this.auditLogService.log("table.split.cancelled", {
+      actorStaffId,
+      targetId: id,
+      details: { cancelled: result.cancelled },
     });
 
     return result;

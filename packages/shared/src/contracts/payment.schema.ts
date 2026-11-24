@@ -77,6 +77,21 @@ export const closeTableResponseSchema = z.object({
   payment: paymentSchema,
 });
 
+/**
+ * Chiusura di un conto già interamente incassato a voci (pay-items): non c'è
+ * nulla da incassare, ma il tavolo è ancora occupato. Nessun nuovo pagamento,
+ * nessuno scontrino: solo gli ordini aperti passano a `paid` e il tavolo torna
+ * libero. Rifiutata se resta un residuo da incassare.
+ */
+export const settleTableResponseSchema = z.object({
+  success: z.boolean(),
+  tableId: z.string(),
+  tableNumber: z.string(),
+  closedOrders: z.number().int().nonnegative(),
+  totalAmount: z.number().nonnegative(),
+  paidAmount: z.number().nonnegative(),
+});
+
 // ─── Split Bill ─────────────────────────────────────────────────────────────
 
 export const splitBillRequestSchema = z.object({
@@ -84,6 +99,9 @@ export const splitBillRequestSchema = z.object({
   persist: z.boolean().optional(),
   method: paymentMethodSchema.optional(),
   paidAmounts: z.array(z.number().nonnegative()).optional(),
+  // Quote editabili già alla creazione: importo netto di ogni persona. Quando
+  // presente la somma deve coincidere con il totale del conto a meno di tolleranza.
+  shareAmounts: z.array(z.number().nonnegative()).optional(),
   splitReference: z.string().min(3).max(120).optional(),
   paymentStatus: paymentStatusSchema.optional(),
   discountAmount: z.number().nonnegative().optional(),
@@ -109,9 +127,16 @@ export const paySelectedItemsRequestSchema = z.object({
     quantity: z.number().int().positive(),
   })).min(1),
   method: paymentMethodSchema,
+  // Importo effettivamente consegnato/accettato: per i contanti serve a calcolare
+  // il resto. Se assente vale l'importo della selezione.
+  paidAmount: z.number().nonnegative().optional(),
   gatewayReference: z.string().min(3).max(120).optional(),
   paymentStatus: paymentStatusSchema.optional(),
   notes: z.string().max(500).optional(),
+  // Scontrino di cassa per questa selezione + fiscale opzionale solo quando la
+  // selezione completa il conto (stesse semantiche della chiusura conto).
+  fiscalEmit: z.boolean().optional(),
+  printReceipt: z.boolean().optional(),
 });
 
 export const paySelectedItemsResponseSchema = z.object({
@@ -121,18 +146,54 @@ export const paySelectedItemsResponseSchema = z.object({
     quantity: z.number().int().positive(),
   })),
   allItemsPaid: z.boolean(),
+  // Residuo dopo questa selezione, per aggiornare subito il carrello/checkout.
+  totalAmount: z.number().nonnegative().optional(),
+  paidAmountTotal: z.number().nonnegative().optional(),
+  remainingAmount: z.number().nonnegative().optional(),
 });
 
 // ─── Mark Share as Paid ─────────────────────────────────────────────────────
 
 export const markShareAsPaidRequestSchema = z.object({
   method: paymentMethodSchema,
+  // Importo contanti consegnato per questa quota: il resto è la differenza con
+  // la quota. Se assente vale l'importo della quota.
+  paidAmount: z.number().nonnegative().optional(),
   gatewayReference: z.string().min(3).max(120).optional(),
+  // Scontrino di cassa + fiscale: emessi solo sull'ultima quota pagata, con
+  // importi e righe del conto completo.
+  fiscalEmit: z.boolean().optional(),
+  printReceipt: z.boolean().optional(),
 });
 
 export const markShareAsPaidResponseSchema = z.object({
   payment: paymentSchema,
   allSharesPaid: z.boolean(),
+  remainingAmount: z.number().nonnegative().optional(),
+});
+
+// ─── Update Split Shares ────────────────────────────────────────────────────
+
+// Quote editabili: nuovi importi netti delle quote pendenti. La somma deve
+// coincidere con il totale della divisione (a meno di tolleranza). Solo quote
+// non ancora incassate sono modificabili.
+export const updateSplitSharesRequestSchema = z.object({
+  amounts: z.array(z.number().nonnegative()).min(2).max(20),
+});
+
+export const updateSplitSharesResponseSchema = z.object({
+  tableId: z.string(),
+  tableNumber: z.string(),
+  total: z.number(),
+  shares: z.array(z.number()),
+  payments: z.array(paymentSchema),
+});
+
+// ─── Cancel Split ───────────────────────────────────────────────────────────
+
+// Discards a split that has not collected any money yet (pending shares only).
+export const cancelSplitBillResponseSchema = z.object({
+  cancelled: z.number().int().nonnegative(),
 });
 
 // ─── Transfer Table ─────────────────────────────────────────────────────────
@@ -197,12 +258,16 @@ export type PaymentStatus = z.infer<typeof paymentStatusSchema>;
 export type CloseTableRequest = z.infer<typeof closeTableRequestSchema>;
 export type Payment = z.infer<typeof paymentSchema>;
 export type CloseTableResponse = z.infer<typeof closeTableResponseSchema>;
+export type SettleTableResponse = z.infer<typeof settleTableResponseSchema>;
 export type SplitBillRequest = z.infer<typeof splitBillRequestSchema>;
 export type SplitBillResponse = z.infer<typeof splitBillResponseSchema>;
 export type PaySelectedItemsRequest = z.infer<typeof paySelectedItemsRequestSchema>;
 export type PaySelectedItemsResponse = z.infer<typeof paySelectedItemsResponseSchema>;
 export type MarkShareAsPaidRequest = z.infer<typeof markShareAsPaidRequestSchema>;
 export type MarkShareAsPaidResponse = z.infer<typeof markShareAsPaidResponseSchema>;
+export type UpdateSplitSharesRequest = z.infer<typeof updateSplitSharesRequestSchema>;
+export type UpdateSplitSharesResponse = z.infer<typeof updateSplitSharesResponseSchema>;
+export type CancelSplitBillResponse = z.infer<typeof cancelSplitBillResponseSchema>;
 export type TransferTableRequest = z.infer<typeof transferTableRequestSchema>;
 export type TransferTableResponse = z.infer<typeof transferTableResponseSchema>;
 export type MergeTableRequest = z.infer<typeof mergeTableRequestSchema>;

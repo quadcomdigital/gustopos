@@ -22,6 +22,8 @@ import {
   type GhostOrderCommitResponse,
   closeTableRequestSchema,
   closeTableResponseSchema,
+  settleTableResponseSchema,
+  type SettleTableResponse,
   ingredientCreateRequestSchema,
   ingredientSchema,
   ingredientUpdateRequestSchema,
@@ -157,10 +159,14 @@ import {
   refreshResponseSchema,
   splitBillRequestSchema,
   splitBillResponseSchema,
+  updateSplitSharesRequestSchema,
+  updateSplitSharesResponseSchema,
   paySelectedItemsRequestSchema,
   paySelectedItemsResponseSchema,
   markShareAsPaidRequestSchema,
+  type CancelSplitBillResponse,
   markShareAsPaidResponseSchema,
+  cancelSplitBillResponseSchema,
   transferTableRequestSchema,
   transferTableResponseSchema,
   mergeTableRequestSchema,
@@ -325,6 +331,8 @@ import {
   type RefreshResponse,
   type SplitBillRequest,
   type SplitBillResponse,
+  type UpdateSplitSharesRequest,
+  type UpdateSplitSharesResponse,
   type PaySelectedItemsRequest,
   type PaySelectedItemsResponse,
   type MarkShareAsPaidRequest,
@@ -1810,6 +1818,18 @@ export async function closeTable(tableId: string, payload: CloseTableRequest): P
   return readJson(response, closeTableResponseSchema);
 }
 
+/**
+ * Chiude un conto già interamente incassato a voci: nessun pagamento nuovo,
+ * solo ordini a `paid` e tavolo libero. Rifiutata se resta un residuo.
+ */
+export async function settleTable(tableId: string): Promise<SettleTableResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/tables/${tableId}/settle`, {
+    method: 'POST',
+  });
+
+  return readJson(response, settleTableResponseSchema);
+}
+
 export async function splitBill(tableId: string, payload: SplitBillRequest): Promise<SplitBillResponse> {
   const request = splitBillRequestSchema.parse(payload);
   const response = await authorizedFetch(`${API_URL}/api/tables/${tableId}/split-bill`, {
@@ -1882,6 +1902,24 @@ export async function markShareAsPaid(
   });
 
   return readJson(response, markShareAsPaidResponseSchema);
+}
+
+export async function updateSplitShares(tableId: string, payload: UpdateSplitSharesRequest): Promise<UpdateSplitSharesResponse> {
+  const request = updateSplitSharesRequestSchema.parse(payload);
+  const response = await authorizedFetch(`${API_URL}/api/tables/${tableId}/split-bill/shares`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, updateSplitSharesResponseSchema);
+}
+
+export async function cancelSplitBill(tableId: string): Promise<CancelSplitBillResponse> {
+  const response = await authorizedFetch(`${API_URL}/api/tables/${tableId}/split-bill`, {
+    method: 'DELETE',
+  });
+
+  return readJson(response, cancelSplitBillResponseSchema);
 }
 
 export async function transferTable(

@@ -14,15 +14,22 @@ import { parsePrintAreas as parsePrintAreasUtil, parseSelectedModifiers } from "
 import { resolveModifierNameById, formatSelectedModifiers } from "./utils/modifier-labels";
 import { deliveryTransitions } from "./utils/state-machines";
 import { collectCurrentSessionPaymentIds } from "./utils/merge-payments";
+import { resolveSessionStartedAt, selectSessionSplitBatch } from "./utils/payment-session";
+import { computeSettleTotals } from "./utils/table-settle";
+import { freeTableTx } from "./kernel/table-lifecycle";
 import { planReceiptJob } from "../fiscal/emission";
 import crypto from "node:crypto";
 import {
-  closeTableRequestSchema, closeTableResponseSchema,
+  closeTableRequestSchema, closeTableResponseSchema, settleTableResponseSchema,
+  type SettleTableResponse,
   tableCreateRequestSchema, tableUpdateRequestSchema, tableBulkCreateRequestSchema,
   suspendTableRequestSchema, suspendTableResponseSchema,
   splitBillRequestSchema, splitBillResponseSchema,
+  updateSplitSharesRequestSchema, updateSplitSharesResponseSchema,
   paySelectedItemsRequestSchema, paySelectedItemsResponseSchema,
   markShareAsPaidRequestSchema, markShareAsPaidResponseSchema,
+  cancelSplitBillResponseSchema,
+  type CancelSplitBillResponse,
   transferTableRequestSchema, transferTableResponseSchema,
   mergeTableRequestSchema, mergeTableResponseSchema,
   reservationCreateRequestSchema, reservationUpdateRequestSchema,
@@ -39,6 +46,7 @@ import {
   type SuspendTableRequest, type SuspendTableResponse,
   type CloseTableRequest, type CloseTableResponse,
   type SplitBillRequest, type SplitBillResponse,
+  type UpdateSplitSharesRequest, type UpdateSplitSharesResponse,
   type PaySelectedItemsRequest, type PaySelectedItemsResponse,
   type MarkShareAsPaidRequest, type MarkShareAsPaidResponse,
   type TransferTableRequest, type TransferTableResponse,
@@ -402,7 +410,7 @@ export class TablesRepository {
     // Cannot remove a table still in service: a bound order or a non-free
     // status (occupied/suspended/reserved) must be settled first.
     if (table.currentOrderId || table.status !== "free") {
-      throw new Error("Cannot delete a table with an active order");
+      throw new Error("Impossibile eliminare un tavolo con un conto aperto.");
     }
 
     // Belt-and-braces: dine-in orders mark the table occupied but (unlike the
@@ -419,7 +427,7 @@ export class TablesRepository {
       ))
       .limit(1);
     if (openOrder.length > 0) {
-      throw new Error("Cannot delete a table with an active order");
+      throw new Error("Impossibile eliminare un tavolo con un conto aperto.");
     }
 
     // Soft-delete: flip is_active and retire any self-order QR for the table.
@@ -466,10 +474,10 @@ export class TablesRepository {
     const requiresGatewayReference = parsed.method === "card" || parsed.method === "mixed";
     if (requiresGatewayReference) {
       if (!parsed.gatewayReference || parsed.gatewayReference.trim().length < 3) {
-        throw new Error("Gateway reference is required for card/mixed payments");
+        throw new Error("Inserisci il riferimento del pagamento per carta o misto.");
       }
       if (paymentStatus !== "captured") {
-        throw new Error("Card/mixed payments must be captured before closing table");
+        throw new Error("I pagamenti con carta o misto devono essere acquisiti prima di chiudere il conto.");
       }
     }
 
@@ -531,21 +539,31 @@ export class TablesRepository {
 
       const subtotal = openOrders.reduce((sum, order) => sum + Number(order.total), 0);
       if (subtotal <= 0) {
-        throw new Error("No payable balance for this table");
+        throw new Error("Nessun importo da incassare su questo tavolo.");
       }
 
       const orderIds = openOrders.map((o) => o.id);
 
-      const existingSplitPayments = await tx
+      // Session boundary: payments recorded on this table before the earliest open
+      // order belong to a previous night and must not drive this close.
+      const sessionStartedAt = resolveSessionStartedAt(openOrders);
+      if (!sessionStartedAt) {
+        throw new Error("Nessun importo da incassare su questo tavolo.");
+      }
+
+      const sessionPayments = await tx
         .select()
         .from(payments)
         .where(and(
           eq(payments.tenantId, tenantId),
           eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
+          gte(payments.createdAt, sessionStartedAt),
         ));
 
-      const hasSplitPayments = existingSplitPayments.some((p) => p.shareIndex !== null);
-      const allSplitCaptured = hasSplitPayments && existingSplitPayments.every((p) => p.paymentStatus === "captured");
+      const sessionSplitPayments = selectSessionSplitBatch(sessionPayments, sessionStartedAt);
+      const hasSplitPayments = sessionSplitPayments.length > 0;
+      const allSplitCaptured = hasSplitPayments && sessionSplitPayments.every((p) => p.paymentStatus === "captured");
 
       let allItemsAlreadyPaid = false;
       if (orderIds.length > 0) {
@@ -608,7 +626,7 @@ export class TablesRepository {
           // All items paid via paySelectedItems — flag to avoid double-counting a new payment
           allItemsAlreadyPaid = totalItemsQty > 0 && paidItemsQty >= totalItemsQty;
         } else if (!allSplitCaptured) {
-          throw new Error("Not all split payments are captured");
+          throw new Error("Non tutte le quote della divisione sono state incassate.");
         }
       }
 
@@ -616,12 +634,12 @@ export class TablesRepository {
       const surchargeAmount = Math.max(0, parsed.surchargeAmount ?? 0);
       const total = Math.max(0, Number((subtotal - discountAmount + surchargeAmount).toFixed(2)));
       if (total <= 0) {
-        throw new Error("Final total must be greater than zero");
+        throw new Error("Il totale finale deve essere maggiore di zero.");
       }
 
       const paidAmount = parsed.paidAmount ?? total;
       if (!allItemsAlreadyPaid && paidAmount < total) {
-        throw new Error("Paid amount is lower than total");
+        throw new Error("L'importo pagato è inferiore al totale.");
       }
 
       const changeAmount = allItemsAlreadyPaid ? 0 : Math.max(0, paidAmount - total);
@@ -629,15 +647,16 @@ export class TablesRepository {
       let paymentRow;
 
       if (allItemsAlreadyPaid) {
-        // All items already paid via paySelectedItems — aggregate existing payments, don't create a new one
-        const existingItemPayments = await tx
-          .select()
-          .from(payments)
-          .where(and(
-            eq(payments.tenantId, tenantId),
-            eq(payments.tableId, tableId),
-          ));
-        const lastPayment = existingItemPayments[existingItemPayments.length - 1];
+        // All items already paid via paySelectedItems — aggregate existing payments,
+        // don't create a new one. The row carrying the close adjustments must be the
+        // LAST captured item payment of this session, picked deterministically: without
+        // an ORDER BY Postgres may return any row and the discount would land elsewhere.
+        const lastPayment = sessionPayments
+          .filter((p) => p.shareIndex === null && p.paymentStatus === "captured")
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+        if (!lastPayment) {
+          throw new Error("Nessun pagamento acquisito trovato per questo tavolo.");
+        }
         // Update the last payment with close info (discount/surcharge adjustments)
         [paymentRow] = await tx
           .update(payments)
@@ -652,31 +671,15 @@ export class TablesRepository {
           .where(eq(payments.id, lastPayment.id))
           .returning();
       } else if (hasSplitPayments) {
-        const totalPaid = existingSplitPayments.reduce((sum, p) => sum + Number(p.paidAmount), 0);
-        paymentRow = {
-          id: existingSplitPayments[0].id,
-          tableId,
-          tableNumber: table.number,
-          subtotal: String(total),
-          discountAmount: String(discountAmount),
-          surchargeAmount: String(surchargeAmount),
-          total: String(total),
-          method: parsed.method,
-          kind: "sale",
-          paymentStatus: "captured",
-          paidAmount: String(totalPaid),
-          changeAmount: String(Math.max(0, totalPaid - total)),
-          reference: null,
-          gatewayReference: null,
-          capturedAt: new Date(),
-          refundedPaymentId: null,
-          refundReason: null,
-          notes: null,
-          staffId: actorStaffId,
-          createdAt: new Date(),
-        };
+        // Every share of this session is already captured: there is no residual to
+        // record, and inventing an in-memory payment here would mark the orders as
+        // paid without any money being collected. The table is freed by
+        // markShareAsPaid, so this is only reachable in an inconsistent state.
+        throw new Error("Il conto è già stato saldato tramite le quote della divisione.");
       } else {
-        const paymentId = `pay_${Date.now().toString(36)}`;
+        // Mai `pay_<ms>`: due incassi nello stesso millisecondo collidono sulla
+        // PK e fanno rollback dell'intero incasso.
+        const paymentId = `pay_${crypto.randomUUID()}`;
         [paymentRow] = await tx
           .insert(payments)
           .values({
@@ -711,10 +714,7 @@ export class TablesRepository {
         .set({ status: "paid" })
         .where(and(eq(orders.tenantId, tenantId), eq(orders.tableNumber, table.number), ne(orders.status, "paid"), ne(orders.status, "cancelled")));
 
-      await tx
-        .update(tables)
-        .set({ status: "free", currentOrderId: null })
-        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
+      await freeTableTx(tx, tenantId, tableId);
 
       return closeTableResponseSchema.parse({
         success: true,
@@ -784,6 +784,125 @@ export class TablesRepository {
   }
 
   /**
+   * Chiude un conto che è già interamente incassato a voci (pay-items).
+   *
+   * Perché esiste: incassando le voci si libera il tavolo solo se in quel
+   * momento TUTTE le voci sono pagate. Se poi l'operatore toglie dal carrello
+   * l'unica voce rimasta non pagata, il conto resta `pending` con tutto
+   * incassato: `closeTable` esigerebbe un nuovo pagamento (doppio incasso) e
+   * l'interfaccia non aveva alcuna azione. Qui non si incassa nulla: nessun
+   * `payments`, nessuno scontrino; gli ordini aperti passano a `paid` e il
+   * tavolo torna libero. Se c'è ancora un residuo, si rifiuta con l'importo.
+   */
+  async settleTable(tableId: string): Promise<SettleTableResponse | null> {
+    const tenantId = getTenantIdOrDefault();
+
+    return withTenantTx(async (tx) => {
+      await tx.execute(sql`
+        SELECT id
+        FROM tables
+        WHERE tenant_id = ${tenantId} AND id = ${tableId}
+        FOR UPDATE
+      `);
+      const tableRows = await tx
+        .select()
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)))
+        .limit(1);
+      const table = tableRows[0];
+      if (!table) {
+        return null;
+      }
+
+      // Come closeTable: una bozza non inviata non deve restare orfana.
+      const openGhosts = await tx
+        .select({ id: ghostOrders.id })
+        .from(ghostOrders)
+        .where(and(
+          eq(ghostOrders.tenantId, tenantId),
+          eq(ghostOrders.tableId, tableId),
+          eq(ghostOrders.status, "open"),
+        ))
+        .limit(1);
+      if (openGhosts.length > 0) {
+        throw new Error("Ci sono bozze non inviate su questo tavolo: inviale o scartale prima di chiudere.");
+      }
+
+      const openOrders = await tx
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.tableNumber, table.number),
+          ne(orders.status, "paid"),
+          ne(orders.status, "cancelled"),
+        ));
+
+      // Tavolo già libero: idempotente, nessun ordine da chiudere.
+      if (openOrders.length === 0) {
+        return settleTableResponseSchema.parse({
+          success: true,
+          tableId: table.id,
+          tableNumber: table.number,
+          closedOrders: 0,
+          totalAmount: 0,
+          paidAmount: 0,
+        });
+      }
+
+      const orderItemRows = await tx
+        .select({ id: orderItems.id, quantity: orderItems.quantity, price: orderItems.price })
+        .from(orderItems)
+        .where(and(
+          eq(orderItems.tenantId, tenantId),
+          inArray(orderItems.orderId, openOrders.map((o) => o.id)),
+        ));
+
+      const itemIds = orderItemRows.map((it) => it.id);
+      const paymentItemRows = itemIds.length > 0
+        ? await tx
+            .select({ orderItemId: paymentItems.orderItemId, quantity: paymentItems.quantity })
+            .from(paymentItems)
+            .where(and(
+              eq(paymentItems.tenantId, tenantId),
+              inArray(paymentItems.orderItemId, itemIds),
+            ))
+        : [];
+
+      const { totalAmount, paidAmount, remainingAmount } = computeSettleTotals(
+        orderItemRows,
+        paymentItemRows,
+      );
+      if (remainingAmount > 0) {
+        throw new Error(
+          `Restano €${remainingAmount.toFixed(2)} da incassare: incassa le voci residue o annulla il conto.`,
+        );
+      }
+
+      await tx
+        .update(orders)
+        .set({ status: "paid" })
+        .where(and(
+          eq(orders.tenantId, tenantId),
+          inArray(orders.id, openOrders.map((o) => o.id)),
+          ne(orders.status, "paid"),
+          ne(orders.status, "cancelled"),
+        ));
+
+      await freeTableTx(tx, tenantId, tableId);
+
+      return settleTableResponseSchema.parse({
+        success: true,
+        tableId: table.id,
+        tableNumber: table.number,
+        closedOrders: openOrders.length,
+        totalAmount,
+        paidAmount,
+      });
+    });
+  }
+
+  /**
    * Suspend a table (pre-bill handed out, awaiting payment). This is a virtual
    * signal state: payments/merge keep working, the map card just switches to
    * "awaiting payment". Optionally prints the pre-bill on the cashier area.
@@ -812,7 +931,7 @@ export class TablesRepository {
         ne(orders.status, "cancelled"),
       ));
     if (openOrders.length === 0) {
-      throw new Error("No open order to suspend for this table");
+      throw new Error("Nessun conto aperto da sospendere su questo tavolo.");
     }
 
     await db
@@ -1133,6 +1252,60 @@ export class TablesRepository {
     });
   }
 
+  /** Costruisce le righe per scontrino di cassa e fiscale dall'elenco ordini. */
+  private async buildReceiptItems(
+    tx: typeof db,
+    tenantId: string,
+    orderIds: string[],
+  ): Promise<Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers: string[]; categoryId: string | null }>> {
+    if (orderIds.length === 0) return [];
+    const orderItemRows = await tx
+      .select()
+      .from(orderItems)
+      .where(and(eq(orderItems.tenantId, tenantId), inArray(orderItems.orderId, orderIds)));
+    const modifierNameById = await resolveModifierNameById(
+      tx,
+      tenantId,
+      orderItemRows.flatMap((it) => parseSelectedModifiers(it.selectedModifiers).map((mod) => mod.optionId)),
+    );
+    const menuItemIds = Array.from(new Set(orderItemRows.map((it) => it.menuItemId)));
+    const categoryByMenuItemId = new Map<string, string | null>();
+    if (menuItemIds.length > 0) {
+      const menuRows = await tx
+        .select({ id: menuItems.id, categoryId: menuItems.categoryId })
+        .from(menuItems)
+        .where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuItemIds)));
+      for (const row of menuRows) categoryByMenuItemId.set(row.id, row.categoryId ?? null);
+    }
+    return orderItemRows.map((it) => ({
+      name: it.name,
+      quantity: it.quantity,
+      price: Number(it.price),
+      notes: it.notes,
+      modifiers: formatSelectedModifiers(parseSelectedModifiers(it.selectedModifiers), modifierNameById),
+      categoryId: categoryByMenuItemId.get(it.menuItemId) ?? null,
+    }));
+  }
+
+  /** Scontrino di cassa + (opzionale) fiscale, mai bloccanti. */
+  private dispatchReceiptAndFiscal(
+    receiptItems: Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers: string[]; categoryId: string | null }>,
+    fiscalPayment: { id: string; tableNumber: string; subtotal: number; discountAmount: number; total: number; method: "cash" | "card" | "mixed" },
+    ctx: { tableNumber: string; subtotal: number; discountAmount: number; surchargeAmount: number; total: number; method: "cash" | "card" | "mixed"; paidAmount: number; changeAmount: number; notes: string | null },
+    opts: { fiscalEmit: boolean; printReceipt: boolean },
+  ): void {
+    if (opts.fiscalEmit) {
+      void this.enqueueFiscalReceiptJob(fiscalPayment, receiptItems).catch((err) => {
+        console.error("[fiscal] receipt job enqueue failed:", err instanceof Error ? err.message : String(err));
+      });
+    }
+    if (opts.printReceipt !== false) {
+      void this.createCashierCloseReceiptJob(receiptItems, ctx).catch((err) => {
+        console.error("[print] cashier receipt failed:", err instanceof Error ? err.message : String(err));
+      });
+    }
+  }
+
   async splitBill(tableId: string, payload: SplitBillRequest, actorStaffId: string): Promise<SplitBillResponse | null> {
     const parsed = splitBillRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
@@ -1206,20 +1379,66 @@ export class TablesRepository {
 
       const subtotal = openOrders.reduce((sum, order) => sum + Number(order.total), 0);
       if (subtotal <= 0) {
-        throw new Error("No payable balance for this table");
+        throw new Error("Nessun importo da incassare su questo tavolo.");
       }
+
+      const sessionStartedAt = resolveSessionStartedAt(openOrders);
+      if (!sessionStartedAt) {
+        throw new Error("Nessun importo da incassare su questo tavolo.");
+      }
+
+      const sessionSharePayments = await tx
+        .select()
+        .from(payments)
+        .where(and(
+          eq(payments.tenantId, tenantId),
+          eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
+          isNotNull(payments.shareIndex),
+          gte(payments.createdAt, sessionStartedAt),
+        ));
+
+      if (sessionSharePayments.some((p) => p.paymentStatus === "captured")) {
+        throw new Error("Alcune quote di questa divisione sono già state incassate: completa i pagamenti residui invece di rifare la divisione.");
+      }
+
+      // Re-splitting replaces the previous split: pending shares carry no money, so
+      // the old batch is removed instead of piling a second set of quotes on the
+      // table (which made shareIndex ambiguous and blocked every later close).
+      await tx
+        .delete(payments)
+        .where(and(
+          eq(payments.tenantId, tenantId),
+          eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
+          isNotNull(payments.shareIndex),
+          eq(payments.paymentStatus, "pending"),
+        ));
 
       const discountAmount = Math.max(0, parsed.discountAmount ?? 0);
       const surchargeAmount = Math.max(0, parsed.surchargeAmount ?? 0);
       const total = Math.max(0, Number((subtotal - discountAmount + surchargeAmount).toFixed(2)));
       if (total <= 0) {
-        throw new Error("Final total must be greater than zero");
+        throw new Error("Il totale finale deve essere maggiore di zero.");
       }
 
       const reference = `split:${tableId}:${Date.now()}`;
       const now = new Date();
 
-      const shares = makeShares(total, parsed.people);
+      // Quote editabili già in creazione: se l'operatore invia importi
+      // personalizzati devono bilanciare il totale, altrimenti equisplit.
+      let shares = makeShares(total, parsed.people);
+      if (parsed.shareAmounts) {
+        if (parsed.shareAmounts.length !== parsed.people) {
+          throw new Error("Le quote editabili devono essere una per persona");
+        }
+        const custom = parsed.shareAmounts.map((v) => Number(v.toFixed(2)));
+        const customSum = Number(custom.reduce((s, v) => s + v, 0).toFixed(2));
+        if (Math.abs(customSum - total) > 0.01) {
+          throw new Error(`Le quote devono sommare a \u20ac${total.toFixed(2)} (ora \u20ac${customSum.toFixed(2)})`);
+        }
+        shares = custom;
+      }
       const paidAmountsInput = parsed.paidAmounts;
       const paidAmounts =
         paidAmountsInput && paidAmountsInput.length === shares.length
@@ -1227,7 +1446,7 @@ export class TablesRepository {
           : shares;
 
       if (paidAmounts.length !== shares.length) {
-        throw new Error("Paid amounts length must match number of people");
+        throw new Error("Gli importi devono essere uno per persona.");
       }
 
       for (let i = 0; i < shares.length; i += 1) {
@@ -1241,7 +1460,7 @@ export class TablesRepository {
         const paidAmount = paidAmounts[idx];
         const changeAmount = Math.max(0, Number((paidAmount - share).toFixed(2)));
         return {
-          id: `pay_${Date.now().toString(36)}_${idx + 1}`,
+          id: `pay_${crypto.randomUUID()}`,
           tenantId,
           tableId,
           tableNumber: table.number,
@@ -1310,14 +1529,21 @@ export class TablesRepository {
     const requiresGatewayReference = parsed.method === "card" || parsed.method === "mixed";
     if (requiresGatewayReference) {
       if (!parsed.gatewayReference || parsed.gatewayReference.trim().length < 3) {
-        throw new Error("Gateway reference is required for card/mixed payments");
+        throw new Error("Inserisci il riferimento del pagamento per carta o misto.");
       }
       if (paymentStatus !== "captured") {
-        throw new Error("Card/mixed payments must be captured");
+        throw new Error("I pagamenti con carta o misto devono essere acquisiti.");
       }
     }
 
-    return withTenantTx(async (tx) => {
+    // Righe per lo scontrino di questa selezione (solo voci pagate ora).
+    const selectionReceiptItems: Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers: string[]; categoryId: string | null }> = [];
+    let fiscalPaymentForDispatch: { id: string; tableNumber: string; subtotal: number; discountAmount: number; total: number; method: "cash" | "card" | "mixed" } | null = null;
+    let receiptCtxForDispatch: { tableNumber: string; subtotal: number; discountAmount: number; surchargeAmount: number; total: number; method: "cash" | "card" | "mixed"; paidAmount: number; changeAmount: number; notes: string | null } | null = null;
+    let shouldDispatchFiscal = false;
+    let shouldPrintReceipt = false;
+
+    const result = await withTenantTx(async (tx) => {
       await tx.execute(sql`
         SELECT id
         FROM tables
@@ -1340,7 +1566,29 @@ export class TablesRepository {
         .where(and(eq(orders.tenantId, tenantId), eq(orders.tableNumber, table.number), ne(orders.status, "paid"), ne(orders.status, "cancelled")));
       
       if (openOrders.length === 0) {
-        throw new Error("No open orders for this table");
+        throw new Error("Nessun conto aperto su questo tavolo.");
+      }
+
+      // A split in progress owns the whole bill: charging single items on the side
+      // would take money twice (the shares still cover every line).
+      const sessionStartedAt = resolveSessionStartedAt(openOrders);
+      if (!sessionStartedAt) {
+        throw new Error("Nessun conto aperto su questo tavolo.");
+      }
+      const pendingSessionShares = await tx
+        .select({ id: payments.id })
+        .from(payments)
+        .where(and(
+          eq(payments.tenantId, tenantId),
+          eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
+          isNotNull(payments.shareIndex),
+          eq(payments.paymentStatus, "pending"),
+          gte(payments.createdAt, sessionStartedAt),
+        ))
+        .limit(1);
+      if (pendingSessionShares.length > 0) {
+        throw new Error("Conto diviso in quote: salda le quote residue o annulla la divisione prima di incassare singole voci.");
       }
 
       const orderIds = openOrders.map((o) => o.id);
@@ -1384,10 +1632,46 @@ export class TablesRepository {
       }
 
       if (subtotal <= 0) {
-        throw new Error("Total must be greater than zero");
+        throw new Error("Il totale deve essere maggiore di zero.");
+      }
+      subtotal = Number(subtotal.toFixed(2));
+
+      // Resto: per i contanti l'operatore può registrare l'incassato effettivo.
+      const tenderedRaw = parsed.paidAmount ?? subtotal;
+      const tendered = Number(tenderedRaw.toFixed(2));
+      if (tendered < subtotal) {
+        throw new Error("L'importo pagato è inferiore al totale.");
+      }
+      const changeAmount = Number((tendered - subtotal).toFixed(2));
+
+      // Righe scontrino per la sola selezione pagata ora (con modificatori/categorie).
+      const paidIds = new Set(paidItemsData.map((d) => d.orderItemId));
+      const fullReceiptItems = await this.buildReceiptItems(tx, tenantId, orderIds);
+      const receiptItemRows = orderItemRows.filter((it) => paidIds.has(it.id));
+      const modifierNameByIdSel = await resolveModifierNameById(
+        tx,
+        tenantId,
+        receiptItemRows.flatMap((it) => parseSelectedModifiers(it.selectedModifiers).map((mod) => mod.optionId)),
+      );
+      const menuItemIdsSel = Array.from(new Set(receiptItemRows.map((it) => it.menuItemId)));
+      const categoryByMenuItemIdSel = new Map<string, string | null>();
+      if (menuItemIdsSel.length > 0) {
+        const menuRowsSel = await tx.select({ id: menuItems.id, categoryId: menuItems.categoryId }).from(menuItems).where(and(eq(menuItems.tenantId, tenantId), inArray(menuItems.id, menuItemIdsSel)));
+        for (const row of menuRowsSel) categoryByMenuItemIdSel.set(row.id, row.categoryId ?? null);
+      }
+      for (const d of paidItemsData) {
+        const row = orderItemRows.find((it) => it.id === d.orderItemId);
+        selectionReceiptItems.push({
+          name: d.name,
+          quantity: d.quantity,
+          price: d.price,
+          notes: row?.notes ?? null,
+          modifiers: row ? formatSelectedModifiers(parseSelectedModifiers(row.selectedModifiers), modifierNameByIdSel) : [],
+          categoryId: row ? categoryByMenuItemIdSel.get(row.menuItemId) ?? null : null,
+        });
       }
 
-      const paymentId = `pay_${Date.now().toString(36)}`;
+      const paymentId = `pay_${crypto.randomUUID()}`;
       const now = new Date();
       const [paymentRow] = await tx
         .insert(payments)
@@ -1403,8 +1687,8 @@ export class TablesRepository {
           method: parsed.method,
           kind: "sale",
           paymentStatus,
-          paidAmount: String(subtotal),
-          changeAmount: "0",
+          paidAmount: String(tendered),
+          changeAmount: String(changeAmount),
           reference: `items:${tableId}:${Date.now()}`,
           gatewayReference: parsed.gatewayReference?.trim() ?? null,
           capturedAt: paymentStatus === "captured" ? now : null,
@@ -1412,6 +1696,7 @@ export class TablesRepository {
           refundReason: null,
           notes: parsed.notes ?? null,
           staffId: actorStaffId,
+          fiscalStatus: parsed.fiscalEmit ? "pending" : "none",
           createdAt: now,
         })
         .returning();
@@ -1455,10 +1740,53 @@ export class TablesRepository {
             ne(orders.status, "cancelled"),
           ));
 
-        await tx
-          .update(tables)
-          .set({ status: "free", currentOrderId: null })
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
+        await freeTableTx(tx, tenantId, tableId);
+      }
+
+      // Residuo per aggiornare subito carrello/checkout senza una nuova GET.
+      const totalAmount = Number(orderItemRows.reduce((sum, it) => sum + Number(it.price) * it.quantity, 0).toFixed(2));
+      const paidAmountTotal = Number(allPaymentItemRows.reduce((sum, pi) => {
+        const row = orderItemRows.find((it) => it.id === pi.orderItemId);
+        return sum + (row ? Number(row.price) * pi.quantity : 0);
+      }, 0).toFixed(2));
+      const remainingAmount = allItemsPaid ? 0 : Number((totalAmount - paidAmountTotal).toFixed(2));
+
+      // Scontrino di questa selezione; fiscale solo a completamento (sul conto intero).
+      shouldPrintReceipt = parsed.printReceipt !== false;
+      shouldDispatchFiscal = allItemsPaid && parsed.fiscalEmit === true;
+      receiptCtxForDispatch = {
+        tableNumber: table.number,
+        subtotal,
+        discountAmount: 0,
+        surchargeAmount: 0,
+        total: subtotal,
+        method: parsed.method,
+        paidAmount: tendered,
+        changeAmount,
+        notes: parsed.notes ?? null,
+      };
+      const fullTotal = totalAmount;
+      fiscalPaymentForDispatch = {
+        id: paymentRow.id,
+        tableNumber: table.number,
+        subtotal: fullTotal,
+        discountAmount: 0,
+        total: fullTotal,
+        method: parsed.method,
+      };
+      // Il fiscale a completamento deve coprirne tutte le righe: se il conto è
+      // saldato, si costruisce il job sul totale intero, non solo sull'ultima selezione.
+      if (allItemsPaid && parsed.fiscalEmit) {
+        selectionReceiptItems.length = 0;
+        selectionReceiptItems.push(...fullReceiptItems);
+        fiscalPaymentForDispatch = {
+          id: paymentRow.id,
+          tableNumber: table.number,
+          subtotal: fullTotal,
+          discountAmount: 0,
+          total: fullTotal,
+          method: parsed.method,
+        };
       }
 
       return paySelectedItemsResponseSchema.parse({
@@ -1489,8 +1817,16 @@ export class TablesRepository {
           quantity: item.quantity,
         })),
         allItemsPaid,
+        totalAmount,
+        paidAmountTotal: allItemsPaid ? totalAmount : paidAmountTotal,
+        remainingAmount,
       });
     });
+
+    if (result && shouldPrintReceipt && receiptCtxForDispatch && fiscalPaymentForDispatch) {
+      this.dispatchReceiptAndFiscal(selectionReceiptItems, fiscalPaymentForDispatch, receiptCtxForDispatch, { fiscalEmit: shouldDispatchFiscal, printReceipt: true });
+    }
+    return result;
   }
 
   async markShareAsPaid(tableId: string, shareIndex: number, payload: MarkShareAsPaidRequest, actorStaffId: string): Promise<MarkShareAsPaidResponse | null> {
@@ -1500,11 +1836,21 @@ export class TablesRepository {
     const requiresGatewayReference = parsed.method === "card" || parsed.method === "mixed";
     if (requiresGatewayReference) {
       if (!parsed.gatewayReference || parsed.gatewayReference.trim().length < 3) {
-        throw new Error("Gateway reference is required for card/mixed payments");
+        throw new Error("Inserisci il riferimento del pagamento per carta o misto.");
       }
     }
 
-    return withTenantTx(async (tx) => {
+    // Solo sull'ultima quota si stampa lo scontrino (conto completo) e, se
+    // richiesto, si emette il fiscale. Righe costruite dentro la tx.
+    const receiptItems: Array<{ name: string; quantity: number; price: number; notes: string | null; modifiers: string[]; categoryId: string | null }> = [];
+    let dispatchInfo: {
+      fiscalPayment: { id: string; tableNumber: string; subtotal: number; discountAmount: number; total: number; method: "cash" | "card" | "mixed" };
+      ctx: { tableNumber: string; subtotal: number; discountAmount: number; surchargeAmount: number; total: number; method: "cash" | "card" | "mixed"; paidAmount: number; changeAmount: number; notes: string | null };
+    } | null = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const getDispatchInfo = (): typeof dispatchInfo => dispatchInfo as any;
+
+    const result = await withTenantTx(async (tx) => {
       await tx.execute(sql`
         SELECT id
         FROM tables
@@ -1523,15 +1869,32 @@ export class TablesRepository {
         return null;
       }
 
+      const openOrders = await tx
+        .select()
+        .from(orders)
+        .where(and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.tableNumber, table.number),
+          ne(orders.status, "paid"),
+          ne(orders.status, "cancelled"),
+        ));
+      const sessionStartedAt = resolveSessionStartedAt(openOrders);
+      if (!sessionStartedAt) {
+        throw new Error("Nessun conto aperto su questo tavolo.");
+      }
+
       const paymentRows = await tx
         .select()
         .from(payments)
         .where(and(
           eq(payments.tenantId, tenantId),
           eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
           eq(payments.shareIndex, shareIndex),
           eq(payments.paymentStatus, "pending"),
+          gte(payments.createdAt, sessionStartedAt),
         ))
+        .orderBy(desc(payments.createdAt))
         .limit(1);
 
       const payment = paymentRows[0];
@@ -1539,30 +1902,59 @@ export class TablesRepository {
         throw new Error(`No pending payment found for share ${shareIndex}`);
       }
 
+      // Resto in contanti: incassato effettivo meno quota. Per carta/misto deve
+      // coincidere con la quota (il tendered non ha senso elettronico).
+      const shareTotal = Number(payment.total);
+      const tenderedRaw = parsed.paidAmount ?? shareTotal;
+      const tendered = Number(tenderedRaw.toFixed(2));
+      if (tendered < shareTotal) {
+        throw new Error("L'importo pagato è inferiore alla quota.");
+      }
+      if (parsed.method === "card" && Math.abs(tendered - shareTotal) > 0.01) {
+        throw new Error("Per i pagamenti con carta l'importo deve coincidere con la quota");
+      }
+      const changeAmount = Number((tendered - shareTotal).toFixed(2));
+
       const now = new Date();
       const [updatedPayment] = await tx
         .update(payments)
         .set({
           paymentStatus: "captured",
           method: parsed.method,
+          paidAmount: String(tendered),
+          changeAmount: String(changeAmount),
           gatewayReference: parsed.gatewayReference?.trim() ?? null,
           capturedAt: now,
         })
         .where(eq(payments.id, payment.id))
         .returning();
 
-      const allPayments = await tx
+      // Only the batch this share belongs to decides whether the split is settled:
+      // shares of a superseded batch or of a previous night must not block it.
+      const batchPayments = await tx
         .select()
         .from(payments)
         .where(and(
           eq(payments.tenantId, tenantId),
           eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
           isNotNull(payments.shareIndex),
+          gte(payments.createdAt, sessionStartedAt),
+          ...(updatedPayment.reference ? [eq(payments.reference, updatedPayment.reference)] : []),
         ));
 
-      const allSharesPaid = allPayments.length > 0 && allPayments.every((p) => p.paymentStatus === "captured");
+      const allSharesPaid = batchPayments.length > 0 && batchPayments.every((p) => p.paymentStatus === "captured");
 
       if (allSharesPaid) {
+        // The bill must still match the split: items sent after the split (or a
+        // voided line) leave a residual this capture would absorb silently. Roll
+        // back and ask for a fresh split instead of under-recording the revenue.
+        const openSubtotal = openOrders.reduce((sum, order) => sum + Number(order.total), 0);
+        const batchTotal = batchPayments.reduce((sum, p) => sum + Number(p.total), 0);
+        if (Number((openSubtotal - batchTotal).toFixed(2)) > 0.01) {
+          throw new Error("Il conto è cambiato dopo la divisione: riavvia la divisione del conto.");
+        }
+
         await tx
           .update(orders)
           .set({ status: "paid" })
@@ -1573,11 +1965,43 @@ export class TablesRepository {
             ne(orders.status, "cancelled"),
           ));
 
-        await tx
-          .update(tables)
-          .set({ status: "free", currentOrderId: null })
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
+        await freeTableTx(tx, tenantId, tableId);
+
+        // Scontrino di cassa e fiscale sull'ultima quota: importi e righe del
+        // conto completo (metodo misto se le quote usano metodi diversi).
+        receiptItems.push(...(await this.buildReceiptItems(tx, tenantId, openOrders.map((o) => o.id))));
+        const batchPaidTotal = Number(batchPayments.reduce((sum, p) => sum + Number(p.total), 0).toFixed(2));
+        const batchTenderedTotal = Number(batchPayments.reduce((sum, p) => sum + Number(p.paidAmount), 0).toFixed(2));
+        const batchChangeTotal = Number((batchTenderedTotal - batchPaidTotal).toFixed(2));
+        const methods = new Set(batchPayments.map((p) => p.method));
+        const aggregateMethod = (methods.size === 1 ? ([...methods][0] as "cash" | "card" | "mixed") : "mixed");
+        dispatchInfo = {
+          fiscalPayment: {
+            id: updatedPayment.id,
+            tableNumber: table.number,
+            subtotal: batchPaidTotal,
+            discountAmount: 0,
+            total: batchPaidTotal,
+            method: aggregateMethod,
+          },
+          ctx: {
+            tableNumber: table.number,
+            subtotal: batchPaidTotal,
+            discountAmount: 0,
+            surchargeAmount: 0,
+            total: batchPaidTotal,
+            method: aggregateMethod,
+            paidAmount: batchTenderedTotal,
+            changeAmount: Math.max(0, batchChangeTotal),
+            notes: updatedPayment.notes ?? null,
+          },
+        };
+        if (parsed.fiscalEmit) {
+          await tx.update(payments).set({ fiscalStatus: "pending" }).where(eq(payments.id, updatedPayment.id));
+        }
       }
+
+      const remainingAmount = Number(batchPayments.filter((p) => p.paymentStatus !== "captured").reduce((sum, p) => sum + Number(p.total), 0).toFixed(2));
 
       return markShareAsPaidResponseSchema.parse({
         payment: {
@@ -1604,7 +2028,158 @@ export class TablesRepository {
           createdAt: updatedPayment.createdAt.toISOString(),
         },
         allSharesPaid,
+        remainingAmount,
       });
+    });
+
+    const info = getDispatchInfo();
+    if (result?.allSharesPaid && info) {
+      this.dispatchReceiptAndFiscal(receiptItems, info.fiscalPayment, info.ctx, { fiscalEmit: parsed.fiscalEmit === true, printReceipt: parsed.printReceipt !== false });
+    }
+    return result;
+  }
+
+  /**
+   * Quote editabili: riscrive gli importi netti delle quote ancora pendenti.
+   * Vincoli: nessuna quota del lotto già incassata; somma pari al totale diviso.
+   */
+  async updateSplitShares(tableId: string, payload: UpdateSplitSharesRequest): Promise<UpdateSplitSharesResponse | null> {
+    const parsed = updateSplitSharesRequestSchema.parse(payload);
+    const tenantId = getTenantIdOrDefault();
+    const amounts = parsed.amounts.map((v) => Number(v.toFixed(2)));
+
+    return withTenantTx(async (tx) => {
+      await tx.execute(sql`SELECT id FROM tables WHERE tenant_id = ${tenantId} AND id = ${tableId} FOR UPDATE`);
+      const tableRows = await tx.select().from(tables).where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId))).limit(1);
+      const table = tableRows[0];
+      if (!table) return null;
+      const openOrders = await tx.select().from(orders).where(and(eq(orders.tenantId, tenantId), eq(orders.tableNumber, table.number), ne(orders.status, "paid"), ne(orders.status, "cancelled")));
+      const sessionStartedAt = resolveSessionStartedAt(openOrders);
+      if (!sessionStartedAt) throw new Error("Nessun conto aperto su questo tavolo.");
+      const sessionShares = await tx.select().from(payments).where(and(eq(payments.tenantId, tenantId), eq(payments.tableId, tableId), eq(payments.kind, "sale"), isNotNull(payments.shareIndex), gte(payments.createdAt, sessionStartedAt)));
+      const batch = selectSessionSplitBatch(sessionShares, sessionStartedAt);
+      if (batch.length === 0) throw new Error("Nessuna divisione attiva da modificare");
+      if (batch.some((p) => p.paymentStatus === "captured")) {
+        throw new Error("Ci sono quote già incassate: impossibile modificare la divisione.");
+      }
+      if (amounts.length !== batch.length) {
+        throw new Error("Gli importi devono essere uno per quota");
+      }
+      const total = Number(batch.reduce((s, p) => s + Number(p.total), 0).toFixed(2));
+      const sum = Number(amounts.reduce((s, v) => s + v, 0).toFixed(2));
+      if (Math.abs(sum - total) > 0.01) {
+        throw new Error(`Le quote devono sommare a \u20ac${total.toFixed(2)} (ora \u20ac${sum.toFixed(2)})`);
+      }
+      const ordered = [...batch].sort((a, b) => (a.shareIndex ?? 0) - (b.shareIndex ?? 0));
+      const updated: Array<typeof payments.$inferSelect> = [];
+      for (let i = 0; i < ordered.length; i += 1) {
+        const [row] = await tx.update(payments).set({
+          total: String(amounts[i]),
+          subtotal: String(amounts[i]),
+          paidAmount: String(amounts[i]),
+          changeAmount: "0",
+        }).where(eq(payments.id, ordered[i].id)).returning();
+        updated.push(row);
+      }
+      return updateSplitSharesResponseSchema.parse({
+        tableId,
+        tableNumber: table.number,
+        total,
+        shares: amounts,
+        payments: updated.map((paymentRow) => ({
+          id: paymentRow.id,
+          tableId: paymentRow.tableId,
+          tableNumber: paymentRow.tableNumber,
+          subtotal: Number(paymentRow.subtotal),
+          discountAmount: Number(paymentRow.discountAmount),
+          surchargeAmount: Number(paymentRow.surchargeAmount),
+          total: Number(paymentRow.total),
+          method: paymentRow.method,
+          kind: paymentRow.kind as "sale" | "refund",
+          paymentStatus: paymentRow.paymentStatus as PaymentStatus,
+          paidAmount: Number(paymentRow.paidAmount),
+          changeAmount: Number(paymentRow.changeAmount),
+          reference: paymentRow.reference ?? undefined,
+          gatewayReference: paymentRow.gatewayReference ?? undefined,
+          capturedAt: paymentRow.capturedAt?.toISOString(),
+          refundedPaymentId: paymentRow.refundedPaymentId ?? undefined,
+          refundReason: paymentRow.refundReason ?? undefined,
+          notes: paymentRow.notes ?? undefined,
+          shareIndex: paymentRow.shareIndex ?? undefined,
+          staffId: paymentRow.staffId,
+          createdAt: paymentRow.createdAt.toISOString(),
+        })),
+      });
+    });
+  }
+
+  /**
+   * Discards a split that has not collected any money yet (pending shares only),
+   * restoring the bill on a single payment. Captured shares cannot be undone here:
+   * the money already moved, so that split has to be completed share by share.
+   */
+  async cancelSplitBill(tableId: string): Promise<CancelSplitBillResponse | null> {
+    const tenantId = getTenantIdOrDefault();
+
+    return withTenantTx(async (tx) => {
+      await tx.execute(sql`
+        SELECT id
+        FROM tables
+        WHERE tenant_id = ${tenantId} AND id = ${tableId}
+        FOR UPDATE
+      `);
+      const tableRows = await tx
+        .select()
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)))
+        .limit(1);
+      const table = tableRows[0];
+      if (!table) {
+        return null;
+      }
+
+      const openOrders = await tx
+        .select({ id: orders.id, timestamp: orders.timestamp })
+        .from(orders)
+        .where(and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.tableNumber, table.number),
+          ne(orders.status, "paid"),
+          ne(orders.status, "cancelled"),
+        ));
+
+      const sessionStartedAt = resolveSessionStartedAt(openOrders);
+      if (!sessionStartedAt) {
+        return cancelSplitBillResponseSchema.parse({ cancelled: 0 });
+      }
+
+      const sessionSharePayments = await tx
+        .select()
+        .from(payments)
+        .where(and(
+          eq(payments.tenantId, tenantId),
+          eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
+          isNotNull(payments.shareIndex),
+          gte(payments.createdAt, sessionStartedAt),
+        ));
+
+      if (sessionSharePayments.some((p) => p.paymentStatus === "captured")) {
+        throw new Error("Ci sono quote già incassate: non è possibile annullare la divisione.");
+      }
+
+      const deleted = await tx
+        .delete(payments)
+        .where(and(
+          eq(payments.tenantId, tenantId),
+          eq(payments.tableId, tableId),
+          eq(payments.kind, "sale"),
+          isNotNull(payments.shareIndex),
+          eq(payments.paymentStatus, "pending"),
+        ))
+        .returning({ id: payments.id });
+
+      return cancelSplitBillResponseSchema.parse({ cancelled: deleted.length });
     });
   }
 
@@ -1691,7 +2266,7 @@ export class TablesRepository {
     const targetTableStatus = targetStatusRows[0]?.status;
 
     if (openOrders.length === 0) {
-      throw new Error("No open orders to relocate");
+      throw new Error("Nessun conto aperto da spostare.");
     }
 
     // Block merge/move while a split bill is in progress on either table.
@@ -1748,11 +2323,8 @@ export class TablesRepository {
         ne(orders.status, "cancelled"),
       ));
 
-    // Free the source table.
-    await tx
-      .update(tables)
-      .set({ status: "free", currentOrderId: null })
-      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, sourceTableId)));
+    // Free the source table (retirement automatico se è un conto virtuale).
+    await freeTableTx(tx, tenantId, sourceTableId);
 
     // Occupy the target table, pointing currentOrderId at the earliest open order.
     const targetOpenOrder = await tx
@@ -1784,7 +2356,7 @@ export class TablesRepository {
     const parsed = transferTableRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
     if (parsed.targetTableId === sourceTableId) {
-      throw new Error("Target table must differ from source table");
+      throw new Error("Il tavolo di destinazione deve essere diverso da quello di partenza.");
     }
 
     return withTenantTx(async (tx) => {
@@ -1829,7 +2401,7 @@ export class TablesRepository {
     const parsed = mergeTableRequestSchema.parse(payload);
     const tenantId = getTenantIdOrDefault();
     if (parsed.targetTableId === sourceTableId) {
-      throw new Error("Target table must differ from source table");
+      throw new Error("Il tavolo di destinazione deve essere diverso da quello di partenza.");
     }
 
     return withTenantTx(async (tx) => {
@@ -1939,40 +2511,49 @@ export class TablesRepository {
     });
 
     const totalAmount = items.reduce((sum, item) => sum + item.price * item.totalQuantity, 0);
-    const paidAmount = items.reduce((sum, item) => sum + item.price * item.paidQuantity, 0);
-    const remainingAmount = totalAmount - paidAmount;
+    const itemPaidAmount = items.reduce((sum, item) => sum + item.price * item.paidQuantity, 0);
 
-    const splitPayments = await db
+    // Session boundary: tables are reused and payments never move, so without it
+    // every split ever recorded on this table would come back as the current one.
+    const sessionStartedAt = resolveSessionStartedAt(openOrders);
+    const sessionPayments = await db
       .select()
       .from(payments)
       .where(and(
         eq(payments.tenantId, tenantId),
         eq(payments.tableId, tableId),
+        eq(payments.kind, "sale"),
+        ...(sessionStartedAt ? [gte(payments.createdAt, sessionStartedAt)] : []),
       ));
 
-    const hasSplitPayments = splitPayments.some((p) => p.shareIndex !== null);
-    let splitShares;
+    const sessionSplitPayments = selectSessionSplitBatch(sessionPayments, sessionStartedAt);
+    const splitShares = sessionSplitPayments.map((p) => ({
+      shareIndex: p.shareIndex!,
+      amount: Number(p.total),
+      method: p.method,
+      gatewayReference: p.gatewayReference,
+      isPaid: p.paymentStatus === "captured",
+      paymentId: p.id,
+    }));
 
-    if (hasSplitPayments) {
-      splitShares = splitPayments
-        .filter((p) => p.shareIndex !== null)
-        .sort((a, b) => (a.shareIndex ?? 0) - (b.shareIndex ?? 0))
-        .map((p) => ({
-          shareIndex: p.shareIndex!,
-          amount: Number(p.total),
-          method: p.method,
-          gatewayReference: p.gatewayReference,
-          isPaid: p.paymentStatus === "captured",
-          paymentId: p.id,
-        }));
-    }
+    // Split shares never create payment_items: while a split is in force the amounts
+    // already collected are the captured shares, and the residual is what is left of
+    // that split — not the full item total.
+    const capturedShareAmount = sessionSplitPayments
+      .filter((p) => p.paymentStatus === "captured")
+      .reduce((sum, p) => sum + Number(p.total), 0);
+    const splitChargedAmount = sessionSplitPayments.reduce((sum, p) => sum + Number(p.total), 0);
+    const paidAmount = sessionSplitPayments.length > 0 ? capturedShareAmount : itemPaidAmount;
+    const remainingAmount = sessionSplitPayments.length > 0
+      ? Math.max(0, splitChargedAmount - capturedShareAmount)
+      : totalAmount - itemPaidAmount;
 
     return {
       items,
       totalAmount: Math.max(0, Number(totalAmount.toFixed(2))),
       paidAmount: Math.max(0, Number(paidAmount.toFixed(2))),
       remainingAmount: Math.max(0, Number(remainingAmount.toFixed(2))),
-      ...(splitShares ? { splitShares } : {}),
+      ...(splitShares.length > 0 ? { splitShares } : {}),
     };
   }
 

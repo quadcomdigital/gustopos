@@ -152,6 +152,7 @@ import {
   orderItems,
   orders,
   payments,
+  paymentItems,
   appSettings,
   categories,
   customers,
@@ -206,6 +207,13 @@ import { resolveStationItemName } from "../orders/ticket-names";
 import { EscPosBuilder, RECEIPT_WIDTH, padRight, formatRomeTime, formatRomeDateTime, orderStationTicketItems, selectStationTicketItems, isValidLogoRaster } from "./utils/escpos-builder";
 import { parsePrintAreas as parsePrintAreasUtil } from "./utils/json-parsers";
 import { formatIngredientOverrides } from "./utils/order-labels";
+import {
+  freeTableByNumberTx,
+  lockTableTx,
+  occupyTableTx,
+  openOrReuseVirtualContoTx,
+} from "./kernel/table-lifecycle";
+import { makeTicketNumber } from "./utils/ticket-number";
 import { sanitizeActiveStationIds } from "./print-areas";
 
 
@@ -900,6 +908,25 @@ export class AppRepository {
     ep.feed(5);
     ep.cut();
     return ep.build();
+  }
+
+  /**
+   * Enqueue della stampa DOPO il commit dell'ordine: non deve MAI far fallire
+   * la risposta. Se l'enqueue lancia, l'ordine è già scritto e l'API risponde
+   * 5xx → il middleware rilascia il lock di idempotenza → il retry del POS
+   * creerebbe un SECONDO ordine. La stampa è un effetto collaterale: si logga
+   * e si lascia la diagnostica all'operatore.
+   */
+  private async enqueuePrintJobsSafely(order: Order): Promise<void> {
+    try {
+      await this.createPrintJobsForOrder(order);
+    } catch (error) {
+      console.error("[print] enqueue failed after commit", {
+        orderId: order.id,
+        table: order.table,
+        error: error instanceof Error ? error.message : error,
+      });
+    }
   }
 
   private async createPrintJobsForOrder(order: Order): Promise<void> {
@@ -2940,7 +2967,7 @@ export class AppRepository {
     const priced = await this.pricePublicOrderLines(tenant.id, priceRequests);
 
     const staffId = await this.resolveSelfOrderStaffId(tenant.id);
-    const ticketNumber = `GR-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`;
+    const ticketNumber = makeTicketNumber("GR");
     const draftOrder: Order = orderSchema.parse({
       id: crypto.randomUUID(),
       orderType: "takeaway",
@@ -3676,7 +3703,7 @@ export class AppRepository {
     // printed, deducted, sent to the kitchen or charged until a waiter/admin
     // approves it (see `reviewPendingOrderDraft`). Everything below only records
     // the guest's request; the lines were already re-priced server-side above.
-    const ticketNumber = `TA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`;
+    const ticketNumber = makeTicketNumber("TA");
     const draftOrder: Order = orderSchema.parse({
       id: crypto.randomUUID(),
       orderType: "takeaway",
@@ -4097,7 +4124,7 @@ export class AppRepository {
   async createOrder(payload: CreateOrderRequest): Promise<{ order: Order; inventory: Ingredient[] }> {
     const parsed = createOrderRequestSchema.parse(payload);
     const result = await withTenantTx((tx) => this.createOrderTx(parsed, tx, { skipPrint: true }));
-    await this.createPrintJobsForOrder(result.order);
+    await this.enqueuePrintJobsSafely(result.order);
     return result;
   }
 
@@ -4116,7 +4143,7 @@ export class AppRepository {
     const orderType: OrderType = parsed.orderType ?? "dine_in";
 
     if (orderType === "dine_in" && !parsed.table) {
-      throw new Error("Dine-in orders require table");
+      throw new Error("Per un ordine in sala serve un tavolo.");
     }
 
     await this.validateCourseRoundsOrder(orderType, parsed.items);
@@ -4124,7 +4151,7 @@ export class AppRepository {
     let customerRecord: typeof customers.$inferSelect | null = null;
     if (orderType === "takeaway" || orderType === "delivery") {
       if (!parsed.customerId && !parsed.customerName) {
-        throw new Error("Takeaway/delivery orders require customer selection or customer name");
+        throw new Error("Per asporto e consegna serve un cliente o un nome.");
       }
 
       if (parsed.customerId) {
@@ -4135,7 +4162,7 @@ export class AppRepository {
           .limit(1);
         customerRecord = rows[0] ?? null;
         if (!customerRecord) {
-          throw new Error("Customer not found");
+          throw new Error("Cliente non trovato.");
         }
       } else if (parsed.customerName) {
         customerRecord = await this.customerRepo.createOrReuseCustomer({
@@ -4146,11 +4173,12 @@ export class AppRepository {
     }
 
     const isVirtualOrder = orderType === "takeaway" || orderType === "delivery";
+    // 6 cifre casuali, non le ultime 4 del timestamp (che si ripetevano ogni 10 s).
     const ticketNumber =
       orderType === "takeaway"
-        ? `TA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`
+        ? makeTicketNumber("TA")
         : orderType === "delivery"
-          ? `DL-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-4)}`
+          ? makeTicketNumber("DL")
           : undefined;
 
     // Non-dine-in orders attach to a hidden virtual "conto" table so the table
@@ -4163,6 +4191,41 @@ export class AppRepository {
         ? requestedVirtualTable
         : ticketNumber
       : undefined;
+
+    // ─── Serializzazione con la cassa (audit A1) ─────────────────────────────
+    // `closeTable`/`settleTable`/`paySelectedItems` lockano la riga `tables`.
+    // Senza lo stesso lock qui, una portata inviata mentre la cassa sta
+    // chiudendo non entra nel conteggio (la sua riga non è ancora visibile) e
+    // lo scontrino esce senza quella consumazione. Il lock va preso PRIMA di
+    // inserire l'ordine, così una delle due transazioni aspetta l'altra.
+    // Il guard "il tavolo esiste" viene eseguito qui, nello stesso punto.
+    let lockedTableId: string | null = null;
+    if (orderType === "dine_in" && parsed.table) {
+      const targetRows = await tx
+        .select({ id: tables.id })
+        .from(tables)
+        .where(and(eq(tables.tenantId, tenantId), eq(tables.number, parsed.table), eq(tables.isActive, 1)))
+        .limit(1);
+      if (targetRows.length === 0) {
+        throw new Error(`Tavolo "${parsed.table}" non trovato`);
+      }
+      lockedTableId = targetRows[0].id;
+      await lockTableTx(tx, tenantId, lockedTableId);
+    } else if (isVirtualOrder && virtualTableNumber) {
+      // Se il conto esiste già (aggiunta voci) si locka la sua riga; se è nuovo
+      // non c'è nulla da lockare — il lock arriva con l'insert del tavolo.
+      const existingRows = requestedVirtualTable
+        ? await tx
+            .select({ id: tables.id })
+            .from(tables)
+            .where(and(eq(tables.tenantId, tenantId), eq(tables.number, virtualTableNumber), eq(tables.isActive, 1)))
+            .limit(1)
+        : [];
+      if (existingRows.length > 0) {
+        lockedTableId = existingRows[0].id;
+        await lockTableTx(tx, tenantId, lockedTableId);
+      }
+    }
 
     const order: Order = orderSchema.parse({
       ...parsed,
@@ -4214,46 +4277,16 @@ export class AppRepository {
         insertedOrderItems.push(insertedItem);
       }
 
-      if (order.orderType === "dine_in" && order.table) {
-        // Authoritative guard: a dine-in order may only bind to an ACTIVE
-        // table. Rejects a stale client (renamed/soft-deleted table) instead
-        // of silently occupying a tombstone with the same number.
-        const targetTables = await tx
-          .select({ id: tables.id })
-          .from(tables)
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.table), eq(tables.isActive, 1)))
-          .limit(1);
-        if (targetTables.length === 0) {
-          throw new Error(`Table "${order.table}" not found`);
-        }
-        await tx
-          .update(tables)
-          .set({ status: "occupied" })
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.table), eq(tables.isActive, 1)));
+      if (order.orderType === "dine_in" && lockedTableId) {
+        // `currentOrderId` anche in sala: senza puntatore la guardia di
+        // cancellazione tavolo non vedeva il conto aperto.
+        await occupyTableTx(tx, tenantId, lockedTableId, order.id);
       } else if (isVirtualOrder && virtualTableNumber) {
-        const existingVirtual = await tx
-          .select()
-          .from(tables)
-          .where(and(eq(tables.tenantId, tenantId), eq(tables.number, virtualTableNumber), eq(tables.isActive, 1)))
-          .limit(1);
-        if (existingVirtual.length > 0) {
-          if (existingVirtual[0].isVirtual !== 1) {
-            throw new Error(`Table "${virtualTableNumber}" is not an open takeaway/delivery conto`);
-          }
-          await tx
-            .update(tables)
-            .set({ status: "occupied", currentOrderId: order.id })
-            .where(and(eq(tables.tenantId, tenantId), eq(tables.id, existingVirtual[0].id)));
-        } else {
-          await tx.insert(tables).values({
-            id: `tbl_${crypto.randomUUID()}`,
-            tenantId,
-            number: virtualTableNumber,
-            status: "occupied",
-            currentOrderId: order.id,
-            isVirtual: 1,
-          });
-        }
+        // Riuso SOLO se il conto è stato indicato esplicitamente dal client:
+        // un numero auto-generato che collide non deve fondere due clienti.
+        await openOrReuseVirtualContoTx(tx, tenantId, virtualTableNumber, order.id, {
+          reuseExisting: Boolean(requestedVirtualTable),
+        });
       }
 
       const menuIds = [...new Set(order.items.map((item) => item.id))];
@@ -4622,10 +4655,14 @@ export class AppRepository {
 
       const ingredientIds = [...consumptionByIngredient.keys()];
       if (stockTrackingEnabled && ingredientIds.length > 0) {
+        // `orderBy` esplicito: due ordini con gli stessi ingredienti devono
+        // acquisire i lock nello STESSO ordine, altrimenti possono incrociarsi
+        // e Postgres aborta uno dei due con `deadlock detected`.
         const inventoryRows = await tx
           .select()
           .from(inventory)
           .where(and(eq(inventory.tenantId, tenantId), inArray(inventory.id, ingredientIds)))
+          .orderBy(inventory.id)
           .for("update");
 
         const inventoryMap = new Map(inventoryRows.map((r) => [r.id, r]));
@@ -4722,6 +4759,7 @@ export class AppRepository {
           .select()
           .from(prepItems)
           .where(and(eq(prepItems.tenantId, tenantId), inArray(prepItems.id, prepIds)))
+          .orderBy(prepItems.id)
           .for("update");
 
         const prepMap = new Map(prepRows.map((r) => [r.id, r]));
@@ -4797,7 +4835,7 @@ export class AppRepository {
     })();
 
     if (!options.skipPrint) {
-      await this.createPrintJobsForOrder(order);
+      await this.enqueuePrintJobsSafely(order);
     }
 
     return { order, inventory: updatedInventory };
@@ -4949,7 +4987,7 @@ export class AppRepository {
       .limit(1);
     const table = rows[0];
     if (!table || table.isVirtual === 1) {
-      throw new GhostOrderInvalidError("Ghost orders can only be bound to an active physical table");
+      throw new GhostOrderInvalidError("Le bozze possono essere legate solo a un tavolo fisico attivo.");
     }
     return table;
   }
@@ -5197,7 +5235,7 @@ export class AppRepository {
       if (!table || table.isActive !== 1 || table.isVirtual === 1) {
         // Leave the tombstone for the table-cleanup hook; throwing here must
         // not silently commit a partial state inside the transaction.
-        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, id), "Table is no longer available");
+        throw new GhostOrderConflictError(await this.getGhostOrderByIdTx(tx, id), "Il tavolo non è più disponibile.");
       }
 
       const now = new Date();
@@ -5376,7 +5414,7 @@ export class AppRepository {
         .limit(1);
       const table = tableRows[0];
       if (!table || table.isActive !== 1 || table.isVirtual === 1) {
-        throw new GhostOrderInvalidError("The table is no longer available");
+        throw new GhostOrderInvalidError("Il tavolo non è più disponibile.");
       }
 
       let finalItems: GhostOrderItem[];
@@ -5384,7 +5422,7 @@ export class AppRepository {
         // Only the owner may replace the draft content at commit time; the
         // cashier/admin commits exactly what they saw.
         if (current.ownerStaffId !== params.actorStaffId) {
-          throw new GhostOrderForbiddenError("Only the owner can send the final cart snapshot");
+          throw new GhostOrderForbiddenError("Solo il proprietario della bozza può inviare il carrello finale.");
         }
         finalItems = parsed.items;
       } else {
@@ -5476,7 +5514,7 @@ export class AppRepository {
       // must not turn a successful send into a 500 (the client would retry a
       // committed draft and get a confusing conflict).
       try {
-        await this.createPrintJobsForOrder(committed.order);
+        await this.enqueuePrintJobsSafely(committed.order);
       } catch (error) {
         console.warn(
           `[ghost-order] print jobs failed for committed order ${committed.order.id}:`,
@@ -5500,7 +5538,7 @@ export class AppRepository {
       const order = orderRows[0];
       if (!order) return;
       if (order.status === "paid" || order.status === "cancelled") {
-        throw new Error(`Cannot change quantity for a ${order.status} order`);
+        throw new Error(`Non puoi modificare le quantità di un conto ${order.status}.`);
       }
       const itemRows = await tx
         .select({ id: orderItems.id, menuItemId: orderItems.menuItemId, quantity: orderItems.quantity, price: orderItems.price })
@@ -5509,6 +5547,17 @@ export class AppRepository {
         .for("update");
       const item = itemRows[0];
       if (!item) return;
+
+      // Le quantità già incassate con paga-selezione non possono essere ridotte:
+      // altrimenti il totale dell'ordine scenderebbe sotto il denaro preso.
+      const paidItemRows = await tx
+        .select()
+        .from(paymentItems)
+        .where(and(eq(paymentItems.tenantId, tenantId), eq(paymentItems.orderItemId, orderItemId)));
+      const paidQty = paidItemRows.reduce((sum, row) => sum + row.quantity, 0);
+      if (quantity < paidQty) {
+        throw new Error(`Impossibile ridurre a ${quantity}: ${paidQty} già pagati per questa voce`);
+      }
 
       const impacts = await tx
         .select()
@@ -5658,10 +5707,7 @@ export class AppRepository {
               ))
               .limit(1);
             if (otherOpenOrder.length === 0) {
-              await tx
-                .update(tables)
-                .set({ status: "free", currentOrderId: null })
-                .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber), eq(tables.isActive, 1)));
+              await freeTableByNumberTx(tx, tenantId, order.tableNumber);
             }
           }
         }
@@ -5855,10 +5901,7 @@ export class AppRepository {
           ))
           .limit(1);
         if (remaining.length === 0) {
-          await tx
-            .update(tables)
-            .set({ status: "free", currentOrderId: null })
-            .where(and(eq(tables.tenantId, tenantId), eq(tables.number, order.tableNumber), eq(tables.isActive, 1)));
+          await freeTableByNumberTx(tx, tenantId, order.tableNumber);
         }
       }
 
@@ -6123,7 +6166,7 @@ export class AppRepository {
       return null;
     }
     if (order.status === "paid" || order.status === "cancelled") {
-      throw new Error(`Cannot change course for a ${order.status} order`);
+      throw new Error(`Non puoi cambiare la portata di un conto ${order.status}.`);
     }
     if (order.orderType !== "dine_in") {
       throw new Error("Course rounds are only valid for dine-in orders");
