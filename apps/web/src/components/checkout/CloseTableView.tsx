@@ -40,6 +40,7 @@ export default function CloseTableView() {
   // perché l'ultima voce non pagata è stata tolta dal carrello dopo l'incasso.
   const [settling, setSettling] = useState(false);
   const [settleError, setSettleError] = useState('');
+  const [showSettleConfirm, setShowSettleConfirm] = useState(false);
 
   const handlePay = async () => {
     if (!tableId) return;
@@ -49,6 +50,7 @@ export default function CloseTableView() {
 
   const handleSettle = async () => {
     if (!tableId) return;
+    setShowSettleConfirm(false);
     setSettleError('');
     setSettling(true);
     try {
@@ -97,7 +99,7 @@ export default function CloseTableView() {
         <>
           <button
             type="button"
-            onClick={() => void handleSettle()}
+            onClick={() => setShowSettleConfirm(true)}
             disabled={busy || settling}
             className="w-full flex items-center justify-center gap-2 py-3 min-h-[44px] rounded bg-success text-white text-sm font-bold uppercase tracking-wider disabled:opacity-50"
           >
@@ -151,12 +153,17 @@ export default function CloseTableView() {
           )}
 
           {(closeMethod === 'card' || closeMethod === 'mixed') && (
-            <input
-              value={gatewayReference}
-              onChange={(e) => setGatewayReference(e.target.value)}
-              placeholder="Riferimento transazione POS/PSP"
-              className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
-            />
+            <>
+              <input
+                value={gatewayReference}
+                onChange={(e) => setGatewayReference(e.target.value)}
+                placeholder="Riferimento transazione POS/PSP"
+                className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
+              />
+              {gatewayReference.trim().length < 3 && (
+                <p className="text-[11px] text-text-muted">Inserisci il riferimento della transazione (almeno 3 caratteri) per poter chiudere.</p>
+              )}
+            </>
           )}
 
           {canToggleReceipt && (
@@ -230,6 +237,15 @@ export default function CloseTableView() {
           </button>
         </>
       )}
+
+      <ConfirmDialog
+        open={showSettleConfirm}
+        title="Liberare il tavolo?"
+        message="Il conto è già interamente pagato: gli ordini aperti verranno marcati come pagati, nessun nuovo incasso e nessuno scontrino verrà creato, e il tavolo tornerà libero. L'azione non può essere annullata."
+        confirmLabel="Libera il tavolo"
+        onConfirm={() => void handleSettle()}
+        onCancel={() => setShowSettleConfirm(false)}
+      />
 
       <ConfirmDialog
         open={showConfirm}

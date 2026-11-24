@@ -158,12 +158,17 @@ export default function SplitBillView() {
                   />
 
                   {(share.method === 'card' || share.method === 'mixed') && (
-                    <input
-                      value={share.gatewayReference}
-                      onChange={(e) => updateShareGatewayRef(share.shareIndex, e.target.value)}
-                      placeholder="Riferimento transazione POS/PSP"
-                      className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
-                    />
+                    <>
+                      <input
+                        value={share.gatewayReference}
+                        onChange={(e) => updateShareGatewayRef(share.shareIndex, e.target.value)}
+                        placeholder="Riferimento transazione POS/PSP"
+                        className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
+                      />
+                      {share.gatewayReference.trim().length < 3 && (
+                        <p className="text-[11px] text-text-muted">Inserisci il riferimento della transazione (almeno 3 caratteri) per poter incassare questa quota.</p>
+                      )}
+                    </>
                   )}
 
                   {share.method === 'cash' && (
@@ -196,6 +201,11 @@ export default function SplitBillView() {
             </div>
             );
           })}
+          {hasCaptured && (
+            <p className="rounded-lg border border-warning-300 bg-warning-50 p-3 text-xs font-semibold text-warning-800" role="status">
+              Una quota è già stata incassata: le quote non si possono più modificare né la divisione annullare. Completa le quote rimaste per chiudere il tavolo.
+            </p>
+          )}
           {!hasCaptured && (
             <>
               <div className="flex gap-2">

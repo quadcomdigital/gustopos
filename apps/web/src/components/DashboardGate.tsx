@@ -64,7 +64,8 @@ export default function DashboardGate({ staffId, staffName, children }: Dashboar
         <div className="text-center space-y-1">
           <h2 className="text-lg font-bold text-primary uppercase tracking-tight">Pannello protetto</h2>
           <p className="text-xs text-text-muted">
-            Inserisci il PIN di <span className="font-bold text-secondary">{staffName}</span> per aprire la dashboard.
+            Inserisci il tuo PIN personale, oppure il codice del locale se ne ha uno, per aprire la dashboard.
+            {staffName ? <> Sei loggato come <span className="font-bold text-secondary">{staffName}</span>.</> : null}
           </p>
         </div>
 

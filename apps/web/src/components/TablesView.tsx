@@ -79,6 +79,7 @@ export default function TablesView({
   const [ghostDiscard, setGhostDiscard] = useState<GhostOrder | null>(null);
   const [ghostBusyId, setGhostBusyId] = useState<string | null>(null);
   const [expandedGhostId, setExpandedGhostId] = useState<string | null>(null);
+  const [claimedTable, setClaimedTable] = useState<{ number: string; staffNames: string[] } | null>(null);
 
   useEffect(() => {
     if (ghostOrdersEnabled) void refreshGhostOrders();
@@ -505,7 +506,16 @@ export default function TablesView({
               )}
               <button
                 type="button"
-                onClick={() => onSelectTable(table.number)}
+                onClick={() => {
+                  // La presenza è solo un indicatore: se un'altra postazione sta
+                  // già lavorando su questo tavolo, l'operatore deve saperlo
+                  // prima di aprire lo stesso conto da qui.
+                  if (stations.length > 0) {
+                    setClaimedTable({ number: table.number, staffNames: stations.map((s) => s.staffName) });
+                  } else {
+                    onSelectTable(table.number);
+                  }
+                }}
                 className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-xl px-3 pb-6 pt-3 text-center cursor-pointer active:scale-95 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
                 aria-label={`Apri tavolo ${table.number}, ${statusLabel}`}
               >
@@ -561,6 +571,20 @@ export default function TablesView({
           );
         })}
       </div>
+
+      {/* Tavolo già in lavoro su un'altra postazione: avviso, non blocco. */}
+      <ConfirmDialog
+        open={claimedTable !== null}
+        title="Tavolo già in lavoro"
+        message={claimedTable ? `La postazione di ${claimedTable.staffNames.join(', ')} sta già lavorando sul tavolo ${claimedTable.number}. Aprirlo da qui può creare un conto doppio o sovrapporre gli articoli. Vuoi continuare comunque?` : ''}
+        confirmLabel="Apri comunque"
+        onConfirm={() => {
+          const number = claimedTable?.number;
+          setClaimedTable(null);
+          if (number) onSelectTable(number);
+        }}
+        onCancel={() => setClaimedTable(null)}
+      />
 
       {/* Suspend confirm — pre-bill print is opt-in here too */}
       <ConfirmDialog

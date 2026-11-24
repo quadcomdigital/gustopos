@@ -84,7 +84,7 @@ describe('checkout-store.openCheckout', () => {
     await useCheckoutStore.getState().openCheckout('table-1', '5');
 
     expect(useCheckoutStore.getState().isOpen).toBe(true);
-    expect(useCheckoutStore.getState().error).toBe('Failed to load payment status');
+    expect(useCheckoutStore.getState().error).toBe('Impossibile caricare lo stato dei pagamenti: riprova o chiudi e riapri la cassa.');
     consoleError.mockRestore();
   });
 });

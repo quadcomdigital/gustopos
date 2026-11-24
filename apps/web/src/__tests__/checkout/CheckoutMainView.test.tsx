@@ -105,7 +105,9 @@ describe('CheckoutMainView', () => {
     };
     render(<CheckoutMainView />);
     expect(screen.getByText('Tutto pagato')).toBeInTheDocument();
-    expect(screen.getByText('Chiudi')).toBeInTheDocument();
+    // Non "Chiudi": chiudere il pannello lascerebbe il tavolo occupato.
+    expect(screen.getByText('Libera il tavolo')).toBeInTheDocument();
+    expect(screen.queryByText('Chiudi')).not.toBeInTheDocument();
     expect(screen.queryByText('Dividi il conto')).not.toBeInTheDocument();
   });
 

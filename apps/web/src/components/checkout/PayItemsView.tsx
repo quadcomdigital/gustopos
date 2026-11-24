@@ -217,12 +217,17 @@ export default function PayItemsView() {
               </div>
 
               {(payItemsMethod === 'card' || payItemsMethod === 'mixed') && (
-                <input
-                  value={payItemsGatewayRef}
-                  onChange={(e) => setPayItemsGatewayRef(e.target.value)}
-                  placeholder="Riferimento transazione POS/PSP"
-                  className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
-                />
+                <>
+                  <input
+                    value={payItemsGatewayRef}
+                    onChange={(e) => setPayItemsGatewayRef(e.target.value)}
+                    placeholder="Riferimento transazione POS/PSP"
+                    className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
+                  />
+                  {payItemsGatewayRef.trim().length < 3 && (
+                    <p className="text-[11px] text-text-muted">Inserisci il riferimento della transazione (almeno 3 caratteri) per poter incassare.</p>
+                  )}
+                </>
               )}
 
               {payItemsMethod === 'cash' && (

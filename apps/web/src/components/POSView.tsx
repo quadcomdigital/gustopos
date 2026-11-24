@@ -1563,6 +1563,7 @@ export default function POSView({
                     title="Connessione realtime assente: i dati possono essere non aggiornati"
                   >
                     <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-danger" />
+                    <span className="sr-only">Connessione realtime assente: tavoli e totali potrebbero non essere aggiornati.</span>
                     Offline
                   </span>
                 )}

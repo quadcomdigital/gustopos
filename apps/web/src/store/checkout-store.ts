@@ -180,7 +180,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
       }
     } catch (error) {
       console.error('Failed to load payment status:', error);
-      set({ error: 'Failed to load payment status' });
+      set({ error: 'Impossibile caricare lo stato dei pagamenti: riprova o chiudi e riapri la cassa.' });
     }
   },
   

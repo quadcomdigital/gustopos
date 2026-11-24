@@ -7,7 +7,7 @@ import { formatCurrency, type OrderItem } from '@gustopos/shared';
 import { buildComponentNameById, buildModifierOptionNameById } from '../../lib/catalog-names';
 
 export default function CheckoutMainView() {
-  const { tableId: _tableId, tableNumber, paymentStatus, setStep, discountAmount, surchargeAmount, setDiscountAmount, setSurchargeAmount, closeCheckout } = useCheckoutStore();
+  const { tableId: _tableId, tableNumber, paymentStatus, setStep, discountAmount, surchargeAmount, setDiscountAmount, setSurchargeAmount } = useCheckoutStore();
   const [showAdjustments, setShowAdjustments] = useState(false);
   const data = useAppStore((s) => s.data);
 
@@ -161,11 +161,14 @@ export default function CheckoutMainView() {
 
       <div className="sticky bottom-0 -mx-3 sm:-mx-4 px-3 sm:px-4 pt-3 pb-1 border-t border-border bg-bg space-y-2">
         {isFullyPaid ? (
+          // "Chiudi" qui chiuderebbe solo il pannello: il tavolo resterebbe
+          // occupato. L'azione vera (liberare il tavolo) vive nello step
+          // `close`, quindi mandiamoci lì.
           <button
-            onClick={() => closeCheckout()}
+            onClick={() => setStep('close')}
             className="w-full py-3 min-h-[44px] rounded bg-success text-white text-sm font-bold uppercase tracking-wider hover:bg-green-700 transition-colors"
           >
-            Chiudi
+            Libera il tavolo
           </button>
         ) : (
           <>
