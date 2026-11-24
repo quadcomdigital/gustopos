@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss';
 
@@ -10,6 +10,9 @@ interface ConfirmDialogProps {
   cancelLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Contenuto opzionale fra il messaggio e i bottoni (es. un'opzione che
+   *  cambia l'effetto della conferma, come "stampa il preconto"). */
+  children?: ReactNode;
 }
 
 /**
@@ -31,6 +34,7 @@ export default function ConfirmDialog({
   cancelLabel = 'Annulla',
   onConfirm,
   onCancel,
+  children,
 }: ConfirmDialogProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -105,6 +109,7 @@ export default function ConfirmDialog({
       >
         <h3 id={titleId} className="text-sm font-bold text-secondary uppercase tracking-wider">{title}</h3>
         <p id={messageId} className="text-sm text-text-muted">{message}</p>
+        {children}
         <div className="grid grid-cols-2 gap-2">
           <button onClick={onCancel} className="min-h-[44px] px-3 py-2.5 rounded border border-border text-xs font-bold uppercase tracking-wider">
             {cancelLabel}

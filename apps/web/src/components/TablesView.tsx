@@ -52,6 +52,8 @@ export default function TablesView({
   const [showQrSheet, setShowQrSheet] = useState(false);
   const [qrSelectedTableId, setQrSelectedTableId] = useState('');
   const [selfOrderQr, setSelfOrderQr] = useState<{ tableNumber: string; url: string; expiresAt: string } | null>(null);
+  const [qrError, setQrError] = useState('');
+  const [qrGenerating, setQrGenerating] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
@@ -62,6 +64,9 @@ export default function TablesView({
 
   // ─── Ghost orders (unsent waiter carts) ────────────────────────────────
   const ghostOrders = useAppStore((s) => s.ghostOrders);
+  // Il preconto esiste solo se il modulo stampa è attivo: senza, non possiamo
+  // promettere "Sospendi e stampa".
+  const printingModuleEnabled = useAppStore((s) => s.enabledModules.includes('printing'));
   // Presenza POS (socket, cross-terminale): chi sta lavorando su quale tavolo.
   const posPresence = useAppStore((s) => s.posPresence);
   const currentUser = useAppStore((s) => s.currentUser);
@@ -226,15 +231,19 @@ export default function TablesView({
 
   const handleRotateSelfOrderQr = async (tableId: string) => {
     if (!onRotateSelfOrderQr) return;
-    setActionError('');
-    setActionBusy(true);
+    // La generazione resta DENTRO la sheet: chiudendola subito l'operatore
+    // vedeva solo un banner in basso per 4 secondi e non sapeva se il QR era
+    // stato creato o se aveva sovrascritto quello precedente.
+    setQrError('');
+    setQrGenerating(true);
     try {
       const payload = await onRotateSelfOrderQr(tableId);
       setSelfOrderQr({ tableNumber: payload.tableNumber, url: payload.publicUrl, expiresAt: payload.expiresAt });
+      setShowQrSheet(false);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Rigenerazione QR non riuscita');
+      setQrError(error instanceof Error ? error.message : 'Rigenerazione QR non riuscita');
     } finally {
-      setActionBusy(false);
+      setQrGenerating(false);
     }
   };
 
@@ -244,8 +253,9 @@ export default function TablesView({
     setActionSuccess('');
     setActionBusy(true);
     try {
-      await onSuspendTable(tableId, { printPreBill: suspendPreBill });
-      setActionSuccess(suspendPreBill ? 'Conto sospeso · preconto inviato in cassa' : 'Conto sospeso');
+      const printPreBill = suspendPreBill && printingModuleEnabled;
+      await onSuspendTable(tableId, { printPreBill });
+      setActionSuccess(printPreBill ? 'Conto sospeso · preconto inviato in cassa' : 'Conto sospeso');
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Sospensione conto non riuscita');
     } finally {
@@ -590,8 +600,8 @@ export default function TablesView({
       <ConfirmDialog
         open={suspendTableNumber !== null}
         title="Sospendere il conto?"
-        message={`Il tavolo ${suspendTableNumber ?? ''} verrà segnalato come "conto sospeso" e tornerà in evidenza finché non verrà incassato.${suspendPreBill ? ' Il preconto verrà inviato alla cassiera.' : ' Il preconto non verrà stampato.'}`}
-        confirmLabel={suspendPreBill ? 'Sospendi e stampa' : 'Sospendi'}
+        message={`Il tavolo ${suspendTableNumber ?? ''} verrà segnalato come "conto sospeso" e tornerà in evidenza finché non verrà incassato.${suspendPreBill && printingModuleEnabled ? ' Il preconto verrà inviato alla cassiera.' : ' Il preconto non verrà stampato.'}`}
+        confirmLabel={suspendPreBill && printingModuleEnabled ? 'Sospendi e stampa' : 'Sospendi'}
         onConfirm={() => {
           const tableNumber = suspendTableNumber;
           setSuspendTableNumber(null);
@@ -599,7 +609,32 @@ export default function TablesView({
           if (table) void handleSuspendConfirmed(table.id);
         }}
         onCancel={() => setSuspendTableNumber(null)}
-      />
+      >
+        {printingModuleEnabled && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={suspendPreBill}
+            onClick={() => setSuspendPreBill((value) => !value)}
+            className={`flex min-h-[44px] w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+              suspendPreBill ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-white text-text-muted'
+            }`}
+          >
+            <span className="font-semibold">Stampa il preconto in cassa</span>
+            <span
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                suspendPreBill ? 'bg-primary' : 'bg-border'
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                  suspendPreBill ? 'translate-x-5' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+          </button>
+        )}
+      </ConfirmDialog>
 
       {/* Resume confirm */}
       <ConfirmDialog
@@ -650,10 +685,27 @@ export default function TablesView({
           <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900 shadow-lg">
             <p className="font-bold uppercase tracking-wider">Self Order QR</p>
             <p className="mt-1">Tavolo {selfOrderQr.tableNumber} · scade alle {new Date(selfOrderQr.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-            <a href={selfOrderQr.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 underline font-semibold">
-              <LinkIcon size={12} />
-              Apri link self-order
-            </a>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <a href={selfOrderQr.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline font-semibold">
+                <LinkIcon size={12} />
+                Apri link self-order
+              </a>
+              {/* Copiare il link serve a stamparlo o incollarlo nel messaggio al
+                  cliente senza doverlo ricavare dall'indirizzo del browser. */}
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(selfOrderQr.url).then(() => {
+                    setActionSuccess('Link self-order copiato');
+                  }).catch(() => {
+                    setActionError('Copia non riuscita: apri il link e copialo dalla barra degli indirizzi');
+                  });
+                }}
+                className="inline-flex min-h-[44px] items-center gap-1 rounded-full border border-indigo-300 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-indigo-700"
+              >
+                Copia link
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -686,7 +738,7 @@ export default function TablesView({
       {/* Floating QR Button */}
       {onRotateSelfOrderQr && (
         <button
-          onClick={() => { setShowQrSheet(true); setQrSelectedTableId(orderedTables[0]?.id ?? ''); }}
+          onClick={() => { setQrError(''); setShowQrSheet(true); setQrSelectedTableId(orderedTables[0]?.id ?? ''); }}
           className="fixed bottom-6 right-6 z-50 bg-indigo-600 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center active:scale-95 transition-transform"
           aria-label="Genera QR Self-Order"
         >
@@ -737,17 +789,24 @@ export default function TablesView({
                     ))}
                   </select>
                 </label>
+                <p className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] font-semibold text-amber-800">
+                  Il QR attuale del tavolo smette di funzionare appena ne generi uno nuovo: i clienti con la pagina già aperta dovranno ri-scansionare.
+                </p>
+                {qrError && (
+                  <p className="rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-xs font-semibold text-danger" role="alert">
+                    {qrError}
+                  </p>
+                )}
                 <button
                   onClick={() => {
                     if (!qrSelectedTableId) return;
                     void handleRotateSelfOrderQr(qrSelectedTableId);
-                    setShowQrSheet(false);
                   }}
-                  disabled={actionBusy || !qrSelectedTableId}
+                  disabled={qrGenerating || !qrSelectedTableId}
                   className="w-full py-3 min-h-[48px] bg-indigo-600 text-white rounded-xl text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.97] transition-transform disabled:opacity-50"
                 >
                   <QrCode size={16} />
-                  {actionBusy ? 'Rigenero...' : 'Genera QR'}
+                  {qrGenerating ? 'Rigenero...' : 'Genera QR'}
                 </button>
               </div>
             </motion.div>

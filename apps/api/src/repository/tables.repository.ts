@@ -1115,7 +1115,16 @@ export class TablesRepository {
     }
     // `enabled` è la scelta dell'operatore (il toggle in chiusura conto): senza,
     // il conto si chiude senza corrispettivo, come prima del percorso fiscale.
+    // Il pagamento però era già stato marcato `pending`: lasciarlo lì sarebbe
+    // una bugia ("in attesa di emissione" per sempre). Va marcato `failed` con
+    // il motivo, così l'operatore sa che deve configurare il RT e riemettere.
     if (!printerConfig.enabled || !printerConfig.host) {
+      const message =
+        "Registratore fiscale non configurato: abilita e configura l'RT in Impostazioni → Fiscale, poi riemetti lo scontrino.";
+      await db
+        .update(payments)
+        .set({ fiscalStatus: "failed", fiscalError: message })
+        .where(and(eq(payments.tenantId, tenantId), eq(payments.id, payment.id)));
       return;
     }
 

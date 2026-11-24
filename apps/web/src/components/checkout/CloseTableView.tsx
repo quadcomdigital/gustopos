@@ -223,7 +223,8 @@ export default function CloseTableView() {
               </span>
             </button>
             <p className="text-[11px] text-text-muted">
-              Se attivo, alla chiusura viene emesso lo scontrino dal registratore telematico (se configurato).
+              Se attivo, alla chiusura viene emesso lo scontrino dal registratore telematico. Serve un RT configurato in
+              Impostazioni → Fiscale: senza, il conto si chiude lo stesso ma il corrispettivo resta segnalato come non emesso.
             </p>
           </div>
           )}

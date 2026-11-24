@@ -83,3 +83,39 @@ non la vede, non la capisce e non riesce ad agire.
   errore in italiano).
 - `npm run lint`, suite web/api/shared, `npm run build`, restart PM2 e health
   dopo le correzioni.
+
+## Secondo passaggio — fiscale, sospendi, QR
+
+### Fiscale
+- **Meccanica**: `fiscalEmit` marcava il pagamento `pending`; l'emissione vera
+  partiva solo se il RT era `enabled` e con `host`. Se non lo era, la funzione
+  usciva **in silenzio**: il pagamento restava "in attesa" per sempre e
+  nessuna superficie lo diceva (in web `fiscalStatus`/`fiscalError` non erano
+  letti da nessun componente).
+- **Corretto (API)**: se il fiscale è richiesto ma il RT non è configurato, il
+  pagamento viene marcato `failed` con il motivo ("Registratore fiscale non
+  configurato: … Impostazioni → Fiscale, poi riemetti"). Non è più una bugia,
+  e il motivo è persistito per la diagnostica.
+- **Corretto (UI)**: la nota sotto il toggle in `CloseTableView` lo dice prima
+  della chiusura. Il toggle resta visibile perché la config è admin-only: un
+  cassiere non può leggerla, quindi la verità arriva dal server.
+- Nota: la UI cassa non mostra ancora `fiscalError`; oggi il motivo è visibile
+  solo dove si leggono i pagamenti (diagnostica/Settings). Da valutare un
+  badge "fiscale non emesso" sul conto appena chiuso.
+
+### Sospendi
+- **Meccanica**: `suspendPreBill` esisteva nello stato ma **nessun controllo lo
+  cambiava**: ogni sospensione stampava il preconto, senza scelta. In più, con
+  modulo stampa spento l'etichetta prometteva comunque "Sospendi e stampa".
+- **Corretto**: `ConfirmDialog` accetta un contenuto opzionale; la conferma di
+  sospensione mostra uno switch "Stampa il preconto in cassa". Se il modulo
+  stampa è spento lo switch è nascosto e il payload invia `printPreBill:false`,
+  coerente con l'etichetta.
+
+### QR self-order
+- **Meccanica**: "Genera QR" ruotava la sessione del tavolo (il QR precedente
+  smette di funzionare) e chiudeva la sheet **prima** dell'esito; un errore
+  finiva in un toast da 4 secondi, un successo in un banner in basso.
+- **Corretto**: la sheet resta aperta durante la generazione, mostra l'errore
+  inline, e avvisa prima che il QR attuale verrà invalidato. Il banner del QR
+  ora ha anche "Copia link" (con feedback), utile per stamparlo o inviarlo.
