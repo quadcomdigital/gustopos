@@ -22,8 +22,8 @@ export interface DeliverySummaryState {
   cancelled: number;
 }
 
-/** Dashboard sales window: `today` = current local day, `7d`/`30d` sliding, `all` = unbounded. */
-export type SalesPeriod = 'today' | '7d' | '30d' | 'all';
+/** Dashboard sales window: `today`/`yesterday` = one local day, `7d`/`30d` sliding, `all` = unbounded. */
+export type SalesPeriod = 'today' | 'yesterday' | '7d' | '30d' | 'all';
 
 export interface BackofficeContextValue {
   selectedTable: string | null;

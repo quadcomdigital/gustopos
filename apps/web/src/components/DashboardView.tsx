@@ -12,6 +12,7 @@ function formatEuro(value: number, visible: boolean): string {
 
 const SALES_PERIODS: Array<{ key: SalesPeriod; label: string }> = [
   { key: 'today', label: 'Oggi' },
+  { key: 'yesterday', label: 'Ieri' },
   { key: '7d', label: '7 giorni' },
   { key: '30d', label: '30 giorni' },
   { key: 'all', label: 'Tutto' },
@@ -29,7 +30,7 @@ import type {
   SalesSummary,
 } from '@gustopos/shared';
 import type { SalesPeriod } from '../app/backoffice/BackofficeContext';
-import { DollarSign, TrendingUp, Users, Clock, RefreshCw, X, Eye, EyeOff } from 'lucide-react';
+import { DollarSign, TrendingUp, Users, Clock, RefreshCw, X, Eye, EyeOff, Lock } from 'lucide-react';
 import ConfirmDialog from './ConfirmDialog';
 import { trackUxMetric } from '../shared/ux/metrics';
 import { logDashboardVisibility } from '../shared/api/client';
@@ -53,6 +54,8 @@ interface DashboardViewProps {
   onRefreshSalesSummary: () => Promise<void>;
   canVoidOrders?: boolean;
   onViewCustomer?: (customerId: string) => void;
+  /** Re-arms the dashboard PIN gate (see DashboardGate). */
+  onLock?: () => void;
 }
 
 export default function DashboardView({
@@ -73,6 +76,7 @@ export default function DashboardView({
   onRefreshSalesSummary,
   canVoidOrders = false,
   onViewCustomer,
+  onLock,
 }: DashboardViewProps) {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [historyType, setHistoryType] = useState<'' | 'dine_in' | 'takeaway' | 'delivery'>('');
@@ -134,6 +138,18 @@ export default function DashboardView({
           <p className="text-text-muted text-xs sm:text-sm font-medium">Storico ordini, clienti registrati e analytics</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {onLock && (
+            <button
+              type="button"
+              onClick={onLock}
+              title="Blocca pannello"
+              aria-label="Blocca pannello"
+              className="flex items-center gap-1.5 px-3 py-2 rounded border border-border text-[10px] sm:text-xs font-bold uppercase tracking-wider active:scale-95 transition-all"
+            >
+              <Lock size={12} />
+              <span className="hidden sm:inline">Blocca</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleEuroVisibility}

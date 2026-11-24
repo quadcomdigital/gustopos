@@ -47,6 +47,7 @@ import {
   refundPaymentRequestSchema,
   orderHistoryFiltersSchema,
   dashboardVisibilityLogRequestSchema,
+  dashboardUnlockRequestSchema,
   dispatchPrintJobRequestSchema,
   printJobsQuerySchema,
   printJobsPollQuerySchema,
@@ -206,6 +207,7 @@ import {
   type ReservationsSummary,
   type SalesSummary,
   type DeliverySummary,
+  type DashboardUnlockResponse,
   type RefundPaymentRequest,
   type RefundPaymentResponse,
   type SuspendTableRequest,
@@ -361,6 +363,8 @@ import type { JwtPayload } from "./auth/jwt.types";
 import { TenantService } from "./tenant/tenant.service";
 import { runWithBridgeAuthContext, runWithTenantContext } from "./tenant/tenant-context.store";
 import { resolveSigningMaterial } from "./security/signing-tenants";
+import { resolveDashboardGateCode } from "./security/dashboard-gate-codes";
+import { getTenantContext } from "./tenant/tenant-context.store";
 import type { ModuleKey } from "@gustopos/shared";
 
 @Controller("api")
@@ -681,6 +685,55 @@ export class AppController {
     this.auditLogService.log(`dashboard.counters.${parsed.action === "reveal" ? "revealed" : "hidden"}`, {
       actorStaffId: request.user?.sub,
       details: { view: "dashboard", action: parsed.action },
+    });
+    return { success: true };
+  }
+
+  /**
+   * Second factor for the money dashboard: the already-authenticated admin
+   * re-types their own PIN before the panel renders. Verified server-side so
+   * the check never lives in the bundle, throttled against PIN guessing, and
+   * audited on both outcomes.
+   *
+   * A tenant may also have a fixed gate code (see `dashboard-gate-codes.ts`,
+   * currently franks): it unlocks this endpoint and nothing else.
+   */
+  @Post("analytics/unlock")
+  @Roles("admin")
+  @RequiresModule("analytics")
+  // 5 attempts per minute per IP: enough for a mistyped PIN, useless to guess.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async unlockDashboard(
+    @Req() request: AuthenticatedRequest,
+    @Body() payload: unknown,
+  ): Promise<DashboardUnlockResponse> {
+    const parsed = dashboardUnlockRequestSchema.parse(payload ?? {});
+    const staffId = request.user?.sub;
+    if (!staffId) {
+      throw new UnauthorizedException("Missing session");
+    }
+
+    const tenantContext = getTenantContext();
+    const gateCode = resolveDashboardGateCode({
+      tenantSlug: tenantContext?.tenantSlug,
+      tenantId: tenantContext?.tenantId,
+    });
+
+    // The JWT guard already proved this is an active admin session of the
+    // tenant, so the tenant code only needs to match; the personal PIN still
+    // goes through the staff lookup (hash check).
+    const viaTenantCode = gateCode !== null && parsed.pin === gateCode;
+    if (!viaTenantCode) {
+      const staff = await this.staffRepo.findStaffByCredentials(staffId, parsed.pin);
+      if (!staff) {
+        this.auditLogService.log("dashboard.unlock.failed", { actorStaffId: staffId });
+        throw new UnauthorizedException("PIN non valido");
+      }
+    }
+
+    this.auditLogService.log("dashboard.unlocked", {
+      actorStaffId: staffId,
+      details: { via: viaTenantCode ? "tenant-code" : "pin" },
     });
     return { success: true };
   }

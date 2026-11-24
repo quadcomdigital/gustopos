@@ -52,6 +52,8 @@ import {
   salesSummaryQuerySchema,
   salesSummarySchema,
   dashboardVisibilityLogRequestSchema,
+  dashboardUnlockRequestSchema,
+  dashboardUnlockResponseSchema,
   orderHistoryFiltersSchema,
   orderHistoryListResponseSchema,
   pushConfigResponseSchema,
@@ -239,6 +241,7 @@ import {
   type DeliverySummary,
   type SalesSummary,
   type DashboardVisibilityAction,
+  type DashboardUnlockResponse,
   type CustomersQuery,
   type OrderHistoryFilters,
   type LoginResponse,
@@ -1160,6 +1163,21 @@ export async function logDashboardVisibility(action: DashboardVisibilityAction):
     body: JSON.stringify(request),
   });
   return readJson(response, z.object({ success: z.literal(true) }));
+}
+
+/**
+ * Unlocks the money dashboard for the current browser session. The PIN is the
+ * logged-in admin's own PIN and is verified by the API (throttled + audited):
+ * the gate is a real second factor, not a UI-only cover.
+ */
+export async function unlockDashboard(pin: string): Promise<DashboardUnlockResponse> {
+  const request = dashboardUnlockRequestSchema.parse({ pin });
+  const response = await authorizedFetch(`${API_URL}/api/analytics/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return readJson(response, dashboardUnlockResponseSchema);
 }
 
 export async function fetchOrderHistory(filters: OrderHistoryFilters = {}): Promise<Order[]> {

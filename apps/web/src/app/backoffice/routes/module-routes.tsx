@@ -9,6 +9,7 @@ const POSView = lazy(() => import('../../../components/POSView'));
 const KitchenView = lazy(() => import('../../../components/KitchenView'));
 const InventoryView = lazy(() => import('../../../components/InventoryView'));
 const DashboardView = lazy(() => import('../../../components/DashboardView'));
+const DashboardGate = lazy(() => import('../../../components/DashboardGate'));
 const TablesView = lazy(() => import('../../../components/TablesView'));
 const ReservationsView = lazy(() => import('../../../components/ReservationsView'));
 const DeliveryView = lazy(() => import('../../../components/DeliveryView'));
@@ -368,25 +369,30 @@ export function DashboardRoute() {
   const canVoidOrders = enabledModules.includes('kitchen') &&
     (currentUser.role === 'admin' || currentUser.permissions?.includes('orders:void'));
   return (
-    <DashboardView
-      data={data}
-      orderHistory={orderHistory}
-      customers={customers}
-      customerAnalytics={customerAnalytics}
-      onRefreshOrderHistory={refreshOrderHistory}
-      onRefreshCustomerAnalytics={refreshCustomerAnalytics}
-      onVoidOrder={voidOrder}
-      reservationsSummary={reservationsSummary}
-      deliverySummary={deliverySummary}
-      onRefreshOperationalSummaries={refreshOperationalSummaries}
-      salesSummary={salesSummary}
-      salesSummaryLoading={salesSummaryLoading}
-      salesPeriod={salesPeriod}
-      onSalesPeriodChange={setSalesPeriod}
-      onRefreshSalesSummary={refreshSalesSummary}
-      canVoidOrders={canVoidOrders}
-      onViewCustomer={(customerId) => navigate(`/app/customers/${customerId}`)}
-    />
+    <DashboardGate staffId={currentUser.id} staffName={currentUser.name}>
+      {({ lock }) => (
+        <DashboardView
+          data={data}
+          orderHistory={orderHistory}
+          customers={customers}
+          customerAnalytics={customerAnalytics}
+          onRefreshOrderHistory={refreshOrderHistory}
+          onRefreshCustomerAnalytics={refreshCustomerAnalytics}
+          onVoidOrder={voidOrder}
+          reservationsSummary={reservationsSummary}
+          deliverySummary={deliverySummary}
+          onRefreshOperationalSummaries={refreshOperationalSummaries}
+          salesSummary={salesSummary}
+          salesSummaryLoading={salesSummaryLoading}
+          salesPeriod={salesPeriod}
+          onSalesPeriodChange={setSalesPeriod}
+          onRefreshSalesSummary={refreshSalesSummary}
+          canVoidOrders={canVoidOrders}
+          onViewCustomer={(customerId) => navigate(`/app/customers/${customerId}`)}
+          onLock={lock}
+        />
+      )}
+    </DashboardGate>
   );
 }
 

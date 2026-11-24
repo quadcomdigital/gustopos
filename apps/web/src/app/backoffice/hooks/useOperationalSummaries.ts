@@ -16,6 +16,11 @@ function salesPeriodRange(period: SalesPeriod): { from?: string; to?: string } {
     const to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
     return { from: from.toISOString(), to: to.toISOString() };
   }
+  if (period === 'yesterday') {
+    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
+    const to = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+    return { from: from.toISOString(), to: to.toISOString() };
+  }
   if (period === '7d' || period === '30d') {
     const days = period === '7d' ? 7 : 30;
     return { from: new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString() };

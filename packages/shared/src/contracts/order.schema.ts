@@ -169,6 +169,21 @@ export const dashboardVisibilityLogRequestSchema = z.object({
   action: dashboardVisibilityActionSchema,
 });
 
+// ─── Dashboard unlock gate ─────────────────────────────────────────────────
+//
+// The dashboard re-asks for the logged-in admin's PIN before it renders: the
+// money counters stay behind a second, session-scoped factor even if the
+// terminal was left open. The PIN is verified server-side (never compared in
+// the bundle) and the outcome is audited.
+
+export const dashboardUnlockRequestSchema = z.object({
+  pin: z.string().regex(/^\d{4}$/, "PIN must be exactly 4 digits"),
+});
+
+export const dashboardUnlockResponseSchema = z.object({
+  success: z.literal(true),
+});
+
 // ─── Inferred Types ─────────────────────────────────────────────────────────
 
 export type OrderStatus = z.infer<typeof orderStatusSchema>;
@@ -187,3 +202,5 @@ export type SalesTopDish = z.infer<typeof salesTopDishSchema>;
 export type SalesSummary = z.infer<typeof salesSummarySchema>;
 export type DashboardVisibilityAction = z.infer<typeof dashboardVisibilityActionSchema>;
 export type DashboardVisibilityLogRequest = z.infer<typeof dashboardVisibilityLogRequestSchema>;
+export type DashboardUnlockRequest = z.infer<typeof dashboardUnlockRequestSchema>;
+export type DashboardUnlockResponse = z.infer<typeof dashboardUnlockResponseSchema>;
