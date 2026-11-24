@@ -30,6 +30,22 @@ interface POSProductModalProps {
   item: MenuItem | null;
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * Draft rientrato da "Personalizza" (modifierDraft di `POSView`): le scelte
+   * del ModifierModal riportate nel modal così chip e note si correggono qui
+   * prima di mandare la linea in carrello. Se non c'è, il modal e il suo
+   * "Personalizza" restano sullo stesso piano, ma il draft si allinea.
+   */
+  existingDraft?: {
+    quantity: number;
+    round?: number | null;
+    notes: string;
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
+    selectedModifiers: Array<{ groupId: string; optionId: string }>;
+    modifierPriceDelta: number;
+    customPrice?: number;
+    cartItemId?: string;
+  };
   onAddToCart: (
     item: MenuItem,
     quantity: number,
@@ -68,6 +84,7 @@ export default function POSProductModal({
   inventory,
   orderMode: _orderMode,
   existingCartItem,
+  existingDraft,
   menuItems,
   onOpenModifierModal,
   categoryModifierPools = [],
@@ -193,6 +210,40 @@ export default function POSProductModal({
     }
     return map;
   }, [toppingPoolOptions]);
+
+  // Draft rientrato da "Personalizza" (POSView: `modalItem.draft`). `notes`
+  // nel draft è `combinedNotes`: contiene già in coda i nomi dei chip topping
+  // (es. "Salsa rosa"). Va separata con `parseExistingToppings`: tenere il
+  // testo così com'è lascia il nome del chip dentro le note libere e
+  // `combinedNotes` lo aggiunge una seconda volta (stampa duplicata:
+  // "Salsa rosa, Salsa rosa"). I chip si ricostruiscono come all'apertura
+  // (note + selectedModifiers + ingredientOverrides).
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on draft arrival only: derived maps must NOT re-run and reset operator edits on socket churn (see open-init)
+  React.useEffect(() => {
+    if (!existingDraft) return;
+    let selectedIds: string[] = [];
+    if (toppingPoolOptions.length > 0) {
+      const { cleanNotes, selectedIds: noteIds } = parseExistingToppings(existingDraft.notes, toppingPoolOptions);
+      setNotes(cleanNotes);
+      selectedIds = noteIds;
+    } else {
+      setNotes(existingDraft.notes);
+    }
+    const fromModifiers = (existingDraft.selectedModifiers ?? [])
+      .map((sm) => toppingPoolOptions.find((o) => o.id === sm.optionId)?.id)
+      .filter(Boolean) as string[];
+    const fromOverrides = (existingDraft.ingredientOverrides ?? [])
+      .filter((entry) => entry.action === 'add')
+      .map((entry) => poolChipByComponentId.get(entry.ingredientId))
+      .filter(Boolean) as string[];
+    setSelectedToppingIds([...new Set([...selectedIds, ...fromModifiers, ...fromOverrides])]);
+    setIngredientOverrides(existingDraft.ingredientOverrides);
+    setSelectedModifiers(existingDraft.selectedModifiers);
+    setModifierPriceDelta(existingDraft.modifierPriceDelta);
+    if (existingDraft.customPrice !== undefined) setCustomPrice(existingDraft.customPrice);
+    if (existingDraft.round !== undefined) setSelectedRound(existingDraft.round);
+    setQuantity(existingDraft.quantity);
+  }, [existingDraft]);
 
   // Form init runs ONLY on the closed -> open transition. The old deps
   // (`toppingPoolOptions`, `poolChipByComponentId`) are derived from
@@ -585,7 +636,7 @@ export default function POSProductModal({
                           aria-label={label}
                           aria-pressed={selectedRound === index}
                           className={cn(
-                            'min-h-[36px] min-w-[36px] px-2.5 rounded-lg border text-sm font-bold tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
+                            'min-h-[44px] min-w-[36px] px-2.5 rounded-lg border text-sm font-bold tabular-nums transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1',
                             selectedRound === index
                               ? 'border-accent bg-accent text-white shadow-sm'
                               : 'border-border bg-white text-secondary hover:border-accent hover:text-accent',

@@ -1,4 +1,4 @@
-import { lazy, useCallback, useMemo, useState } from 'react';
+import { lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppStore } from '../../../store/app-store';
 import { useBackofficeContext } from '../BackofficeContext';
@@ -37,9 +37,12 @@ export function TablesRoute() {
       onSelectTable={(tableNumber) => {
         setSelectedTable(tableNumber);
         // Selecting a table means a dine-in order: reset the persisted POS mode
-        // so the cart binds to `dine_in:<table>` instead of the last-used
-        // takeaway/delivery context (which would show an empty cart).
-        useAppStore.setState({ posOrderMode: 'dine_in' });
+        // (and drop any pinned takeaway/delivery conto) so the cart binds to
+        // `dine_in:<table>` instead of the last-used context.
+        useAppStore.getState().applyPosContextAction(
+          { type: 'switchMode', mode: 'dine_in' },
+          data?.tables ?? [],
+        );
         navigate('/app/pos');
       }}
       onRotateSelfOrderQr={canRotateSelfOrderQr ? rotateSelfOrderQrForTable : undefined}
@@ -83,6 +86,17 @@ export function PosRoute() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialOrderId = searchParams.get('order');
+
+  // La selezione della mappa è un deep link ONE-SHOT: la catturiamo al mount e
+  // liberiamo subito il contesto backoffice. Senza questo, tornando sulla /pos
+  // dalla sidebar, la vecchia selezione della mappa riscriveva il tavolo del
+  // POS (che ha la propria memoria persistita) e spostava anche il carrello.
+  const [initialTable] = useState(() => selectedTable || '');
+  useEffect(() => {
+    if (selectedTable) setSelectedTable(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consume on mount only
+  }, []);
+
   if (!data || !currentUser) return null;
   const canCloseTable = enabledModules.includes('kitchen') &&
     (currentUser.role === 'admin' || currentUser.role === 'waiter' || currentUser.permissions?.includes('tables:pay'));
@@ -101,7 +115,7 @@ export function PosRoute() {
       categoryModifierPools={data.categoryModifierPools}
       onSearchCustomers={refreshCustomers}
       onCreateOrReuseCustomer={createOrReuseCustomer}
-      initialTable={selectedTable || ''}
+      initialTable={initialTable}
       initialOrderId={initialOrderId}
       onOrderContextChange={(orderId) => {
         const next = new URLSearchParams(searchParams);

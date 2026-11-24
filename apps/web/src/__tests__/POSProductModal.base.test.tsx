@@ -71,7 +71,8 @@ type AddToCartArgs = [
 
 function setup(existingCartItem?: unknown) {
   const onAddToCart = vi.fn();
-  render(
+  const onOpenModifierModal = vi.fn();
+  const { rerender } = render(
     <POSProductModal
       item={franks}
       isOpen
@@ -82,11 +83,41 @@ function setup(existingCartItem?: unknown) {
       menuItems={[franks]}
       categoryModifierPools={[]}
       existingCartItem={existingCartItem as never}
+      onOpenModifierModal={onOpenModifierModal as never}
       courseRoundsConfig={{ enabled: false, labels: ['1ª portata'], required: false } satisfies CourseRoundsConfig}
       courseRoundsModuleEnabled={false}
     />,
   );
-  return { onAddToCart };
+  /** Simula il rientro da "Personalizza": POSView rimanda il draft al modal. */
+  const returnFromCustomize = (draft: {
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
+    selectedModifiers: Array<{ groupId: string; optionId: string }>;
+    modifierPriceDelta: number;
+  }) => {
+    rerender(
+      <POSProductModal
+        item={franks}
+        isOpen
+        onClose={() => {}}
+        onAddToCart={onAddToCart as never}
+        inventory={[]}
+        orderMode="dine_in"
+        menuItems={[franks]}
+        categoryModifierPools={[]}
+        existingCartItem={existingCartItem as never}
+        onOpenModifierModal={onOpenModifierModal as never}
+        existingDraft={{
+          quantity: 1,
+          round: null,
+          notes: '',
+          ...draft,
+        }}
+        courseRoundsConfig={{ enabled: false, labels: ['1ª portata'], required: false } satisfies CourseRoundsConfig}
+        courseRoundsModuleEnabled={false}
+      />,
+    );
+  };
+  return { onAddToCart, onOpenModifierModal, returnFromCustomize };
 }
 
 function confirm(onAddToCart: ReturnType<typeof vi.fn>): AddToCartArgs {
@@ -135,5 +166,37 @@ describe("POSProductModal — gruppo Base a scelta singola", () => {
     expect(selectedModifiers).toContainEqual({ groupId: 'mg_extra', optionId: 'opt_bacon' });
     expect(selectedModifiers).toContainEqual({ groupId: 'mg_extra', optionId: 'opt_cheddar' });
     expect(selectedModifiers).toHaveLength(3);
+  });
+});
+
+describe("POSProductModal — rientro da \"Personalizza\"", () => {
+  it('il draft rientrato torna nel modal: chip e prezzo restano modificabili prima del carrello', () => {
+    const { onAddToCart, returnFromCustomize } = setup();
+    // L'operatore ha tolto un'aggiunta in "Personalizza": il draft rientra
+    // nel modal invece di mandare la linea subito in carrello.
+    returnFromCustomize({
+      ingredientOverrides: [],
+      selectedModifiers: [{ groupId: 'mg_extra', optionId: 'opt_bacon' }],
+      modifierPriceDelta: 1.5,
+    });
+    const [, quantity, , , selectedModifiers, modifierPriceDelta] = confirm(onAddToCart);
+    expect(quantity).toBe(1);
+    expect(selectedModifiers).toContainEqual({ groupId: 'mg_extra', optionId: 'opt_bacon' });
+    expect(modifierPriceDelta).toBeCloseTo(1.5, 2);
+  });
+
+  it('dopo il rientro l' + 'operatore puo sistemare la base prima di confermare', () => {
+    const { onAddToCart, returnFromCustomize } = setup();
+    returnFromCustomize({
+      ingredientOverrides: [],
+      selectedModifiers: [{ groupId: 'mg_extra', optionId: 'opt_bacon' }],
+      modifierPriceDelta: 1.5,
+    });
+    // Corretto un chip nel modal rientrato, poi confermato.
+    fireEvent.click(screen.getByRole('button', { name: /^Panino$/ }));
+    const [, , , , selectedModifiers] = confirm(onAddToCart);
+    expect(selectedModifiers).toContainEqual({ groupId: 'mg_base', optionId: 'opt_panino' });
+    // La base di Personalizza (nessuna) non deve restare orfana a fianco.
+    expect(selectedModifiers).not.toContainEqual({ groupId: 'mg_base', optionId: 'opt_bun' });
   });
 });

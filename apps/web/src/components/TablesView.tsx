@@ -4,9 +4,10 @@ import {
   GhostOrder,
   SelfOrderSessionRotateResponse,
   hasTenantOverride,
+  formatCurrency,
 } from '@gustopos/shared';
 import { cn } from '../lib/utils';
-import { X, QrCode, Link as LinkIcon, Receipt, Send, Trash2 } from 'lucide-react';
+import { X, QrCode, Link as LinkIcon, Receipt, Send, Trash2, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ConfirmDialog from './ConfirmDialog';
 import { useAppStore } from '../store/app-store';
@@ -61,6 +62,8 @@ export default function TablesView({
 
   // ─── Ghost orders (unsent waiter carts) ────────────────────────────────
   const ghostOrders = useAppStore((s) => s.ghostOrders);
+  // Presenza POS (socket, cross-terminale): chi sta lavorando su quale tavolo.
+  const posPresence = useAppStore((s) => s.posPresence);
   const currentUser = useAppStore((s) => s.currentUser);
   const tenantContext = useAppStore((s) => s.tenantContext);
   const refreshGhostOrders = useAppStore((s) => s.refreshGhostOrders);
@@ -75,6 +78,7 @@ export default function TablesView({
   const [ghostConfirm, setGhostConfirm] = useState<{ ghost: GhostOrder; print: boolean } | null>(null);
   const [ghostDiscard, setGhostDiscard] = useState<GhostOrder | null>(null);
   const [ghostBusyId, setGhostBusyId] = useState<string | null>(null);
+  const [expandedGhostId, setExpandedGhostId] = useState<string | null>(null);
 
   useEffect(() => {
     if (ghostOrdersEnabled) void refreshGhostOrders();
@@ -300,7 +304,7 @@ export default function TablesView({
                     <p className="mt-1 text-[10px] text-text-muted truncate">{conto.ticketNumber ?? '—'}</p>
                     <div className="mt-2 flex items-center justify-between">
                       <span className="text-[10px] text-text-muted">{conto.itemCount} art.</span>
-                      <span className="text-xs font-bold text-primary tabular-nums">€{conto.total.toFixed(2)}</span>
+                      <span className="text-xs font-bold text-primary tabular-nums">{formatCurrency(conto.total)}</span>
                     </div>
                   </button>
                 ))}
@@ -372,33 +376,46 @@ export default function TablesView({
                         Tavolo {ghost.tableNumber} · {ghost.ownerStaffName ?? 'Cameriere'}
                       </p>
                       <p className="mt-0.5 text-[10px] text-text-muted tabular-nums">
-                        {ghost.itemCount} {ghost.itemCount === 1 ? 'articolo' : 'articoli'} · €{ghost.total.toFixed(2)} · {ghostAge(ghost.updatedAt)}
+                        {ghost.itemCount} {ghost.itemCount === 1 ? 'articolo' : 'articoli'} · {formatCurrency(ghost.total)} · {ghostAge(ghost.updatedAt)}
                       </p>
                     </div>
                     <span className="shrink-0 rounded-full bg-warning-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-warning-700">
                       Bozza
                     </span>
                   </div>
-                  <details className="mt-1.5">
-                    <summary className="cursor-pointer text-[10px] font-semibold text-text-muted">
-                      Vedi articoli
-                    </summary>
-                    <ul className="mt-1 space-y-0.5">
+                  {/* Toggle esplicito invece di <details>: su tablet il summary
+                      nativo ha un bersaglio piccolo e nessuno stato annunciato. */}
+                  <button
+                    type="button"
+                    onClick={() => setExpandedGhostId(expandedGhostId === ghost.id ? null : ghost.id)}
+                    aria-expanded={expandedGhostId === ghost.id}
+                    aria-controls={`ghost-items-${ghost.id}`}
+                    className="mt-1.5 flex min-h-[44px] w-full items-center justify-between gap-2 rounded px-1 text-left text-[11px] font-semibold text-text-muted hover:text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <span>{expandedGhostId === ghost.id ? 'Nascondi articoli' : 'Vedi articoli'}</span>
+                    <ChevronDown
+                      size={14}
+                      aria-hidden="true"
+                      className={cn('transition-transform', expandedGhostId === ghost.id && 'rotate-180')}
+                    />
+                  </button>
+                  {expandedGhostId === ghost.id && (
+                    <ul id={`ghost-items-${ghost.id}`} className="mt-1 space-y-0.5">
                       {ghost.items.map((item) => (
                         <li key={item.cartItemId} className="flex justify-between gap-2 text-[10px] text-text-muted">
                           <span className="truncate">{item.quantity}× {item.name}</span>
-                          <span className="shrink-0 tabular-nums">€{((item.basePrice + item.modifierPriceDelta) * item.quantity).toFixed(2)}</span>
+                          <span className="shrink-0 tabular-nums">{formatCurrency(((item.basePrice + item.modifierPriceDelta) * item.quantity))}</span>
                         </li>
                       ))}
                     </ul>
-                  </details>
+                  )}
                   {canCommitGhosts && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <button
                         type="button"
                         disabled={busy}
                         onClick={() => setGhostConfirm({ ghost, print: true })}
-                        className="inline-flex min-h-[32px] items-center gap-1 rounded-full bg-accent px-2.5 text-[10px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
+                        className="inline-flex min-h-[44px] items-center gap-1 rounded-full bg-accent px-2.5 text-[10px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
                       >
                         <Send size={11} /> Invia
                       </button>
@@ -407,7 +424,7 @@ export default function TablesView({
                           type="button"
                           disabled={busy}
                           onClick={() => setGhostConfirm({ ghost, print: false })}
-                          className="inline-flex min-h-[32px] items-center gap-1 rounded-full border border-border bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-text-muted disabled:opacity-50"
+                          className="inline-flex min-h-[44px] items-center gap-1 rounded-full border border-border bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-text-muted disabled:opacity-50"
                         >
                           Senza stampa
                         </button>
@@ -416,7 +433,7 @@ export default function TablesView({
                         type="button"
                         disabled={busy}
                         onClick={() => setGhostDiscard(ghost)}
-                        className="inline-flex min-h-[32px] items-center gap-1 rounded-full border border-red-200 bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-red-600 disabled:opacity-50"
+                        className="inline-flex min-h-[44px] items-center gap-1 rounded-full border border-red-200 bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-red-600 disabled:opacity-50"
                       >
                         <Trash2 size={11} /> Scarta
                       </button>
@@ -441,10 +458,17 @@ export default function TablesView({
             ? ghostOrders.filter((ghost) => ghost.tableId === table.id || ghost.tableNumber === table.number)
             : [];
           const tableGhostCount = tableGhosts.reduce((sum, ghost) => sum + ghost.itemCount, 0);
+          const stations = posPresence.filter((entry) => entry.tableId === table.id);
+          const stationLabel =
+            stations.length === 0
+              ? null
+              : stations.length === 1
+                ? `POS · ${stations[0].staffName}`
+                : `POS · ${stations[0].staffName} +${stations.length - 1}`;
           const statusLabel = isSuspended
-            ? `Conto sospeso · €${tableTotal.toFixed(2)}`
+            ? `Conto sospeso · ${formatCurrency(tableTotal)}`
             : isOccupied
-              ? `€${tableTotal.toFixed(2)}`
+              ? `${formatCurrency(tableTotal)}`
               : 'Libero';
           return (
             <div
@@ -466,6 +490,17 @@ export default function TablesView({
                   )}
                 >
                   Bozza {tableGhostCount}
+                </span>
+              )}
+              {stationLabel && (
+                <span
+                  className={cn(
+                    "pointer-events-none absolute right-1.5 top-1.5 z-10 inline-flex max-w-[80%] items-center gap-1 truncate rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider shadow-sm",
+                    isBusyCard ? "bg-white/95 text-accent" : "bg-accent/10 text-accent",
+                  )}
+                  title={`Postazione agganciata: ${stations.map((entry) => entry.staffName).join(', ')}`}
+                >
+                  {stationLabel}
                 </span>
               )}
               <button
@@ -500,7 +535,7 @@ export default function TablesView({
                     setSuspendTableNumber(table.number);
                   }}
                   disabled={actionBusy}
-                  className="absolute bottom-1.5 right-1.5 flex min-h-[36px] items-center gap-1 rounded-full bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-warning-700 shadow-sm transition-colors hover:bg-warning-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
+                  className="absolute bottom-1.5 right-1.5 flex min-h-[44px] items-center gap-1 rounded-full bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-warning-700 shadow-sm transition-colors hover:bg-warning-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
                   aria-label={`Sospendi conto tavolo ${table.number}`}
                 >
                   <Receipt size={12} />
@@ -516,7 +551,7 @@ export default function TablesView({
                     setResumeTableNumber(table.number);
                   }}
                   disabled={actionBusy}
-                  className="absolute bottom-1.5 right-1.5 flex min-h-[36px] items-center gap-1 rounded-full bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-warning-700 shadow-sm transition-colors hover:bg-warning-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
+                  className="absolute bottom-1.5 right-1.5 flex min-h-[44px] items-center gap-1 rounded-full bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-warning-700 shadow-sm transition-colors hover:bg-warning-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
                   aria-label={`Riattiva conto tavolo ${table.number}`}
                 >
                   Riattiva
@@ -563,7 +598,7 @@ export default function TablesView({
         title={ghostConfirm?.print === false ? 'Inviare la bozza senza stampa?' : 'Inviare la bozza in cucina?'}
         message={
           ghostConfirm
-            ? `Tavolo ${ghostConfirm.ghost.tableNumber} · ${ghostConfirm.ghost.ownerStaffName ?? 'Cameriere'} · ${ghostConfirm.ghost.itemCount} articoli · €${ghostConfirm.ghost.total.toFixed(2)}.${ghostConfirm.print === false ? ' Nessun ticket verrà stampato: l’operazione è tracciata nell’audit.' : ''}`
+            ? `Tavolo ${ghostConfirm.ghost.tableNumber} · ${ghostConfirm.ghost.ownerStaffName ?? 'Cameriere'} · ${ghostConfirm.ghost.itemCount} articoli · ${formatCurrency(ghostConfirm.ghost.total)}.${ghostConfirm.print === false ? ' Nessun ticket verrà stampato: l’operazione è tracciata nell’audit.' : ''}`
             : ''
         }
         confirmLabel={ghostConfirm?.print === false ? 'Invia senza stampa' : 'Invia'}

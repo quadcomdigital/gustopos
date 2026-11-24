@@ -96,7 +96,8 @@ type AddToCartArgs = [
 
 function setup() {
   const onAddToCart = vi.fn();
-  render(
+  const onOpenModifierModal = vi.fn();
+  const { rerender } = render(
     <POSProductModal
       item={pizza}
       isOpen
@@ -106,11 +107,40 @@ function setup() {
       orderMode="dine_in"
       menuItems={[pizza]}
       categoryModifierPools={pools}
+      onOpenModifierModal={onOpenModifierModal as never}
       courseRoundsConfig={{ enabled: false, labels: ['1ª portata'], required: false } satisfies CourseRoundsConfig}
       courseRoundsModuleEnabled={false}
     />,
   );
-  return { onAddToCart };
+  /** Simula il rientro da "Personalizza": POSView rimanda il draft al modal. */
+  const returnFromCustomize = (draft: {
+    notes: string;
+    ingredientOverrides: Array<{ ingredientId: string; action: 'add' | 'remove' }>;
+    selectedModifiers: Array<{ groupId: string; optionId: string }>;
+    modifierPriceDelta: number;
+  }) => {
+    rerender(
+      <POSProductModal
+        item={pizza}
+        isOpen
+        onClose={() => {}}
+        onAddToCart={onAddToCart as never}
+        inventory={[]}
+        orderMode="dine_in"
+        menuItems={[pizza]}
+        categoryModifierPools={pools}
+        onOpenModifierModal={onOpenModifierModal as never}
+        existingDraft={{
+          quantity: 1,
+          round: null,
+          ...draft,
+        }}
+        courseRoundsConfig={{ enabled: false, labels: ['1ª portata'], required: false } satisfies CourseRoundsConfig}
+        courseRoundsModuleEnabled={false}
+      />,
+    );
+  };
+  return { onAddToCart, returnFromCustomize };
 }
 
 function addToCart(onAddToCart: ReturnType<typeof vi.fn>): AddToCartArgs {
@@ -248,5 +278,30 @@ describe('POSProductModal — container dei pool di categoria', () => {
     const [, , , , selectedModifiers, delta] = addToCart(onAddToCart);
     expect(selectedModifiers).toHaveLength(2);
     expect(delta).toBe(8.5);
+  });
+
+  it('il rientro da "Personalizza" non duplica il chip Salsa nelle note', () => {
+    const { onAddToCart, returnFromCustomize } = setup();
+    // Il draft porta `combinedNotes`: chip già serializzato in coda.
+    returnFromCustomize({
+      notes: 'Salsa BBQ',
+      ingredientOverrides: [],
+      selectedModifiers: [],
+      modifierPriceDelta: 0,
+    });
+    const [, , notes] = addToCart(onAddToCart);
+    expect(notes).toBe('Salsa BBQ');
+  });
+
+  it('il rientro da "Personalizza" conserva note libere + chip senza duplicare', () => {
+    const { onAddToCart, returnFromCustomize } = setup();
+    returnFromCustomize({
+      notes: 'senza cipolla, Salsa BBQ',
+      ingredientOverrides: [],
+      selectedModifiers: [],
+      modifierPriceDelta: 0,
+    });
+    const [, , notes] = addToCart(onAddToCart);
+    expect(notes).toBe('senza cipolla, Salsa BBQ');
   });
 });

@@ -5,10 +5,15 @@ import { useAppStore } from '../../store/app-store';
 import { useMemo } from 'react';
 import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import { trackUxMetric } from '../../shared/ux/metrics';
+import { formatCurrency } from '@gustopos/shared';
 import { buildComponentNameById, buildModifierOptionNameById } from '../../lib/catalog-names';
 
 export default function PayItemsView() {
-  const { tableId, paymentStatus, payItemsSelected, payItemsMethod, payItemsGatewayRef, updatePayItemQuantity, setPayItemsMethod, setPayItemsGatewayRef, paySelectedItems, setStep, busy, error } = useCheckoutStore();
+  const { tableId, paymentStatus, payItemsSelected, payItemsMethod, payItemsGatewayRef, payItemsTendered, updatePayItemQuantity, setPayItemsMethod, setPayItemsGatewayRef, setPayItemsTendered, paySelectedItems, setStep, busy, fiscalEmit, setFiscalEmit, printReceipt, setPrintReceipt } = useCheckoutStore();
+  const fiscalModuleEnabled = useAppStore((state) => state.enabledModules.includes('fiscal_exports'));
+  const printingModuleEnabled = useAppStore((state) => state.enabledModules.includes('printing'));
+  const printing = useAppStore((state) => state.uiSettings?.printing);
+  const canToggleReceipt = printingModuleEnabled && printing?.protocol === 'escpos' && printing?.autoPrintOnClose === true;
   const data = useAppStore((s) => s.data);
 
   const modifierOptionById = useMemo(() => {
@@ -64,6 +69,11 @@ export default function PayItemsView() {
   };
 
   const allItemsPaid = paymentStatus != null && paymentStatus.items.length > 0 && paymentStatus.items.every((item: { fullyPaid: boolean }) => item.fullyPaid);
+  // Residuo tagliato nel carrello: dopo ogni pagamento parziale il totale mostrato
+  // è il rimanente (totale - pagato), non più l'importo originario.
+  const tenderedNum = payItemsTendered.trim() !== '' && Number.isFinite(Number(payItemsTendered)) ? Number(payItemsTendered) : 0;
+  const payChange = tenderedNum > 0 ? Math.max(0, tenderedNum - selectedTotal) : 0;
+  const residualAfterPay = paymentStatus ? Math.max(0, Number((paymentStatus.remainingAmount - selectedTotal).toFixed(2))) : 0;
 
   return (
     <div className="p-3 sm:p-4 space-y-4">
@@ -71,16 +81,32 @@ export default function PayItemsView() {
         <div className="bg-bg/30 rounded-lg p-3 space-y-1.5 text-base">
           <div className="flex justify-between">
             <span className="text-text-muted">Totale</span>
-            <span className="font-bold">€{paymentStatus.totalAmount.toFixed(2)}</span>
+            <span className="font-bold">{formatCurrency(paymentStatus.totalAmount)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-text-muted">Pagato</span>
-            <span className="font-bold text-green-600">€{paymentStatus.paidAmount.toFixed(2)}</span>
+            <span className="font-bold text-green-600">{formatCurrency(paymentStatus.paidAmount)}</span>
           </div>
-          {paymentStatus.remainingAmount > 0 && (
+          {paymentStatus.remainingAmount > 0 ? (
+            <>
+              {paymentStatus.paidAmount > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Totale residuo</span>
+                  <span className="font-bold">{formatCurrency(paymentStatus.remainingAmount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-border pt-2">
+                <span className="font-bold">Rimanente da pagare</span>
+                <span className="font-bold text-primary text-xl">{formatCurrency(paymentStatus.remainingAmount)}</span>
+              </div>
+              {payItemsSelected.length > 0 && (
+                <p className="text-sm text-text-muted pt-1">Dopo questo pagamento il residuo sarà <strong className="text-primary">{formatCurrency(residualAfterPay)}</strong></p>
+              )}
+            </>
+          ) : (
             <div className="flex justify-between border-t border-border pt-2">
               <span className="font-bold">Rimanente</span>
-              <span className="font-bold text-primary text-xl">€{paymentStatus.remainingAmount.toFixed(2)}</span>
+              <span className="font-bold text-green-600 text-xl">€0.00</span>
             </div>
           )}
         </div>
@@ -132,14 +158,14 @@ export default function PayItemsView() {
                             if (!opt) return null;
                             return (
                               <span key={sm.optionId} className="text-sm sm:text-base text-text-muted">
-                                {opt.name}{opt.priceDelta > 0 ? ` +€${opt.priceDelta.toFixed(2)}` : ''}
+                                {opt.name}{opt.priceDelta > 0 ? ` +${formatCurrency(opt.priceDelta)}` : ''}
                               </span>
                             );
                           })}
                         </div>
                       )}
                       <div className="text-sm sm:text-base text-text-muted mt-0.5">
-                        €{item.price.toFixed(2)} · {item.paidQuantity}/{item.totalQuantity} pagati
+                        {formatCurrency(item.price)} · {item.paidQuantity}/{item.totalQuantity} pagati
                       </div>
                     </div>
                     {!isFullyPaid && (
@@ -171,7 +197,7 @@ export default function PayItemsView() {
             <>
               <div className="flex justify-between text-lg bg-bg/30 rounded-lg p-3">
                 <span className="text-text-muted font-medium">Totale selezionato</span>
-                <span className="font-bold text-primary">€{selectedTotal.toFixed(2)}</span>
+                <span className="font-bold text-primary">{formatCurrency(selectedTotal)}</span>
               </div>
 
               <div className="space-y-2">
@@ -199,7 +225,39 @@ export default function PayItemsView() {
                 />
               )}
 
-              {error && <p className="text-sm text-danger text-center font-semibold">{error}</p>}
+              {payItemsMethod === 'cash' && (
+                <>
+                  <input
+                    value={payItemsTendered}
+                    onChange={(e) => setPayItemsTendered(e.target.value.replace(/[^0-9.,]/g, '').replace(',', '.'))}
+                    placeholder="Contanti consegnati (per il resto)"
+                    inputMode="decimal"
+                    className="w-full px-3 py-2.5 rounded border border-border text-sm min-h-[44px]"
+                  />
+                  {tenderedNum > 0 && (
+                    <div className="flex justify-between text-base bg-bg/30 rounded-lg p-3">
+                      <span className="text-text-muted">Resto</span>
+                      <span className="font-bold text-green-600">{formatCurrency(payChange)}</span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="space-y-2">
+                {canToggleReceipt && (
+                  <button type="button" role="switch" aria-checked={printReceipt} onClick={() => setPrintReceipt(!printReceipt)} className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 min-h-[44px] rounded border text-sm transition-colors ${printReceipt ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-white text-text-muted'}`}>
+                    <span className="font-semibold">{printReceipt ? 'Stampa conto in cassa' : 'Non stampare il conto'}</span>
+                    <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${printReceipt ? 'bg-primary' : 'bg-border'}`}><span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${printReceipt ? 'translate-x-5' : 'translate-x-0.5'}`} /></span>
+                  </button>
+                )}
+                {fiscalModuleEnabled && (
+                  <button type="button" role="switch" aria-checked={fiscalEmit} onClick={() => setFiscalEmit(!fiscalEmit)} className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 min-h-[44px] rounded border text-sm transition-colors ${fiscalEmit ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-white text-text-muted'}`}>
+                    <span className="font-semibold">{fiscalEmit ? 'Emissione fiscale attiva' : 'Non emettere scontrino fiscale'}</span>
+                    <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${fiscalEmit ? 'bg-primary' : 'bg-border'}`}><span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${fiscalEmit ? 'translate-x-5' : 'translate-x-0.5'}`} /></span>
+                  </button>
+                )}
+                <p className="text-[11px] text-text-muted">Lo scontrino stampa a ogni pagamento; il fiscale solo quando il conto è completo.</p>
+              </div>
 
               <button
                 onClick={handlePayItems}

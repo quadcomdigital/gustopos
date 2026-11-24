@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils';
 import { useCheckoutStore } from '../../store/checkout-store';
 import { useAppStore } from '../../store/app-store';
 import { useMemo, useState } from 'react';
-import type { OrderItem } from '@gustopos/shared';
+import { formatCurrency, type OrderItem } from '@gustopos/shared';
 import { buildComponentNameById, buildModifierOptionNameById } from '../../lib/catalog-names';
 
 export default function CheckoutMainView() {
@@ -65,7 +65,7 @@ export default function CheckoutMainView() {
                         <span className="font-bold text-accent mr-1">{item.quantity}x</span>
                         {item.name}
                       </span>
-                      <span className="font-bold ml-2 shrink-0">€{(item.price * item.quantity).toFixed(2)}</span>
+                      <span className="font-bold ml-2 shrink-0">{formatCurrency((item.price * item.quantity))}</span>
                     </div>
                     {item.selectedModifiers && item.selectedModifiers.length > 0 && (
                       <div className="pl-5 flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
@@ -74,7 +74,7 @@ export default function CheckoutMainView() {
                           if (!opt) return null;
                           return (
                             <span key={sm.optionId} className="text-sm sm:text-base text-text-muted">
-                              {opt.name}{opt.priceDelta > 0 ? ` +€${opt.priceDelta.toFixed(2)}` : ''}
+                              {opt.name}{opt.priceDelta > 0 ? ` +${formatCurrency(opt.priceDelta)}` : ''}
                             </span>
                           );
                         })}
@@ -120,7 +120,7 @@ export default function CheckoutMainView() {
             <p className="text-base text-text-muted">
               Totale finale:{' '}
               <strong className="text-primary text-lg">
-                €{finalTotal.toFixed(2)}
+                {formatCurrency(finalTotal)}
               </strong>
             </p>
           )}
@@ -139,15 +139,21 @@ export default function CheckoutMainView() {
           <div className="space-y-2 text-base">
             <div className="flex justify-between">
               <span className="text-text-muted">Totale</span>
-              <span className="font-bold">€{paymentStatus.totalAmount.toFixed(2)}</span>
+              <span className="font-bold">{formatCurrency(paymentStatus.totalAmount)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-muted">Pagato</span>
-              <span className="font-bold text-green-600">€{paymentStatus.paidAmount.toFixed(2)}</span>
+              <span className="font-bold text-green-600">{formatCurrency(paymentStatus.paidAmount)}</span>
             </div>
+            {paymentStatus.paidAmount > 0 && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">Totale residuo</span>
+                <span className="font-bold">{formatCurrency(paymentStatus.remainingAmount)}</span>
+              </div>
+            )}
             <div className="flex justify-between border-t border-border pt-2">
-              <span className="font-bold">Rimanente</span>
-              <span className="font-bold text-primary text-xl">€{paymentStatus.remainingAmount.toFixed(2)}</span>
+              <span className="font-bold">Rimanente da pagare</span>
+              <span className="font-bold text-primary text-xl">{formatCurrency(paymentStatus.remainingAmount)}</span>
             </div>
           </div>
         </div>

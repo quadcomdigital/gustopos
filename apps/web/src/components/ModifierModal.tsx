@@ -331,10 +331,12 @@ export default function ModifierModal({
 
   const allAddableItems = useMemo(() => {
     const items: Array<{ id: string; name: string; subtitle?: string; priceDelta: number; invId: string; componentType?: string; poolId?: string }> = [];
-    const seen = new Set<string>();
+    // Stock targets already offered by the item's OWN modifier groups. A pool
+    // option pointing at the same ingredient must not be listed twice.
+    const itemModifierTargets = new Set<string>();
     for (const mod of modifiers) {
-      if (seen.has(mod.inventoryItemId)) continue;
-      seen.add(mod.inventoryItemId);
+      if (itemModifierTargets.has(mod.inventoryItemId)) continue;
+      itemModifierTargets.add(mod.inventoryItemId);
       items.push({
         id: mod.inventoryItemId,
         name: mod.name ?? mod.inventoryItemId,
@@ -343,10 +345,16 @@ export default function ModifierModal({
         invId: mod.inventoryItemId,
       });
     }
+    // Pool options are distinct catalogue entries and are deduplicated by their
+    // own id, never by stock target: two entries may legitimately share a
+    // component (franks: SMASH and SMASH2 both deduct the "Smash" prep) and
+    // both must stay selectable. Deduping by componentId hid SMASH2.
+    const seenPoolOptionIds = new Set<string>();
     for (const opt of poolOptions) {
+      if (seenPoolOptionIds.has(opt.id)) continue;
+      seenPoolOptionIds.add(opt.id);
       const key = opt.inventoryItemId ?? opt.componentId ?? opt.id;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (itemModifierTargets.has(key)) continue;
       items.push({
         id: opt.id,
         name: opt.name,

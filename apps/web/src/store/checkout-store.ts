@@ -10,6 +10,8 @@ export interface SplitShare {
   amount: number;
   method: PaymentMethod;
   gatewayReference: string;
+  // Importo in contanti consegnato per questa quota (per il resto).
+  tendered: string;
   isPaid: boolean;
   paymentId?: string;
 }
@@ -31,10 +33,14 @@ interface CheckoutState {
   
   splitShares: SplitShare[];
   splitPeople: number;
+  // Quote editabili in bozza: importi modificati in UI, da salvare col server.
+  splitDraft: Record<number, string>;
   
   payItemsSelected: PayItemSelection[];
   payItemsMethod: PaymentMethod;
   payItemsGatewayRef: string;
+  // Incassato contanti per la selezione (per il resto).
+  payItemsTendered: string;
   
   closeMethod: PaymentMethod;
   paidAmount: string;
@@ -57,9 +63,14 @@ interface CheckoutState {
   loadPaymentStatus: () => Promise<void>;
   
   setSplitPeople: (people: number) => void;
-  initSplit: (people: number, totalAmount: number) => Promise<void>;
+  initSplit: (people: number) => Promise<void>;
+  cancelSplit: () => Promise<void>;
   updateShareMethod: (shareIndex: number, method: PaymentMethod) => void;
   updateShareGatewayRef: (shareIndex: number, ref: string) => void;
+  updateShareTendered: (shareIndex: number, tendered: string) => void;
+  setSplitDraft: (shareIndex: number, amount: string) => void;
+  resetSplitDraft: () => void;
+  saveSplitShares: () => Promise<void>;
   markShareAsPaid: (shareIndex: number) => Promise<void>;
   
   addPayItem: (orderItemId: number) => void;
@@ -67,6 +78,7 @@ interface CheckoutState {
   updatePayItemQuantity: (orderItemId: number, quantity: number) => void;
   setPayItemsMethod: (method: PaymentMethod) => void;
   setPayItemsGatewayRef: (ref: string) => void;
+  setPayItemsTendered: (tendered: string) => void;
   paySelectedItems: (tableId: string) => Promise<void>;
   
   setCloseMethod: (method: PaymentMethod) => void;
@@ -89,10 +101,12 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   
   splitShares: [],
   splitPeople: 2,
+  splitDraft: {},
   
   payItemsSelected: [],
   payItemsMethod: 'cash',
   payItemsGatewayRef: '',
+  payItemsTendered: '',
   
   closeMethod: 'cash',
   paidAmount: '',
@@ -103,7 +117,14 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   printReceipt: true,
   
   openCheckout: async (tableId, tableNumber) => {
-    set({ isOpen: true, step: 'main', tableId, tableNumber, error: '' });
+    // Drop the previous conto's status before loading: the modal must never
+    // render one table's payment totals next to another table's rows.
+    set({ isOpen: true, step: 'main', tableId, tableNumber, error: '', paymentStatus: null });
+    // The rows/total shown here come from the socket-backed store, while the
+    // amounts due come from a server-fresh payment status. Reconcile the
+    // snapshot first so a missed order event cannot pair stale lines with a
+    // fresh total (e.g. a conto already closed by another terminal).
+    await useAppStore.getState().reconcileOperationalData();
     await get().loadPaymentStatus();
   },
   
@@ -116,9 +137,11 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
       paymentStatus: null,
       splitShares: [],
       splitPeople: 2,
+      splitDraft: {},
       payItemsSelected: [],
       payItemsMethod: 'cash',
       payItemsGatewayRef: '',
+      payItemsTendered: '',
       closeMethod: 'cash',
       paidAmount: '',
       discountAmount: '',
@@ -148,6 +171,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
             amount: s.amount,
             method: s.method as PaymentMethod,
             gatewayReference: s.gatewayReference ?? '',
+            tendered: '',
             isPaid: s.isPaid,
             paymentId: s.paymentId,
           })),
@@ -162,7 +186,7 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   
   setSplitPeople: (people) => set({ splitPeople: people }),
   
-  initSplit: async (people, totalAmount) => {
+  initSplit: async (people) => {
     const { tableId } = get();
     if (!tableId) return;
 
@@ -175,20 +199,35 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
         amount: p.total,
         method: p.method as PaymentMethod,
         gatewayReference: '',
+        tendered: '',
         isPaid: p.paymentStatus === 'captured',
         paymentId: p.id,
       })) ?? [];
-      set({ splitShares: shares, splitPeople: people, busy: false });
+      set({ splitShares: shares, splitPeople: people, splitDraft: {}, busy: false });
     } catch (err) {
-      const perPerson = Math.floor((totalAmount / people) * 100) / 100;
-      const shares: SplitShare[] = [];
-      let allocated = 0;
-      for (let i = 0; i < people; i++) {
-        const amount = i === people - 1 ? totalAmount - allocated : perPerson;
-        allocated += amount;
-        shares.push({ shareIndex: i, amount: Math.round(amount * 100) / 100, method: 'cash', gatewayReference: '', isPaid: false });
-      }
-      set({ splitShares: shares, splitPeople: people, busy: false, error: err instanceof Error ? err.message : 'Failed to initialize split' });
+      // Nessuna quota di ripiego calcolata qui: quote mai persistite non sono
+      // pagabili ("No pending payment found for share N") e farebbero credere al
+      // cameriere che il conto sia già diviso. Le quote già mostrate restano:
+      // il server ha annullato la transazione, quindi sono ancora valide.
+      set({
+        busy: false,
+        error: err instanceof Error ? err.message : 'Failed to initialize split',
+      });
+    }
+  },
+
+  cancelSplit: async () => {
+    const { tableId } = get();
+    if (!tableId) return;
+
+    set({ busy: true, error: '' });
+
+    try {
+      await useAppStore.getState().cancelSplitBill(tableId);
+      set({ splitShares: [], splitDraft: {}, busy: false });
+      await get().loadPaymentStatus();
+    } catch (error) {
+      set({ busy: false, error: error instanceof Error ? error.message : 'Failed to cancel split' });
     }
   },
   
@@ -207,9 +246,50 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
       ),
     }));
   },
+
+  updateShareTendered: (shareIndex, tendered) => {
+    set((state) => ({
+      splitShares: state.splitShares.map((share) =>
+        share.shareIndex === shareIndex ? { ...share, tendered } : share
+      ),
+    }));
+  },
+
+  setSplitDraft: (shareIndex, amount) => {
+    set((state) => ({ splitDraft: { ...state.splitDraft, [shareIndex]: amount } }));
+  },
+
+  resetSplitDraft: () => set({ splitDraft: {} }),
+
+  saveSplitShares: async () => {
+    const { tableId, splitShares, splitDraft } = get();
+    if (!tableId || splitShares.length === 0) return;
+    const pending = splitShares.filter((s) => !s.isPaid).sort((a, b) => a.shareIndex - b.shareIndex);
+    const amounts = pending.map((s) => {
+      const raw = splitDraft[s.shareIndex];
+      const v = raw !== undefined && raw.trim() !== '' ? Number(raw) : s.amount;
+      return Number(v.toFixed(2));
+    });
+    set({ busy: true, error: '' });
+    try {
+      const result = await useAppStore.getState().updateSplitShares(tableId, { amounts });
+      const byIndex = new Map(result.payments.map((p) => [p.shareIndex ?? -1, p]));
+      set((state) => ({
+        splitShares: state.splitShares.map((s) => {
+          const p = byIndex.get(s.shareIndex);
+          return p && !s.isPaid ? { ...s, amount: p.total } : s;
+        }),
+        splitDraft: {},
+        busy: false,
+      }));
+      await get().loadPaymentStatus();
+    } catch (error) {
+      set({ busy: false, error: error instanceof Error ? error.message : 'Failed to update shares' });
+    }
+  },
   
   markShareAsPaid: async (shareIndex) => {
-    const { tableId, splitShares } = get();
+    const { tableId, splitShares, fiscalEmit, printReceipt } = get();
     if (!tableId) return;
     
     const share = splitShares.find((s) => s.shareIndex === shareIndex);
@@ -218,11 +298,15 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
     set({ busy: true, error: '' });
     
     try {
+      const tenderedNum = share.tendered.trim() !== '' && Number.isFinite(Number(share.tendered)) ? Number(share.tendered) : undefined;
       const payload: MarkShareAsPaidRequest = {
         method: share.method,
+        ...(tenderedNum !== undefined ? { paidAmount: tenderedNum } : {}),
         ...(share.method !== 'cash' && share.gatewayReference.trim().length >= 3
           ? { gatewayReference: share.gatewayReference.trim() }
           : {}),
+        ...(fiscalEmit ? { fiscalEmit: true } : {}),
+        printReceipt,
       };
       
       const result = await useAppStore.getState().markShareAsPaid(tableId, shareIndex, payload);
@@ -289,20 +373,26 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
   
   setPayItemsGatewayRef: (ref) => set({ payItemsGatewayRef: ref }),
   
+  setPayItemsTendered: (tendered) => set({ payItemsTendered: tendered }),
+  
   paySelectedItems: async (tableId) => {
-    const { payItemsSelected, payItemsMethod, payItemsGatewayRef } = get();
+    const { payItemsSelected, payItemsMethod, payItemsGatewayRef, payItemsTendered, fiscalEmit, printReceipt } = get();
     if (payItemsSelected.length === 0) return;
     
     set({ busy: true, error: '' });
     
     try {
+      const tenderedNum = payItemsTendered.trim() !== '' && Number.isFinite(Number(payItemsTendered)) ? Number(payItemsTendered) : undefined;
       const result = await useAppStore.getState().paySelectedItems(tableId, {
         items: payItemsSelected,
         method: payItemsMethod,
         paymentStatus: 'captured',
+        ...(tenderedNum !== undefined ? { paidAmount: tenderedNum } : {}),
         ...(payItemsMethod !== 'cash' && payItemsGatewayRef.trim().length >= 3
           ? { gatewayReference: payItemsGatewayRef.trim() }
           : {}),
+        ...(fiscalEmit ? { fiscalEmit: true } : {}),
+        printReceipt,
       });
 
       // If all items are now paid, the backend auto-closed the table — close checkout
@@ -311,16 +401,20 @@ export const useCheckoutStore = create<CheckoutState>((set, get) => ({
           payItemsSelected: [],
           payItemsMethod: 'cash',
           payItemsGatewayRef: '',
+          payItemsTendered: '',
           busy: false,
         });
         get().closeCheckout();
         return;
       }
 
+      // Residuo subito in carrello/checkout: svuotiamo la selezione e ricarichiamo
+      // lo status (totali tagliati + rimanente aggiornato) dalla risposta server.
       set({
         payItemsSelected: [],
         payItemsMethod: 'cash',
         payItemsGatewayRef: '',
+        payItemsTendered: '',
         busy: false,
       });
 

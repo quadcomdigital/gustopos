@@ -120,7 +120,7 @@ describe('CheckoutMainView', () => {
       ],
     };
     render(<CheckoutMainView />);
-    expect(screen.getByText('Rimanente')).toBeInTheDocument();
+    expect(screen.getByText('Rimanente da pagare')).toBeInTheDocument();
     expect(screen.getByText('Paga tutto')).toBeInTheDocument();
   });
 

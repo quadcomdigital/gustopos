@@ -17,6 +17,7 @@ export type UxMetricEvent =
   | 'pos.checkout.split.click'
   | 'pos.checkout.split.init'
   | 'pos.checkout.split.mark_paid'
+  | 'pos.checkout.split.cancel'
   | 'pos.checkout.pay_items.success'
   | 'pos.checkout.pay_items.error'
   | 'pos.checkout.pay_items.click'

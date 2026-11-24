@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import AppMark from '../../assets/brand/AppMark';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import ToastHost from '../../components/ToastHost';
 import PwaInstallPrompt from '../../components/PwaInstallPrompt';
 import NotificationsPermissionCard from '../../components/NotificationsPermissionCard';
@@ -91,6 +92,21 @@ export default function BackofficeShell(props: BackofficeShellProps) {
   const posTableNumber = useAppStore((s) => s.posTableNumber);
   const selectPosTable = useAppStore((s) => s.selectPosTable);
   const posMenuSearch = useAppStore((s) => s.posMenuSearch);
+  const posCart = useAppStore((s) => s.posCart);
+  const [pendingModeKey, setPendingModeKey] = useState<'dine_in' | 'takeaway' | 'delivery' | null>(null);
+
+  // Unico punto in cui la shell cambia modalità: slega il conto agganciato,
+  // ripristina l'ultimo tavolo reale in sala (o azzera la selezione fuori
+  // sala) e allinea la query `order=`. Stessa semantica di POSView.
+  const applyModeKey = (key: 'dine_in' | 'takeaway' | 'delivery') => {
+    useAppStore.getState().applyPosContextAction(
+      { type: 'switchMode', mode: key },
+      data?.tables ?? [],
+    );
+    if (location.search.includes('order=')) {
+      navigate(location.pathname, { replace: true });
+    }
+  };
   const data = useAppStore((s) => s.data);
   const {
     uiBrandName,
@@ -513,12 +529,15 @@ export default function BackofficeShell(props: BackofficeShellProps) {
                   <button
                     key={key}
                     onClick={() => {
-                      useAppStore.setState({ posOrderMode: key });
-                      // Leaving an open takeaway/delivery conto: drop the
-                      // `order` query param so the POS stops binding to it.
-                      if (location.search.includes('order=')) {
-                        navigate(location.pathname, { replace: true });
+                      // Con articoli non inviati il cambio non è silenzioso: il
+                      // carrello è keyed per contesto e sembrerebbe sparito.
+                      // Stessa conferma di `POSView.handleSelectMode`.
+                      if (key !== posOrderMode && posCart.length > 0) {
+                        setPendingModeKey(key);
+                        setShowModePicker(false);
+                        return;
                       }
+                      applyModeKey(key);
                       setShowModePicker(false);
                     }}
                     className={cn(
@@ -543,6 +562,21 @@ export default function BackofficeShell(props: BackofficeShellProps) {
       </AnimatePresence>
 
       {/* ============ TABLE PICKER MODAL ============ */}
+      {/* Mode switch con carrello pieno: conferma esplicita (il carrello è
+          keyed per contesto e altrimenti sembra sparire). */}
+      <ConfirmDialog
+        open={pendingModeKey !== null}
+        title="Cambiare modalità?"
+        message={`Ci sono ${posCart.length} articoli non inviati nel carrello. Cambiando modalità restano nel carrello del contesto attuale e non verranno inviati: confermi il cambio?`}
+        confirmLabel="Cambia modalità"
+        onConfirm={() => {
+          const next = pendingModeKey;
+          setPendingModeKey(null);
+          if (next) applyModeKey(next);
+        }}
+        onCancel={() => setPendingModeKey(null)}
+      />
+
       <AnimatePresence>
         {showTablePicker && data && (
           <div className="fixed inset-0 z-[1000] flex items-end justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -568,7 +602,13 @@ export default function BackofficeShell(props: BackofficeShellProps) {
                       <button
                         key={table.id}
                         onClick={() => {
-                          selectPosTable(table.id, table.number);
+                          // Scegliere un tavolo di sala slegа un eventuale conto
+                          // Asporto/Consegna e allinea modalità e selezione in
+                          // una sola transizione (checkout sul tavolo giusto).
+                          useAppStore.getState().applyPosContextAction(
+                            { type: 'switchMode', mode: 'dine_in', tableId: table.id, tableNumber: table.number },
+                            data.tables,
+                          );
                           setShowTablePicker(false);
                         }}
                         className={cn(

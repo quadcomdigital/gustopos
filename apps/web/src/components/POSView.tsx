@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppData, CartItem, Category, CategoryModifierPool, CreateOrderRequest, Customer, CustomerAddress, DeliveryUpsertRequest, GhostOrder, GhostOrderItem, MenuItem, Order, OrderItem, UiSettings } from '@gustopos/shared';
-import { hasTenantOverride } from '@gustopos/shared';
+import { formatCurrency, hasTenantOverride } from '@gustopos/shared';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, MoveRight, GitMerge, Send } from 'lucide-react';
+import { Plus, Minus, Trash2, User, ShoppingCart, ChefHat, ChevronDown, X, ArrowRight, Search, Receipt, Printer, Check, MapPin, MoveRight, GitMerge, Send, Lock } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { buildComponentNameById, buildModifierOptionNameById } from '../lib/catalog-names';
 import { sortPosMenuAlphabetically, usesAlphabeticalPosOrder } from '../lib/pos-menu-order';
@@ -16,7 +16,8 @@ import ModifierModal from './ModifierModal';
 import ConfirmDialog from './ConfirmDialog';
 import { CheckoutModal } from './checkout';
 import { useCheckoutStore } from '../store/checkout-store';
-import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError } from '../shared/api/client';
+import { fetchCustomerAddresses, createCustomerAddress, isDuplicateIdempotentError, type TablePaymentStatus } from '../shared/api/client';
+import { getSocket } from '../shared/api/socket';
 import { useGhostOrderSync } from '../hooks/useGhostOrderSync';
 import Modal from '../shared/ui/molecules/Modal';
 import TableMoveMergeDialog, { type TableRelocateMode } from './TableMoveMergeDialog';
@@ -41,6 +42,18 @@ function formatTimeOfDay(iso: string): string {
 function formatGhostAge(iso: string): string {
   const minutes = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
   return minutes < 1 ? 'ora' : `${minutes} min`;
+}
+
+/** Contesto del conto agganciato: snapshot minimo che sopravvive alla chiusura. */
+interface PosOrderContext {
+  id: string;
+  orderType: 'dine_in' | 'takeaway' | 'delivery';
+  table: string | null;
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  scheduledFor?: string;
+  ticketNumber?: string;
 }
 
 interface POSViewProps {
@@ -94,7 +107,8 @@ export default function POSView({
   // emptied entire pills (e.g. casale "PIZZERIA" vs stored "Pizzeria").
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const orderMode = useAppStore((s) => s.posOrderMode);
-  const setOrderMode = (mode: 'dine_in' | 'takeaway' | 'delivery') => useAppStore.setState({ posOrderMode: mode });
+  // UNICO scrittore del contesto POS (vedi store: applyPosContextAction).
+  const applyPosContextAction = useAppStore((s) => s.applyPosContextAction);
   const posTableNumber = useAppStore((s) => s.posTableNumber);
   const posTableId = useAppStore((s) => s.posTableId);
   const selectPosTable = useAppStore((s) => s.selectPosTable);
@@ -129,6 +143,13 @@ export default function POSView({
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
+  // Stato pagamenti del tavolo attivo per il carrello POS (live): alimenta
+  // badge PAGATO sulle voci "Già Ordinati" e il residuo in footer. Aggiornato
+  // all'apertura del tavolo + a ogni cambio di ordini (socket) e dopo i paga
+  // selezione (anche quelli fatti dal modal checkout, via subscription).
+  const [posPaymentStatus, setPosPaymentStatus] = useState<TablePaymentStatus | null>(null);
+  const checkoutPaymentStatus = useCheckoutStore((s) => s.paymentStatus);
+  const checkoutTableId = useCheckoutStore((s) => s.tableId);
   const [externalGhostBusyId, setExternalGhostBusyId] = useState<string | null>(null);
   const [externalGhostConfirm, setExternalGhostConfirm] = useState<{ ghost: GhostOrder; print: boolean } | null>(null);
   const [externalGhostDiscard, setExternalGhostDiscard] = useState<GhostOrder | null>(null);
@@ -152,6 +173,9 @@ export default function POSView({
   // tables list while the cart still holds items. Send is blocked so the
   // dishes can never be re-bound to a different table by a silent fallback.
   const [selectedTableMissing, setSelectedTableMissing] = useState(false);
+  // Cambio modalità in attesa di conferma (c'è un conto agganciato con articoli
+  // non inviati nel carrello): niente switch silenziosi.
+  const [pendingModeSwitch, setPendingModeSwitch] = useState<'dine_in' | 'takeaway' | 'delivery' | null>(null);
   const [relocateMode, setRelocateMode] = useState<TableRelocateMode | null>(null);
   const [relocateSourceTableId, setRelocateSourceTableId] = useState('');
 
@@ -177,7 +201,9 @@ export default function POSView({
         }
         setSelectedTableMissing(false);
       }
-      selectPosTable(targetId, number);
+      // I tavoli virtuali dei conti Asporto/Consegna non sono mai "ultimo tavolo
+      // di sala": se lo fossero, il rientro in Sala ci tornerebbe sopra.
+      selectPosTable(targetId, number, { virtual: target?.isVirtual === true });
     },
     [data.tables, selectedTableMissing, selectPosTable],
   );
@@ -222,7 +248,12 @@ export default function POSView({
     customPrice?: number;
     cartItemId?: string;
   };
-  const [modalItem, setModalItem] = useState<{ item: MenuItem; editCartItem?: CartItem } | null>(null);
+  const [modalItem, setModalItem] = useState<{
+    item: MenuItem;
+    editCartItem?: CartItem;
+    /** Modificatori scelti in "Personalizza", che rientrano nel modal. */
+    draft?: ModifierDraft;
+  } | null>(null);
   const [modifierModalItem, setModifierModalItem] = useState<MenuItem | null>(null);
   const [modifierDraft, setModifierDraft] = useState<ModifierDraft | null>(null);
 
@@ -230,17 +261,28 @@ export default function POSView({
   // every render churn the modal effect deps (and with the latest-ref pattern
   // in the modals this is belt-and-braces, it also avoids needless prop
   // re-renders on every viewport/socket update).
-  const closeProductModal = React.useCallback(() => setModalItem(null), []);
+  const closeProductModal = React.useCallback(() => {
+    // Il draft è l'unica via di ritorno da "Personalizza": se il modal si
+    // chiude senza conferma, il draft deve andare via con lui.
+    setModifierDraft(null);
+    setModifierModalItem(null);
+    setModalItem(null);
+  }, []);
   const closeModifierModal = React.useCallback(() => {
     setModifierDraft(null);
     setModifierModalItem(null);
   }, []);
+  // "Personalizza" non è un passaggio a senso unico: il modal prodotto resta
+  // aperto sotto il ModifierModal (z 1400 contro z 1200), così alla conferma
+  // si rientra nel modal per correggere chip/note senza dover uscire dal
+  // carrello e rientrare dal prodotto. Il draft è l'unica via di ritorno:
+  // alla conferma i modificatori tornano nel modal (via `existingDraft`)
+  // e la linea entra nel carrello solo con "Aggiungi/Aggiorna" del modal.
   const openModifierFromProduct = React.useCallback(
     (draft?: ModifierDraft) => {
       if (!modalItem) return;
       setModifierDraft(draft ?? null);
       setModifierModalItem(modalItem.item);
-      setModalItem(null);
     },
     [modalItem],
   );
@@ -249,36 +291,124 @@ export default function POSView({
   const courseRoundsModuleEnabled = useAppStore((s) => s.courseRoundsModuleEnabled);
   const roundsActive = courseRoundsModuleEnabled && courseRoundsConfig.enabled && orderMode === 'dine_in';
 
-  // Sync table from external navigation (e.g. tables view → POS)
+  // Sync table from external navigation (tables map → POS). La selezione della
+  // mappa arriva già one-shot dalla route: qui la applichiamo una volta e, se
+  // venivamo da un conto Asporto/Consegna, liberiamo quell'aggancio.
   React.useEffect(() => {
-    if (initialTable && initialTable !== posTableNumber) {
-      selectTableByNumber(initialTable);
+    if (!initialTable) return;
+    const nextTable = data.tables.find((table) => table.number === initialTable);
+    if (nextTable && (nextTable.id !== posTableId || orderMode !== 'dine_in')) {
+      // Il carrello orfano (tavolo sparito) segue il tavolo scelto dalla mappa:
+      // è la parte di logica che vive in `selectTableByNumber`.
+      if (selectedTableMissing) selectTableByNumber(initialTable);
+      // Selezione + modalità + slegamento del conto in una sola transizione.
+      useAppStore.getState().applyPosContextAction(
+        { type: 'switchMode', mode: 'dine_in', tableId: nextTable.id, tableNumber: nextTable.number },
+        data.tables,
+      );
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot arrival from the map
   }, [initialTable]);
 
-  // Open takeaway/delivery conto: when the POS is opened from the Tables map
-  // "Asporti/Consegne" section we bind to that order's hidden virtual table so
-  // the waiter can add items and settle it via the standard table checkout.
-  const orderContext = useMemo(
-    () => (initialOrderId ? data.orders.find((order) => order.id === initialOrderId) ?? null : null),
-    [initialOrderId, data.orders],
-  );
+  // Modalità "orfana": una postazione su Asporto/Consegna senza conto agganciato e
+  // senza articoli nel carrello di quella modalità non deve sopravvivere a un
+  // reload (era una delle cause del salto Sala↔Asporto all'apertura del POS).
+  // La memoria della modalità vale solo se c'è lavoro in corso.
+  React.useEffect(() => {
+    const state = useAppStore.getState();
+    if (state.posOrder) return;
+    if (state.posOrderMode === 'dine_in') return;
+    const hasItems = (state.cartStore[state.posOrderMode]?.length ?? 0) > 0;
+    if (!hasItems && !initialTable) {
+      applyPosContextAction({ type: 'switchMode', mode: 'dine_in' }, useAppStore.getState().data?.tables ?? []);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al mount
+  }, []);
+
+  // ─── Conto aperto agganciato alla postazione ──────────────────────────────
+  // L'aggancio vive nello store (`posOrder`), NON è derivato da `data.orders`:
+  // quando il conto viene chiuso/annullato l'ordine esce dallo snapshot live e,
+  // se il contesto fosse derivato, modalità e carrello salterebbero da soli.
+  const pinnedOrder = useAppStore((s) => s.posOrder);
+  const socketConnected = useAppStore((s) => s.socketConnected);
+
+  const orderContext = useMemo<PosOrderContext | null>(() => {
+    if (!pinnedOrder) return null;
+    const live = data.orders.find((order) => order.id === pinnedOrder.id) ?? null;
+    if (!live) {
+      return { ...pinnedOrder, ticketNumber: undefined };
+    }
+    return {
+      id: live.id,
+      orderType: live.orderType,
+      table: live.table ?? null,
+      customerId: live.customerId,
+      customerName: live.customerName,
+      customerPhone: live.customerPhone,
+      scheduledFor: live.scheduledFor,
+      ticketNumber: live.ticketNumber,
+    };
+  }, [pinnedOrder, data.orders]);
+  const orderClosed = pinnedOrder !== null && !data.orders.some((order) => order.id === pinnedOrder.id);
+
   // The open conto is the source of truth while it exists: derive the mode from
   // it during render so the cart binds on the first paint (no effect race).
   const effectiveOrderMode = orderContext ? orderContext.orderType : orderMode;
   const contextMatchesMode = Boolean(orderContext);
 
-  // Explicitly choosing a different mode leaves the open conto.
+  // Deep link `?order=`: consumato una sola volta, poi l'aggancio è nello store
+  // e l'URL viene ripulito (un id morto in URL era la causa dei salti).
+  React.useEffect(() => {
+    if (!initialOrderId) return;
+    const order = data.orders.find((entry) => entry.id === initialOrderId);
+    if (!order) return;
+    if (pinnedOrder?.id !== order.id) {
+      applyPosContextAction(
+        { type: 'pinOrder', order: { id: order.id, orderType: order.orderType, table: order.table ?? null } },
+        data.tables,
+      );
+    }
+    onOrderContextChange?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consume the URL once
+  }, [initialOrderId, data.orders, pinnedOrder?.id]);
+
+  // Libera l'aggancio (conto chiuso): torna in sala sull'ultimo tavolo reale.
+  const releasePinnedOrder = React.useCallback(() => {
+    onOrderContextChange?.(null);
+    // Slega il conto e rientra in sala sull'ultimo tavolo reale, in un'unica
+    // transizione (niente modalità "mezzo slacciata").
+    applyPosContextAction({ type: 'switchMode', mode: 'dine_in' }, data.tables);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dipende solo dall'aggancio corrente
+  }, [applyPosContextAction, onOrderContextChange, data.tables]);
+
+  // Un cambio di modalità esplicito lascia il conto agganciato — ma mai in
+  // silenzio: con articoli non inviati nel carrello serve una conferma, perché
+  // il carrello è keyed per contesto.
   const handleSelectMode = (mode: 'dine_in' | 'takeaway' | 'delivery') => {
-    if (orderContext && orderContext.orderType !== mode) onOrderContextChange?.(null);
-    setOrderMode(mode);
+    if (mode === effectiveOrderMode) return;
+    const leavingConto = Boolean(orderContext);
+    if (leavingConto && posCart.length > 0) {
+      setPendingModeSwitch(mode);
+      return;
+    }
+    applyModeSwitch(mode);
+  };
+
+  const applyModeSwitch = (mode: 'dine_in' | 'takeaway' | 'delivery') => {
+    if (orderContext) onOrderContextChange?.(null);
+    // Un solo scrittore: slega il conto, imposta la modalità e — in uscita dalla
+    // sala — azzera la selezione; in rientro ripristina l'ultimo tavolo reale.
+    applyPosContextAction({ type: 'switchMode', mode }, data.tables);
   };
 
   React.useEffect(() => {
     if (!orderContext) return;
-    if (orderContext.orderType !== orderMode) setOrderMode(orderContext.orderType);
-    if (orderContext.table) selectTableByNumber(orderContext.table);
+    // L'aggancio allinea modalità e tavolo in una transizione sola (idempotente
+    // se sono già coerenti: `pinOrder` ricalcola gli stessi valori).
+    applyPosContextAction(
+      { type: 'pinOrder', order: { id: orderContext.id, orderType: orderContext.orderType, table: orderContext.table ?? null } },
+      data.tables,
+    );
     if (orderContext.customerId) setSelectedCustomerId(orderContext.customerId);
     setTakeawayCustomerName(orderContext.customerName ?? '');
     setTakeawayCustomerPhone(orderContext.customerPhone ?? '');
@@ -325,6 +455,25 @@ export default function POSView({
   const physicalDineInTable =
     effectiveOrderMode === 'dine_in' && selectedTable && !selectedTable.isVirtual ? selectedTable : null;
 
+  // Tavolo su cui aprire la cassa: la selezione corrente oppure, per un conto
+  // agganciato, il suo tavolo. I conti Asporto/Consegna vivono su tavoli
+  // virtuali che la mappa non mostra: la cassa deve restare raggiungibile
+  // anche se quello status non è (ancora) `occupied` nello snapshot locale.
+  // Con un conto agganciato, il suo tavolo è la sorgente di verità: la
+  // selezione `posTableId` può essere di un'altra postazione/switch e non
+  // deve mai dirottare la cassa sul tavolo sbagliato.
+  const checkoutTable =
+    (orderContext?.table ? data.tables.find((table) => table.number === orderContext.table) ?? null : null)
+    ?? selectedTable;
+  const canOpenCheckout =
+    canCloseTable &&
+    checkoutTable !== null &&
+    (checkoutTable.status === 'occupied' ||
+      checkoutTable.status === 'suspended' ||
+      (orderContext !== null && !orderClosed));
+  const checkoutLabel =
+    effectiveOrderMode === 'delivery' ? 'Incassa Consegna' : effectiveOrderMode === 'takeaway' ? 'Incassa Asporto' : 'Chiudi Conto';
+
   // Table NUMBER the cart is bound to, used to match open orders (orders store
   // the table by number).
   const activeGroupTable = contextMatchesMode
@@ -347,14 +496,79 @@ export default function POSView({
   const orderHeaderLabel = contextMatchesMode
     ? `${effectiveOrderMode === 'delivery' ? 'Consegna' : 'Asporto'}${orderContext?.customerName ? ` · ${orderContext.customerName}` : orderContext?.ticketNumber ? ` · ${orderContext.ticketNumber}` : ''}`
     : effectiveOrderMode === 'dine_in'
-      ? `Tavolo ${posTableNumber}`
+      ? (posTableNumber ? `Tavolo ${posTableNumber}` : 'Scegli un tavolo')
       : effectiveOrderMode === 'takeaway'
         ? 'Asporto'
         : 'Delivery';
 
+  // ─── Presenza per la mappa tavoli ─────────────────────────────────────────
+  // Dichiariano al gateway il tavolo su cui questa postazione sta lavorando, così
+  // la mappa (anche da un altro terminale) mostra chi lo tiene. Solo tavoli
+  // reali: i conti Asporto/Consegna vivono su tavoli virtuali fuori mappa.
+  React.useEffect(() => {
+    const socket = getSocket();
+    const claim =
+      effectiveOrderMode === 'dine_in' && selectedTable && !selectedTable.isVirtual
+        ? {
+            tableId: selectedTable.id,
+            tableNumber: selectedTable.number,
+            orderId: pinnedOrder?.id ?? null,
+            orderType: effectiveOrderMode,
+          }
+        : null;
+    const send = () => socket.emit('pos_claim_table', claim);
+    if (socket.connected) send();
+    socket.on('connect', send);
+    return () => {
+      socket.off('connect', send);
+      socket.emit('pos_claim_table', null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- claim sul tavolo corrente
+  }, [selectedTable?.id, selectedTable?.number, selectedTable?.isVirtual, pinnedOrder?.id, effectiveOrderMode]);
+
   React.useEffect(() => {
     setCartContext(cartContextKey);
   }, [cartContextKey, setCartContext]);
+
+  // ─── Residuo live nel carrello ───────────────────────────────────────
+  // Il carrello somma solo le righe NON pagate: ogni paga-selezione (fatta qui
+  // o da un altro terminale) deve far scendere totale e residuo. La sorgente
+  // autorevole è il server (`payment-status`), rinfrescata all'apertura del
+  // tavolo, quando cambiano gli ordini (socket) e quando il modal checkout
+  // incassa qualcosa.
+  const posTableIdForStatus = physicalDineInTable?.id ?? null;
+  React.useEffect(() => {
+    if (!posTableIdForStatus) {
+      setPosPaymentStatus(null);
+      return;
+    }
+    if (posTableIdForStatus === checkoutTableId && checkoutPaymentStatus) {
+      setPosPaymentStatus(checkoutPaymentStatus);
+    }
+  }, [posTableIdForStatus, checkoutTableId, checkoutPaymentStatus]);
+
+  React.useEffect(() => {
+    if (!posTableIdForStatus) return;
+    let cancelled = false;
+    const refresh = () => {
+      void useAppStore.getState()
+        .getTablePaymentStatus(posTableIdForStatus)
+        .then((status) => {
+          if (!cancelled) setPosPaymentStatus(status);
+        })
+        .catch(() => {
+          /* transient: il prossimo refresh (socket/checkout) riprova */
+        });
+    };
+    refresh();
+    const offOrders = useAppStore.subscribe((state, prev) => {
+      if (state.data?.orders !== prev.data?.orders) refresh();
+    });
+    return () => {
+      cancelled = true;
+      offOrders();
+    };
+  }, [posTableIdForStatus]);
 
   // Clear skip-kitchen-print toggles when order mode changes
   React.useEffect(() => {
@@ -368,11 +582,12 @@ export default function POSView({
     // 1) Resolve and sync: follow a rename (same id, new number) and adopt a
     //    legacy persisted number once.
     if (selectedTable) {
-      if (posTableId !== selectedTable.id) {
-        useAppStore.setState({ posTableId: selectedTable.id });
-      }
-      if (posTableNumber !== selectedTable.number) {
-        useAppStore.setState({ posTableNumber: selectedTable.number });
+      // Un solo set atomico (mai id e numero in due setState): in più
+      // aggiorna anche `posLastDineIn*` quando il tavolo è stato rinominato
+      // (stesso id, nuovo numero), altrimenti il rientro dalla sala
+      // fallbackerebbe sul numero vecchio.
+      if (posTableId !== selectedTable.id || posTableNumber !== selectedTable.number) {
+        selectPosTable(selectedTable.id, selectedTable.number, { virtual: selectedTable.isVirtual });
       }
       setSelectedTableMissing(false);
       return;
@@ -391,14 +606,11 @@ export default function POSView({
       return;
     }
 
-    // 3) Truly no selection yet (fresh device): pick the first active table
-    //    ONCE. From then on the id is stored, so this branch never re-runs.
-    const fallback = [...data.tables]
-      .filter((table) => !table.isVirtual)
-      .sort((a, b) => a.number.localeCompare(b.number, 'it', { numeric: true, sensitivity: 'base' }))[0];
-    if (fallback) {
-      useAppStore.setState({ posTableId: fallback.id, posTableNumber: fallback.number });
-    }
+    // 3) No selection at all (fresh device, or the waiter just released the
+    //    conto): NO autopick. Silently binding the first table of the map is
+    //    how dishes land on the wrong table; the POS asks for an explicit
+    //    choice instead (the empty state and the send guard both say so).
+    setSelectedTableMissing(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedTable identity is stable per data.tables render
   }, [data.tables, posTableId, posTableNumber, selectedTable, contextMatchesMode]);
 
@@ -505,8 +717,25 @@ export default function POSView({
 
   // --- Cart operations (using store) ---
   const cartTotal = posCart.reduce((sum, item) => sum + (item.basePrice + item.modifierPriceDelta) * item.quantity, 0);
-  const alreadyOrderedTotal = alreadyOrdered.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  // Quante unità di ogni riga inviata sono già state incassate (paga selezione).
+  // La riga resta visibile con badge PAGATO, ma il suo valore entra nel totale
+  // solo per la parte non pagata: il carrello mostra il residuo reale.
+  const paidQtyByOrderItemId = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const item of posPaymentStatus?.items ?? []) map.set(item.orderItemId, item.paidQuantity);
+    return map;
+  }, [posPaymentStatus]);
+  const alreadyOrderedTotal = alreadyOrdered.reduce(
+    (sum, item) => sum + item.price * Math.max(0, item.quantity - (paidQtyByOrderItemId.get(item._orderItemId) ?? 0)),
+    0,
+  );
+  const alreadyOrderedPaidTotal = alreadyOrdered.reduce(
+    (sum, item) => sum + item.price * Math.min(item.quantity, paidQtyByOrderItemId.get(item._orderItemId) ?? 0),
+    0,
+  );
   const grandTotal = cartTotal + alreadyOrderedTotal;
+  const hasPosPayments = alreadyOrderedPaidTotal > 0 || (posPaymentStatus?.paidAmount ?? 0) > 0;
 
   // When portate are active, "Nuovi Articoli" are grouped by round (no-round
   // last) so the cart order matches how the kitchen ticket will be laid out,
@@ -746,30 +975,40 @@ export default function POSView({
   }) => {
     if (!modifierModalItem) return;
     const draft = modifierDraft;
-    if (draft?.cartItemId) {
-      updatePosCartItem(draft.cartItemId, {
-        ...(draft ? { quantity: draft.quantity, notes: draft.notes } : {}),
-        ...(roundsActive ? { round: draft?.round ?? null } : { round: undefined }),
+    // Il "Personalizza" non è più a senso unico quando viene dal modal
+    // prodotto: `modifierDraft` è il bridge che riapre il modal prodotto con
+    // i modificatori appena scelti, così chip e note si correggono lì prima
+    // di mandare la linea nel carrello. Senza draft (apertura diretta)
+    // si scrive subito nel carrello.
+    if (draft) {
+      // Rientro nel modal prodotto: i modificatori scelti in "Personalizza"
+      // rientrano nel draft e la linea entra nel carrello solo con il
+      // "Aggiungi/Aggiorna" del modal (chip/note restano correggibili).
+      // Entrambi gli stati devono ricevere il draft AGGIORNATO: se
+      // `modalItem.draft` restasse quello vecchio, le modifiche fatte dentro
+      // il Personalizza non verrebbero acquisite e la stampa/cartello
+      // resterebbe sulla base di default.
+      const mergedDraft: ModifierDraft = {
+        ...draft,
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
         modifierPriceDelta: payload.modifierPriceDelta,
-      });
+      };
+      setModalItem((current) => (current ? { ...current, draft: mergedDraft } : current));
+      setModifierDraft(mergedDraft);
     } else {
       addToPosCart({
         menuItemId: modifierModalItem.id,
         name: modifierModalItem.name,
-        // Open-price line keeps the typed amount; every other product uses the
-        // catalog price.
-        basePrice: draft?.customPrice ?? modifierModalItem.price,
-        quantity: draft?.quantity ?? 1,
-        notes: draft?.notes ?? '',
-        ...(roundsActive ? { round: draft?.round ?? null } : {}),
+        basePrice: modifierModalItem.price,
+        quantity: 1,
+        notes: '',
+        ...(roundsActive ? { round: null } : {}),
         ingredientOverrides: payload.ingredientOverrides,
         selectedModifiers: payload.selectedModifiers,
         modifierPriceDelta: payload.modifierPriceDelta,
       });
     }
-    setModifierDraft(null);
     setModifierModalItem(null);
   };
 
@@ -796,7 +1035,11 @@ export default function POSView({
     // selection (table renamed/removed on another terminal) so items can never
     // be sent to the wrong table; the API rejects it too, as a backstop.
     if (effectiveOrderMode === 'dine_in' && (!selectedTable || selectedTable.isVirtual)) {
-      setActionError('Il tavolo selezionato non è più disponibile: scegli di nuovo il tavolo prima di inviare.');
+      setActionError(
+        !selectedTable
+          ? 'Seleziona un tavolo prima di inviare.'
+          : 'Il tavolo selezionato non è più disponibile: scegli di nuovo il tavolo prima di inviare.',
+      );
       return;
     }
     setIsProcessing(true);
@@ -1177,6 +1420,12 @@ export default function POSView({
               <div className="pl-1 pr-10 py-2 bg-transparent font-bold text-accent text-sm min-w-[80px] text-left">
                 {posTableNumber}
               </div>
+              <span
+                className="absolute -bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-white px-1.5 py-0.5 text-[7px] font-bold uppercase tracking-wider text-accent shadow ring-1 ring-border"
+                title="Postazione agganciata a questo tavolo: cambia solo con un'azione esplicita"
+              >
+                <Lock size={8} /> Agganciato
+              </span>
               {selectedTable?.status === 'suspended' && (
                 <span className="absolute -top-2 left-2 rounded-full bg-warning px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white shadow">
                   Conto sospeso
@@ -1256,7 +1505,7 @@ export default function POSView({
                 </h3>
               </div>
               <div className="flex items-center justify-between mt-2">
-                <span className="text-sm md:text-lg font-extrabold text-primary">€{item.price.toFixed(2)}</span>
+                <span className="text-sm md:text-lg font-extrabold text-primary">{formatCurrency(item.price)}</span>
                 <div className="w-6 h-6 md:w-7 md:h-7 bg-bg rounded-lg flex items-center justify-center text-accent group-hover:bg-accent group-hover:text-white transition-all">
                   <Plus size={14} />
                 </div>
@@ -1306,12 +1555,43 @@ export default function POSView({
               <div className="flex items-center gap-1 text-[9px] text-text-muted">
                 <User size={10} />
                 <span>{currentStaffName}</span>
+                {/* Realtime assente = tavoli/totali potenzialmente stantii. */}
+                {!socketConnected && (
+                  <span
+                    className="ml-1 inline-flex items-center gap-1 rounded-full bg-danger-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-danger"
+                    role="status"
+                    title="Connessione realtime assente: i dati possono essere non aggiornati"
+                  >
+                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-danger" />
+                    Offline
+                  </span>
+                )}
               </div>
             </div>
           </div>
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-4 sm:px-4 md:p-5 md:space-y-6">
+          {/* Conto agganciato ma non più aperto: la postazione NON si muove da sola */}
+          {orderClosed && orderContext && (
+            <div className="space-y-2 rounded-xl border border-warning-200 bg-warning-50 p-3">
+              <p className="text-[9px] font-bold uppercase tracking-widest text-warning-800">
+                Conto chiuso
+              </p>
+              <p className="text-[10px] text-text-muted">
+                Il conto {orderContext.ticketNumber ?? `#${orderContext.id.slice(0, 8)}`} non è più aperto.
+                La postazione resta agganciata a {posTableNumber || 'questo tavolo'}: modalità e carrello non cambiano da soli.
+              </p>
+              <button
+                type="button"
+                onClick={releasePinnedOrder}
+                className="w-full min-h-[44px] rounded-lg border border-warning-300 bg-white px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-warning-800"
+              >
+                Libera postazione
+              </button>
+            </div>
+          )}
+
           {/* Other waiters' unsent drafts on this table */}
           {externalTableGhosts.length > 0 && (
             <div className="space-y-2 rounded-xl border border-warning-700/20 bg-warning-50/70 p-2.5">
@@ -1336,7 +1616,7 @@ export default function POSView({
                           {ghost.ownerStaffName ?? 'Cameriere'}
                         </p>
                         <p className="text-[9px] text-text-muted tabular-nums">
-                          {ghost.itemCount} {ghost.itemCount === 1 ? 'articolo' : 'articoli'} · €{ghost.total.toFixed(2)} · {formatGhostAge(ghost.updatedAt)}
+                          {ghost.itemCount} {ghost.itemCount === 1 ? 'articolo' : 'articoli'} · {formatCurrency(ghost.total)} · {formatGhostAge(ghost.updatedAt)}
                         </p>
                       </div>
                     </div>
@@ -1349,7 +1629,7 @@ export default function POSView({
                           <li key={item.cartItemId} className="flex justify-between gap-2 text-[9px] text-text-muted">
                             <span className="truncate">{item.quantity}× {item.name}</span>
                             <span className="shrink-0 tabular-nums">
-                              €{((item.basePrice + item.modifierPriceDelta) * item.quantity).toFixed(2)}
+                              {formatCurrency(((item.basePrice + item.modifierPriceDelta) * item.quantity))}
                             </span>
                           </li>
                         ))}
@@ -1361,7 +1641,7 @@ export default function POSView({
                           type="button"
                           disabled={busy}
                           onClick={() => setExternalGhostConfirm({ ghost, print: true })}
-                          className="inline-flex min-h-[32px] items-center gap-1 rounded-full bg-accent px-2 text-[9px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
+                          className="inline-flex min-h-[44px] items-center gap-1 rounded-full bg-accent px-2 text-[9px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
                         >
                           <Send size={10} /> Invia
                         </button>
@@ -1370,7 +1650,7 @@ export default function POSView({
                             type="button"
                             disabled={busy}
                             onClick={() => setExternalGhostConfirm({ ghost, print: false })}
-                            className="inline-flex min-h-[32px] items-center rounded-full border border-border bg-white px-2 text-[9px] font-bold uppercase tracking-wider text-text-muted disabled:opacity-50"
+                            className="inline-flex min-h-[44px] items-center rounded-full border border-border bg-white px-2 text-[9px] font-bold uppercase tracking-wider text-text-muted disabled:opacity-50"
                           >
                             Senza stampa
                           </button>
@@ -1379,7 +1659,7 @@ export default function POSView({
                           type="button"
                           disabled={busy}
                           onClick={() => setExternalGhostDiscard(ghost)}
-                          className="inline-flex min-h-[32px] items-center gap-1 rounded-full border border-red-200 bg-white px-2 text-[9px] font-bold uppercase tracking-wider text-red-600 disabled:opacity-50"
+                          className="inline-flex min-h-[44px] items-center gap-1 rounded-full border border-red-200 bg-white px-2 text-[9px] font-bold uppercase tracking-wider text-red-600 disabled:opacity-50"
                         >
                           <Trash2 size={10} /> Scarta
                         </button>
@@ -1404,30 +1684,45 @@ export default function POSView({
               {alreadyOrdered.map((item) => {
                 const itemKey = `${item._orderId}:${item._orderItemId}`;
                 const isConfirmed = confirmedEditKey === itemKey;
+                const paidQty = Math.min(item.quantity, paidQtyByOrderItemId.get(item._orderItemId) ?? 0);
+                const residualQty = Math.max(0, item.quantity - paidQty);
+                const fullyPaid = item.quantity > 0 && residualQty === 0;
+                const residualAmount = item.price * residualQty;
                 return (
                 <div
                   key={itemKey}
                   className={cn(
                     "py-0.5 rounded-md transition-all duration-300",
                     isConfirmed && "bg-green-50 ring-1 ring-green-200",
+                    fullyPaid && "opacity-70",
                   )}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[10px] text-secondary truncate flex-1">
+                    <span className={cn("text-[10px] text-secondary truncate flex-1", fullyPaid && "line-through")}>
                       {item.quantity}× {item.name}
                     </span>
+                    {paidQty > 0 && (
+                      <span className="shrink-0 rounded-full bg-green-100 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-green-700">
+                        {fullyPaid ? 'Pagato' : `Pagato ${paidQty}/${item.quantity}`}
+                      </span>
+                    )}
                     <div className="flex items-center gap-0.5 shrink-0">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (residualQty <= 0) {
+                            setActionError('Voce già pagata: non puoi ridurla oltre le quantità incassate');
+                            return;
+                          }
                           const newQty = item.quantity > 1 ? item.quantity - 1 : 0;
                           void handleUpdateOrderedItem(item._orderId, item._orderItemId, newQty);
                         }}
-                        className="w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded transition-colors active:scale-90"
+                        disabled={residualQty <= 0}
+                        className="w-6 h-6 flex items-center justify-center hover:bg-gray-100 rounded transition-colors active:scale-90 disabled:opacity-30 disabled:active:scale-100"
                       >
                         <Minus size={11} className="text-text-muted" />
                       </button>
-                      <span className="w-5 text-center text-[10px] font-bold text-secondary">{item.quantity}</span>
+                      <span className={cn("w-5 text-center text-[10px] font-bold", fullyPaid ? "text-green-700" : "text-secondary")}>{residualQty}</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1437,7 +1732,9 @@ export default function POSView({
                       >
                         <Plus size={11} className="text-text-muted" />
                       </button>
-                      <span className="text-[10px] font-bold ml-1">€{(item.price * item.quantity).toFixed(2)}</span>
+                      <span className={cn("text-[10px] font-bold ml-1", fullyPaid ? "text-green-700" : "")}>
+                        {formatCurrency(residualAmount)}
+                      </span>
                     </div>
                   </div>
                   {item.selectedModifiers && item.selectedModifiers.length > 0 && (
@@ -1532,7 +1829,7 @@ export default function POSView({
                           <Plus size={12} />
                         </button>
                       </div>
-                      <span className="text-xs font-bold text-primary shrink-0">€{((item.basePrice + item.modifierPriceDelta) * item.quantity).toFixed(2)}</span>
+                      <span className="text-xs font-bold text-primary shrink-0">{formatCurrency(((item.basePrice + item.modifierPriceDelta) * item.quantity))}</span>
                       <button
                         onClick={() => {
                           setSkipKitchenById((prev) => {
@@ -1543,7 +1840,7 @@ export default function POSView({
                           });
                         }}
                         className={cn(
-                          'min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg transition-all shrink-0',
+                          'min-w-[36px] min-h-[44px] flex items-center justify-center rounded-lg transition-all shrink-0',
                           skipKitchenById.has(item.cartItemId)
                             ? 'bg-amber-50 text-amber-600'
                             : 'text-text-muted hover:text-text-muted/60',
@@ -1561,7 +1858,7 @@ export default function POSView({
                           });
                           removeFromPosCart(item.cartItemId);
                         }}
-                        className="min-w-[36px] min-h-[36px] flex items-center justify-center text-text-muted hover:text-danger transition-colors shrink-0"
+                        className="min-w-[36px] min-h-[44px] flex items-center justify-center text-text-muted hover:text-danger transition-colors shrink-0"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -1597,10 +1894,21 @@ export default function POSView({
 
         {/* Cart Footer */}
         <div className="px-3 sm:px-4 py-3 border-t border-border bg-bg/30 space-y-2 shrink-0">
+          {hasPosPayments && (
+            <div className="flex justify-between text-[11px] font-semibold text-green-700">
+              <span>Già incassato</span>
+              <span className="tabular-nums">{formatCurrency(alreadyOrderedPaidTotal)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm font-bold text-primary">
-            <span>Totale</span>
-            <span className="tabular-nums">€{grandTotal.toFixed(2)}</span>
+            <span>{hasPosPayments ? 'Rimanente da pagare' : 'Totale'}</span>
+            <span className={cn("tabular-nums", hasPosPayments && "text-accent")}>{formatCurrency(grandTotal)}</span>
           </div>
+          {cartTotal === 0 && alreadyOrdered.length > 0 && alreadyOrderedTotal === 0 && (
+            <p className="text-[9px] font-bold uppercase tracking-wider text-green-700 text-center">
+              Conto interamente incassato — chiudi il conto
+            </p>
+          )}
 
           <button
             disabled={posCart.length === 0 || isProcessing || selectedTableMissing || (effectiveOrderMode === 'delivery' && deliveryAddress.trim().length < 5)}
@@ -1621,22 +1929,28 @@ export default function POSView({
           {selectedTableMissing && (
             <p className="text-[9px] text-danger text-center font-medium" role="alert">Tavolo non più disponibile: riseleziona un tavolo (il carrello verrà spostato)</p>
           )}
-          {canCloseTable && (selectedTable?.status === 'occupied' || selectedTable?.status === 'suspended') && (effectiveOrderMode === 'dine_in' || contextMatchesMode) && (
+          {canOpenCheckout && checkoutTable && (
             <button
               onClick={() => {
-                if (selectedTable) {
-                  useCheckoutStore.getState().openCheckout(selectedTable.id, selectedTable.number);
-                  trackUxMetric('pos.checkout.open');
-                }
+                useCheckoutStore.getState().openCheckout(checkoutTable.id, checkoutTable.number);
+                trackUxMetric('pos.checkout.open');
               }}
               className="w-full flex items-center justify-center gap-2 py-3 bg-success text-white rounded-xl active:bg-green-800 shadow-md transition-all text-xs font-bold uppercase tracking-widest active:scale-[0.98]"
             >
               <Receipt size={16} />
-              {contextMatchesMode ? (effectiveOrderMode === 'delivery' ? 'Incassa Consegna' : 'Incassa Asporto') : 'Chiudi Conto'}
+              {checkoutLabel}
             </button>
           )}
-          {actionError && <p className="text-[10px] text-danger text-center font-semibold">{actionError}</p>}
-          {actionSuccess && <p className="text-[10px] text-emerald-700 text-center font-semibold">{actionSuccess}</p>}
+          {/* `role="alert"` + `aria-live`: un invio fallito deve essere annunciato
+              anche a chi usa uno screen reader (TablesView lo faceva già). */}
+          <div aria-live="polite" className="contents">
+            {actionError && (
+              <p role="alert" className="text-xs text-danger text-center font-semibold">{actionError}</p>
+            )}
+            {actionSuccess && (
+              <p role="status" className="text-xs text-emerald-700 text-center font-semibold">{actionSuccess}</p>
+            )}
+          </div>
 
           <button
             onClick={() => setShowCartMobile(false)}
@@ -1665,7 +1979,7 @@ export default function POSView({
             <p className="text-[10px] font-bold opacity-70 uppercase leading-none mb-1">
               {orderHeaderLabel}
             </p>
-            <p className="font-bold text-sm leading-none tabular-nums">€{grandTotal.toFixed(2)}</p>
+            <p className="font-bold text-sm leading-none tabular-nums">{formatCurrency(grandTotal)}</p>
           </div>
         </button>
       )}
@@ -1683,7 +1997,7 @@ export default function POSView({
               <div className="p-5 border-b border-border flex items-center justify-between">
                 <div>
                   <h3 className="text-lg font-bold text-primary uppercase tracking-tight">
-                    Azioni Tavolo {posTableNumber}
+                    {posTableNumber ? `Azioni Tavolo ${posTableNumber}` : 'Nessun tavolo selezionato'}
                   </h3>
                   <p className="text-xs text-text-muted font-medium">
                     Gestisci il tavolo dalla mappa dedicata
@@ -1756,7 +2070,7 @@ export default function POSView({
                   className="w-full flex items-center justify-center gap-2 py-3 bg-accent text-white rounded-xl hover:bg-accent/90 transition-colors font-bold text-xs uppercase tracking-wider active:scale-[0.98]"
                 >
                   <ArrowRight size={16} />
-                  Vai alla Mappa Tavoli
+                  {posTableNumber ? 'Vai alla Mappa Tavoli' : 'Scegli un tavolo dalla mappa'}
                 </button>
               </div>
             </motion.div>
@@ -1936,6 +2250,7 @@ export default function POSView({
         inventory={data.inventory}
         orderMode={effectiveOrderMode}
         existingCartItem={modalItem?.editCartItem}
+        existingDraft={modalItem?.draft}
         menuItems={data.menu}
         courseRoundsConfig={courseRoundsConfig}
         courseRoundsModuleEnabled={courseRoundsModuleEnabled}
@@ -1982,7 +2297,7 @@ export default function POSView({
         title={externalGhostConfirm?.print === false ? 'Inviare la bozza senza stampa?' : 'Inviare la bozza in cucina?'}
         message={
           externalGhostConfirm
-            ? `Tavolo ${physicalDineInTable?.number ?? ''} · ${externalGhostConfirm.ghost.ownerStaffName ?? 'Cameriere'} · ${externalGhostConfirm.ghost.itemCount} articoli · €${externalGhostConfirm.ghost.total.toFixed(2)}.${externalGhostConfirm.print === false ? ' Nessun ticket verrà stampato: l’operazione è tracciata nell’audit.' : ''}`
+            ? `Tavolo ${physicalDineInTable?.number ?? ''} · ${externalGhostConfirm.ghost.ownerStaffName ?? 'Cameriere'} · ${externalGhostConfirm.ghost.itemCount} articoli · ${formatCurrency(externalGhostConfirm.ghost.total)}.${externalGhostConfirm.print === false ? ' Nessun ticket verrà stampato: l’operazione è tracciata nell’audit.' : ''}`
             : ''
         }
         confirmLabel={externalGhostConfirm?.print === false ? 'Invia senza stampa' : 'Invia'}
@@ -2002,6 +2317,20 @@ export default function POSView({
         confirmLabel="Scarta"
         onConfirm={() => { void handleDiscardExternalGhost(); }}
         onCancel={() => setExternalGhostDiscard(null)}
+      />
+
+      {/* ============ MODE SWITCH CONFIRM (lock) ============ */}
+      <ConfirmDialog
+        open={pendingModeSwitch !== null}
+        title="Cambiare modalità?"
+        message={`Ci sono ${posCart.length} articoli non inviati nel carrello di ${effectiveOrderMode === 'dine_in' ? `Tavolo ${posTableNumber}` : effectiveOrderMode === 'takeaway' ? 'Asporto' : 'Delivery'}. Lasciando questo conto restano nel carrello della modalità attuale e non verranno inviati: confermi il cambio?`}
+        confirmLabel="Cambia modalità"
+        onConfirm={() => {
+          const next = pendingModeSwitch;
+          setPendingModeSwitch(null);
+          if (next) applyModeSwitch(next);
+        }}
+        onCancel={() => setPendingModeSwitch(null)}
       />
 
       {/* ============ CHECKOUT MODAL ============ */}

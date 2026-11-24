@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { CheckCircle } from 'lucide-react';
+import { CheckCircle, Unlock } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useCheckoutStore } from '../../store/checkout-store';
 import { useAppStore } from '../../store/app-store';
 import SegmentedChips from '../../shared/ui/atoms/SegmentedChips';
 import ConfirmDialog from '../ConfirmDialog';
 import { trackUxMetric } from '../../shared/ux/metrics';
+import { formatCurrency } from '@gustopos/shared';
 
 export default function CloseTableView() {
   const {
@@ -23,7 +24,6 @@ export default function CloseTableView() {
     setPrintReceipt,
     closeTable,
     busy,
-    error,
   } = useCheckoutStore();
   // Certified fiscal (Path B) is opt-in per transaction and only offered when
   // the tenant has the fiscal_exports module enabled.
@@ -35,11 +35,30 @@ export default function CloseTableView() {
   const canToggleReceipt =
     printingModuleEnabled && printing?.protocol === 'escpos' && printing?.autoPrintOnClose === true;
   const [showConfirm, setShowConfirm] = useState(false);
+  // Chiusura a saldo zero: la cassa non incassa nulla (ogni voce è già stata
+  // pagata via pay-items), ma il tavolo è rimasto occupato — per esempio
+  // perché l'ultima voce non pagata è stata tolta dal carrello dopo l'incasso.
+  const [settling, setSettling] = useState(false);
+  const [settleError, setSettleError] = useState('');
 
   const handlePay = async () => {
     if (!tableId) return;
     trackUxMetric('pos.checkout.close.confirm');
     await closeTable(tableId);
+  };
+
+  const handleSettle = async () => {
+    if (!tableId) return;
+    setSettleError('');
+    setSettling(true);
+    try {
+      await useAppStore.getState().settleTable(tableId);
+      useCheckoutStore.getState().closeCheckout();
+    } catch (error) {
+      setSettleError(error instanceof Error ? error.message : 'Chiusura del tavolo non riuscita');
+    } finally {
+      setSettling(false);
+    }
   };
 
   const remainingAmount = paymentStatus?.remainingAmount ?? 0;
@@ -61,17 +80,39 @@ export default function CloseTableView() {
         <div className="bg-bg/30 rounded-lg p-3 space-y-2">
           <div className="flex justify-between text-lg">
             <span className="text-text-muted">Totale</span>
-            <span className="font-bold">€{paymentStatus.totalAmount.toFixed(2)}</span>
+            <span className="font-bold">{formatCurrency(paymentStatus.totalAmount)}</span>
           </div>
           <div className="flex justify-between text-lg">
             <span className="text-text-muted">Pagato</span>
-            <span className="font-bold text-green-600">€{paymentStatus.paidAmount.toFixed(2)}</span>
+            <span className="font-bold text-green-600">{formatCurrency(paymentStatus.paidAmount)}</span>
           </div>
           <div className="flex justify-between text-lg border-t border-border pt-2">
             <span className="font-bold">Rimanente</span>
-            <span className={cn("font-bold text-2xl", remainingAmount > 0 ? "text-primary" : "text-green-600")}>€{remainingAmount.toFixed(2)}</span>
+            <span className={cn("font-bold text-2xl", remainingAmount > 0 ? "text-primary" : "text-green-600")}>{formatCurrency(remainingAmount)}</span>
           </div>
         </div>
+      )}
+
+      {isFullyPaid && (
+        <>
+          <button
+            type="button"
+            onClick={() => void handleSettle()}
+            disabled={busy || settling}
+            className="w-full flex items-center justify-center gap-2 py-3 min-h-[44px] rounded bg-success text-white text-sm font-bold uppercase tracking-wider disabled:opacity-50"
+          >
+            <Unlock size={16} />
+            {settling ? 'Chiusura in corso...' : 'Libera il tavolo'}
+          </button>
+          {settleError && (
+            <p className="text-xs text-danger font-semibold text-center" role="alert">
+              {settleError}
+            </p>
+          )}
+          <p className="text-[11px] text-text-muted text-center">
+            Nessun nuovo incasso e nessuno scontrino: gli ordini aperti risultano pagati e il tavolo torna libero.
+          </p>
+        </>
       )}
 
       {!isFullyPaid && (
@@ -104,7 +145,7 @@ export default function CloseTableView() {
             <div className="flex justify-between text-base bg-bg/30 rounded-lg p-3">
               <span className="text-text-muted">Resto</span>
               <span className="font-bold text-green-600">
-                €{Math.max(0, Number(paidAmount) - remainingAmount).toFixed(2)}
+                {formatCurrency(Math.max(0, Number(paidAmount) - remainingAmount))}
               </span>
             </div>
           )}
@@ -179,8 +220,6 @@ export default function CloseTableView() {
             </p>
           </div>
           )}
-
-          {error && <p className="text-sm text-danger text-center font-semibold">{error}</p>}
 
           <button
             type="submit"
